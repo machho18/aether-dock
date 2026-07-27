@@ -25,29 +25,42 @@ body { overflow: hidden; }
   width: min(360px, calc(100vw - 52px));
   height: 60px;
   overflow: visible;
-  border: 1px solid transparent;
-  border-bottom-color: rgba(255, 255, 255, .32);
   border-radius: 0 0 30px 30px;
   background: transparent;
-  box-shadow: 0 1px 3px rgba(255, 255, 255, .16);
   cursor: grab;
   -webkit-app-region: no-drag;
+  isolation: isolate;
   transform-origin: center;
   transition:
     width 460ms var(--quxian-lingdong),
     height 460ms var(--quxian-lingdong),
-    border-radius 380ms var(--quxian-lingdong),
-    border-color 300ms ease,
-    box-shadow 300ms ease;
+    border-radius 380ms var(--quxian-lingdong);
+}
+
+/* 独立轮廓始终位于玻璃表面上方 */
+.lingdongchuangkou::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border: 1px solid transparent;
+  border-bottom-color: rgba(255, 255, 255, .32);
+  border-radius: inherit;
+  box-shadow: 0 1px 3px rgba(255, 255, 255, .16);
+  content: "";
+  pointer-events: none;
+  transition: border-color 300ms ease, box-shadow 300ms ease;
 }
 
 /* 真实尺寸过渡保持玻璃纹理清晰，不使用整体缩放 */
 .lingdongchuangkou--zhankai {
-  width: min(620px, calc(100vw - 40px));
+  width: 100vw;
   height: 300px;
+  border-radius: 20px;
+}
+
+.lingdongchuangkou--zhankai::after {
   border-color: rgba(255, 255, 255, .32);
   box-shadow: 0 0 5px rgba(255, 255, 255, .14);
-  border-radius: 20px;
 }
 
 .lingdongchuangkou:active { cursor: grabbing; }
@@ -55,11 +68,10 @@ body { overflow: hidden; }
 /* 固定深色基底，避免壁纸明暗改变玻璃观感 */
 .neibu-yingying {
   position: absolute;
+  z-index: 0;
   inset: 0 0 1px;
   border-radius: 0 0 29px 29px;
   background: linear-gradient(180deg, rgba(13, 18, 21, .88), rgba(5, 8, 10, .90));
-  -webkit-backdrop-filter: blur(14px) saturate(110%);
-  backdrop-filter: blur(14px) saturate(110%);
   transition: inset 380ms var(--quxian-lingdong), border-radius 420ms var(--quxian-lingdong);
 }
 
