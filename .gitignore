@@ -1,0 +1,48 @@
+# 依赖目录
+node_modules/
+
+# 前端与桌面端构建产物
+dist/
+release/
+out/
+!release/.gitkeep
+
+# Electron 构建与下载缓存
+.electron/
+.electron-cache/
+.cache/
+
+# 覆盖率与测试输出
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# 日志文件
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 本地环境与密钥配置
+.env
+.env.*
+!.env.example
+
+# TypeScript 与 Vite 缓存
+*.tsbuildinfo
+vite.config.*.timestamp-*
+
+# 编辑器与系统临时文件
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

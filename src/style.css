@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+/* 黑色玻璃灵动窗口的基础画布 */
+:root { background: transparent; }
+/* 统一灵动岛动效参数 */
+:root { --donghua-zhong: 420ms; --quxian-lingdong: cubic-bezier(.16, 1, .3, 1); }
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; min-width: 100%; height: 100%; min-height: 100%; margin: 0; overflow: hidden; background: transparent !important; }
+body { overflow: hidden; }
+
+.wuye {
+  display: grid;
+  width: 100vw;
+  min-height: 100vh;
+  padding-top: 0;
+  place-items: start center;
+  overflow: hidden;
+  background: transparent;
+  -webkit-app-region: drag;
+}
+
+/* 主体使用多层渐变模拟黑色玻璃厚度 */
+.lingdongchuangkou {
+  position: relative;
+  width: min(360px, calc(100vw - 52px));
+  height: 60px;
+  overflow: visible;
+  border: 1px solid transparent;
+  border-bottom-color: rgba(255, 255, 255, .32);
+  border-radius: 0 0 30px 30px;
+  background: transparent;
+  box-shadow: 0 1px 3px rgba(255, 255, 255, .16);
+  cursor: grab;
+  -webkit-app-region: no-drag;
+  transform-origin: center;
+  transition:
+    width 460ms var(--quxian-lingdong),
+    height 460ms var(--quxian-lingdong),
+    border-radius 380ms var(--quxian-lingdong),
+    border-color 300ms ease,
+    box-shadow 300ms ease;
+}
+
+/* 真实尺寸过渡保持玻璃纹理清晰，不使用整体缩放 */
+.lingdongchuangkou--zhankai {
+  width: min(620px, calc(100vw - 40px));
+  height: 300px;
+  border-color: rgba(255, 255, 255, .32);
+  box-shadow: 0 0 5px rgba(255, 255, 255, .14);
+  border-radius: 20px;
+}
+
+.lingdongchuangkou:active { cursor: grabbing; }
+
+/* 固定深色基底，避免壁纸明暗改变玻璃观感 */
+.neibu-yingying {
+  position: absolute;
+  inset: 0 0 1px;
+  border-radius: 0 0 29px 29px;
+  background: linear-gradient(180deg, rgba(13, 18, 21, .88), rgba(5, 8, 10, .90));
+  -webkit-backdrop-filter: blur(14px) saturate(110%);
+  backdrop-filter: blur(14px) saturate(110%);
+  transition: inset 380ms var(--quxian-lingdong), border-radius 420ms var(--quxian-lingdong);
+}
+
+/* 展开后转为四周完整的圆角窗口 */
+.lingdongchuangkou--zhankai .neibu-yingying { inset: 1px; border-radius: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lingdongchuangkou { transition: none; }
+}
