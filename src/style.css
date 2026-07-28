@@ -19,6 +19,29 @@ body { overflow: hidden; }
   -webkit-app-region: drag;
 }
 
+/* 开机阶段仅展示屏幕中央的加载动画 */
+.kaiji-mengban {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  pointer-events: none;
+}
+
+.kaiji-lottie {
+  width: 230px;
+  height: 230px;
+}
+
+.kaiji-danchu-leave-active {
+  transition: opacity 280ms ease, transform 280ms ease;
+}
+
+.kaiji-danchu-leave-to {
+  opacity: 0;
+  transform: scale(.96);
+}
+
 /* 主体使用多层渐变模拟黑色玻璃厚度 */
 .lingdongchuangkou {
   position: relative;
@@ -53,14 +76,19 @@ body { overflow: hidden; }
 
 /* 真实尺寸过渡保持玻璃纹理清晰，不使用整体缩放 */
 .lingdongchuangkou--zhankai {
-  width: 100vw;
-  height: 300px;
-  border-radius: 20px;
+  width: min(820px, calc(100vw - 40px));
+  height: 460px;
+  border-radius: 48px;
 }
 
 .lingdongchuangkou--zhankai::after {
-  border-color: rgba(255, 255, 255, .32);
-  box-shadow: 0 0 5px rgba(255, 255, 255, .14);
+  border-color: rgba(221, 244, 255, .5);
+  border-radius: 48px;
+  box-shadow:
+    0 0 0 1px rgba(104, 169, 194, .16),
+    inset 0 0 0 1px rgba(235, 251, 255, .16),
+    inset 0 0 28px rgba(99, 183, 218, .08),
+    0 0 16px rgba(119, 202, 233, .1);
 }
 
 .lingdongchuangkou:active { cursor: grabbing; }
@@ -76,7 +104,892 @@ body { overflow: hidden; }
 }
 
 /* 展开后转为四周完整的圆角窗口 */
-.lingdongchuangkou--zhankai .neibu-yingying { inset: 1px; border-radius: 18px; }
+.lingdongchuangkou--zhankai .neibu-yingying {
+  inset: 4px;
+  border-radius: 44px;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(112, 176, 199, .14), transparent 52%),
+    radial-gradient(circle at 8% 18%, rgba(112, 203, 233, .08), transparent 22%),
+    radial-gradient(circle at 92% 82%, rgba(59, 121, 150, .1), transparent 24%),
+    linear-gradient(145deg, rgba(17, 29, 35, .96), rgba(5, 10, 14, .97) 52%, rgba(12, 22, 27, .96));
+  box-shadow:
+    inset 0 1px 1px rgba(240, 253, 255, .18),
+    inset 0 -20px 30px rgba(0, 0, 0, .34);
+}
+
+/* 收起态左侧保留小尺寸情绪动画 */
+.maomao-lottie {
+  position: absolute;
+  z-index: 0;
+  top: 40%;
+  left: 0;
+  width: 80px;
+  height: 80px;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 180ms ease, transform 260ms var(--quxian-lingdong);
+}
+
+/* 展开后淡出收起态装饰 */
+.lingdongchuangkou--zhankai .maomao-lottie {
+  opacity: 0;
+  transform: translateY(-50%) scale(.78);
+}
+
+/* 收起态采用三段式信息布局 */
+.shouqi-xinxi {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  color: rgba(238, 245, 247, .92);
+  font-family: "Bahnschrift SemiBold", "Cascadia Code", "Segoe UI Variable Display", sans-serif;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 260ms var(--quxian-lingdong);
+}
+
+/* 中间时间使用紧凑的展示字体 */
+.shouqi-shijian {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  color: rgba(255, 255, 255, .98);
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 12px rgba(231, 249, 255, .30), 0 0 2px rgba(255, 255, 255, .45);
+  transform: translate(-50%, -50%);
+}
+
+/* 右侧以双行小型监视器样式展示资源占用 */
+.xitong-zhuangtai {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  display: grid;
+  gap: 3px;
+  min-width: 66px;
+  padding-left: 9px;
+  font-family: "Cascadia Code", "Bahnschrift", monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  transform: translateY(-50%);
+}
+
+/* 极细分隔线将系统监视器与时间区分开 */
+.xitong-zhuangtai::before {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(218, 239, 244, .38), transparent);
+  content: "";
+}
+
+.xitong-zhuangtai span {
+  display: grid;
+  grid-template-columns: 27px 1fr;
+  align-items: center;
+  column-gap: 5px;
+}
+
+.xitong-zhuangtai b { color: rgba(177, 207, 214, .58); font-weight: 600; letter-spacing: .1em; }
+.xitong-zhuangtai em { color: rgba(244, 252, 255, .92); font-size: 10px; font-style: normal; font-weight: 650; text-align: right; }
+
+/* 展开时隐藏收起态信息 */
+.lingdongchuangkou--zhankai .shouqi-xinxi {
+  opacity: 0;
+  transform: scale(.94);
+}
+
+/* 文件拖入时柔化原有信息层 */
+.lingdongchuangkou--tuoru .maomao-lottie,
+.lingdongchuangkou--tuoru .shouqi-xinxi {
+  opacity: .18;
+  filter: blur(5px) saturate(.5);
+  transform: translateY(-50%) scale(.96);
+}
+
+.lingdongchuangkou--tuoru .shouqi-xinxi { transform: scale(.96); }
+
+/* 拖放态使用完整的银白轮廓强调投放目标 */
+.lingdongchuangkou--tuoru::after {
+  border-color: rgba(236, 250, 255, .56);
+  box-shadow: 0 0 9px rgba(220, 247, 255, .20), inset 0 0 12px rgba(225, 247, 255, .06);
+}
+
+/* 拖拽时展开为效果图中的宽幅投放窗口 */
+.lingdongchuangkou--tuoru {
+  width: min(820px, calc(100vw - 40px));
+  height: 180px;
+  border-radius: 32px;
+}
+
+.lingdongchuangkou--tuoru .neibu-yingying {
+  inset: 1px;
+  border-radius: 31px;
+}
+
+/* 置于最上层的上传投放提示 */
+.tuoru-tishi {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  color: rgba(247, 253, 255, .96);
+  font-family: "Bahnschrift SemiBold", "Segoe UI Variable Display", sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  text-shadow: 0 0 10px rgba(224, 249, 255, .45);
+  transform: translate(-50%, -50%) scale(.72);
+  transition: opacity 160ms ease, transform 260ms var(--quxian-lingdong);
+}
+
+.tuoru-jiahao {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid rgba(241, 252, 255, .62);
+  border-radius: 50%;
+  font-family: "Cascadia Code", monospace;
+  font-size: 23px;
+  font-weight: 300;
+  line-height: .8;
+}
+
+.lingdongchuangkou--tuoru .tuoru-tishi {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 宽幅投放态放大中心投放标识 */
+.lingdongchuangkou--tuoru .tuoru-tishi {
+  gap: 14px;
+  font-size: 11px;
+}
+
+.lingdongchuangkou--tuoru .tuoru-jiahao {
+  width: 62px;
+  height: 62px;
+  border-color: rgba(241, 252, 255, .72);
+  box-shadow: 0 0 18px rgba(224, 249, 255, .20), inset 0 0 14px rgba(230, 250, 255, .08);
+  font-size: 52px;
+}
+
+/* 展开态以星图结构承载档案分类 */
+.xingtu-cang {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 18px;
+  color: rgba(235, 246, 249, .92);
+  font-family: "Bahnschrift", "Segoe UI Variable Display", sans-serif;
+  pointer-events: auto;
+}
+
+/* 背景轨道将分散卡片组织成一张星图 */
+.xingtu-guidao {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: rgba(168, 209, 222, .24);
+  stroke-dasharray: 2 9;
+  stroke-width: 1;
+}
+
+.xingtu-guidao circle { fill: rgba(219, 244, 251, .9); stroke: none; filter: drop-shadow(0 0 4px rgba(207, 241, 251, .8)); }
+
+/* 顶部搜索被设计为一条嵌入式指令缝隙 */
+.xingtu-sousuo {
+  position: absolute;
+  z-index: 1;
+  top: 25px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 380px;
+  height: 48px;
+  padding: 0 17px;
+  border: 1px solid rgba(215, 240, 247, .32);
+  border-radius: 999px;
+  background: rgba(2, 6, 8, .48);
+  box-shadow: inset 0 1px 10px rgba(222, 245, 251, .05);
+  transform: translateX(-50%);
+}
+
+.xingtu-sousuo svg { width: 19px; height: 19px; fill: none; stroke: rgba(233, 248, 252, .84); stroke-linecap: round; stroke-width: 1.8; }
+.xingtu-sousuo input { width: 100%; border: 0; outline: 0; background: transparent; color: rgba(245, 252, 255, .96); font: 500 16px "Bahnschrift", sans-serif; letter-spacing: .04em; }
+.xingtu-sousuo input::placeholder { color: rgba(194, 216, 222, .55); }
+
+/* 右侧设置节点独立于分类轨道 */
+.xingtu-shezhi {
+  position: absolute;
+  z-index: 2;
+  top: 38px;
+  right: 39px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid rgba(194, 228, 239, .38);
+  border-radius: 50%;
+  background: rgba(4, 11, 14, .66);
+  box-shadow: 0 0 14px rgba(172, 225, 241, .12), inset 0 0 9px rgba(217, 244, 251, .08);
+  color: rgba(232, 249, 255, .84);
+  cursor: pointer;
+}
+
+.xingtu-shezhi svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-linejoin: round; stroke-width: 1.35; }
+.xingtu-shezhi:hover { border-color: rgba(228, 249, 255, .75); box-shadow: 0 0 20px rgba(181, 229, 244, .28), inset 0 0 12px rgba(217, 244, 251, .13); }
+
+.xingtu-shezhi-ceng {
+  position: absolute;
+  z-index: 3;
+  top: 86px;
+  right: 27px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 22px;
+  min-width: 168px;
+  padding: 13px 15px;
+  border: 1px solid rgba(210, 240, 247, .26);
+  border-radius: 14px;
+  background: rgba(5, 10, 13, .88);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .32);
+  color: rgba(196, 220, 227, .72);
+  font-size: 10px;
+}
+
+.xingtu-shezhi-ceng b { color: rgba(239, 250, 253, .92); font-weight: 600; }
+
+/* 四张档案卡采用非对称玻璃轮廓，避免普通文件网格 */
+.xingtu-kapian {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 17px;
+  width: 230px;
+  height: 118px;
+  padding: 18px 21px;
+  border: 1px solid rgba(197, 225, 233, .34);
+  background: linear-gradient(135deg, rgba(16, 27, 32, .58), rgba(3, 8, 11, .68));
+  box-shadow: inset 0 1px 12px rgba(213, 241, 248, .05), 0 10px 22px rgba(0, 0, 0, .15);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 260ms var(--quxian-lingdong), border-color 220ms ease, box-shadow 220ms ease;
+}
+
+.xingtu-kapian:hover,
+.xingtu-kapian--xuanzhong { border-color: rgba(223, 246, 252, .72); box-shadow: inset 0 1px 16px rgba(222, 246, 253, .11), 0 0 20px rgba(170, 224, 240, .16); transform: translateY(-4px); }
+.xingtu-kapian--wenjian { top: 120px; left: 43px; border-radius: 52px 35px 55px 34px; }
+.xingtu-kapian--xiazai { top: 126px; right: 122px; border-radius: 37px 56px 34px 52px; }
+.xingtu-kapian--tupian { top: 268px; left: 200px; border-color: rgba(237, 174, 104, .45); border-radius: 57px 38px 52px 38px; }
+.xingtu-kapian--tupian.xingtu-kapian--xuanzhong { border-color: rgba(255, 199, 129, .85); box-shadow: inset 0 1px 16px rgba(255, 194, 124, .11), 0 0 22px rgba(238, 154, 70, .17); }
+.xingtu-kapian--xiangmu { top: 282px; right: 48px; border-radius: 43px 55px 40px 54px; }
+
+.xingtu-fuhao { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; border: 1px solid rgba(189, 226, 238, .42); border-radius: 18px 24px 16px 22px; color: rgba(199, 239, 250, .92); font: 300 33px "Cascadia Code", monospace; text-shadow: 0 0 11px rgba(193, 237, 250, .6); }
+.xingtu-kapian--tupian .xingtu-fuhao { border-color: rgba(246, 183, 109, .6); color: rgba(255, 191, 111, .98); text-shadow: 0 0 12px rgba(247, 172, 82, .65); }
+.xingtu-kapian-wenzi { display: grid; gap: 4px; min-width: 0; }
+.xingtu-kapian-wenzi strong { color: rgba(249, 253, 255, .96); font-family: Georgia, "Noto Serif SC", serif; font-size: 21px; font-weight: 500; letter-spacing: .02em; }
+.xingtu-kapian-wenzi small { color: rgba(193, 216, 223, .62); font: 10px "Cascadia Code", monospace; }
+/* 档案罗盘以中央检索透镜统领四类档案 */
+.luopan-cang {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 44px;
+  color: rgba(235, 246, 249, .92);
+  font-family: "Bahnschrift", "Segoe UI Variable Display", sans-serif;
+  pointer-events: auto;
+}
+
+/* 径向刻度赋予展开态精密仪器感 */
+.luopan-kedu {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 286px;
+  height: 286px;
+  border: 1px solid rgba(188, 223, 234, .22);
+  border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg, rgba(198, 231, 240, .42) 0deg 1deg, transparent 1deg 4deg);
+  mask: radial-gradient(transparent 0 63%, #000 64% 67%, transparent 68%);
+  opacity: .82;
+  transform: translate(-50%, -50%);
+}
+
+.luopan-zhongxin {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 154px;
+  height: 154px;
+  place-items: center;
+  border: 1px solid rgba(214, 244, 252, .72);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 44%, rgba(24, 43, 51, .82), rgba(3, 8, 11, .96) 68%);
+  box-shadow: 0 0 0 8px rgba(118, 202, 235, .10), 0 0 22px rgba(75, 184, 239, .36), inset 0 0 24px rgba(123, 214, 245, .15);
+  transform: translate(-50%, -50%);
+}
+
+.luopan-zhongxin::before,
+.luopan-zhongxin::after { position: absolute; background: linear-gradient(90deg, transparent, rgba(218, 246, 252, .7), transparent); content: ""; }
+.luopan-zhongxin::before { width: 202px; height: 1px; }
+.luopan-zhongxin::after { width: 1px; height: 202px; transform: rotate(90deg); }
+.luopan-zhongxin svg { width: 35px; height: 35px; margin-top: -12px; fill: none; stroke: rgba(227, 248, 254, .96); stroke-linecap: round; stroke-width: 1.8; }
+.luopan-zhongxin input { position: absolute; top: 78px; width: 102px; border: 0; outline: 0; background: transparent; color: rgba(249, 253, 255, .96); font: 600 14px "Bahnschrift", sans-serif; letter-spacing: .05em; text-align: center; }
+.luopan-zhongxin input::placeholder { color: rgba(220, 242, 248, .86); }
+.luopan-zhongxin span { position: absolute; top: 104px; color: rgba(167, 209, 221, .64); font: 9px "Cascadia Code", monospace; letter-spacing: .22em; }
+
+/* 右上角设置被处理为独立小型控制环 */
+.luopan-shezhi {
+  position: absolute;
+  z-index: 3;
+  top: 40px;
+  right: 44px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(194, 228, 239, .42);
+  border-radius: 50%;
+  background: rgba(5, 12, 16, .7);
+  box-shadow: 0 0 14px rgba(172, 225, 241, .15), inset 0 0 9px rgba(217, 244, 251, .08);
+  color: rgba(232, 249, 255, .9);
+  cursor: pointer;
+}
+
+.luopan-shezhi svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-linejoin: round; stroke-width: 1.35; }
+.luopan-shezhi:hover { border-color: rgba(228, 249, 255, .78); box-shadow: 0 0 20px rgba(181, 229, 244, .28), inset 0 0 12px rgba(217, 244, 251, .13); }
+.luopan-shezhi-ceng { position: absolute; z-index: 4; top: 85px; right: 30px; display: grid; grid-template-columns: 1fr auto; gap: 8px 20px; min-width: 164px; padding: 13px 15px; border: 1px solid rgba(210, 240, 247, .26); border-radius: 14px; background: rgba(5, 10, 13, .9); box-shadow: 0 10px 28px rgba(0, 0, 0, .32); color: rgba(196, 220, 227, .72); font-size: 10px; }
+.luopan-shezhi-ceng b { color: rgba(239, 250, 253, .92); font-weight: 600; }
+
+/* 四枚弧形叶片围绕中央罗盘，不使用标准卡片 */
+.luopan-yepian {
+  position: absolute;
+  z-index: 1;
+  width: 250px;
+  height: 106px;
+  padding: 0;
+  border: 1px solid rgba(193, 226, 237, .44);
+  background: linear-gradient(145deg, rgba(24, 40, 47, .76), rgba(3, 8, 11, .82));
+  box-shadow: inset 0 1px 14px rgba(220, 245, 252, .08), 0 8px 20px rgba(0, 0, 0, .2);
+  color: inherit;
+  cursor: pointer;
+  transition: filter 220ms ease, box-shadow 220ms ease;
+}
+
+.luopan-yepian:hover,
+.luopan-yepian--xuanzhong { border-color: rgba(227, 248, 254, .86); box-shadow: inset 0 1px 18px rgba(222, 246, 253, .13), 0 0 22px rgba(129, 211, 242, .22); filter: brightness(1.12); }
+.luopan-yepian--wenjian { top: 85px; left: 67px; border-radius: 62% 38% 46% 54% / 58% 48% 52% 42%; transform: rotate(-14deg); }
+.luopan-yepian--tupian { top: 85px; right: 67px; border-color: rgba(242, 178, 105, .56); border-radius: 38% 62% 54% 46% / 48% 58% 42% 52%; transform: rotate(14deg); }
+.luopan-yepian--xiazai { bottom: 70px; left: 67px; border-radius: 48% 52% 62% 38% / 42% 52% 48% 58%; transform: rotate(14deg); }
+.luopan-yepian--xiangmu { right: 67px; bottom: 70px; border-radius: 52% 48% 38% 62% / 52% 42% 58% 48%; transform: rotate(-14deg); }
+.luopan-yepian--tupian.luopan-yepian--xuanzhong { border-color: rgba(255, 199, 129, .9); box-shadow: inset 0 1px 16px rgba(255, 194, 124, .12), 0 0 23px rgba(238, 154, 70, .2); }
+
+.luopan-yepian-neirong { display: flex; height: 100%; align-items: center; gap: 14px; padding: 19px 29px; transform: rotate(0deg); }
+.luopan-yepian--wenjian .luopan-yepian-neirong { transform: rotate(14deg); }
+.luopan-yepian--tupian .luopan-yepian-neirong { transform: rotate(-14deg); }
+.luopan-yepian--xiazai .luopan-yepian-neirong { transform: rotate(-14deg); }
+.luopan-yepian--xiangmu .luopan-yepian-neirong { transform: rotate(14deg); }
+.luopan-fuhao { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; color: rgba(202, 239, 251, .95); font: 300 30px "Cascadia Code", monospace; text-shadow: 0 0 10px rgba(193, 237, 250, .65); }
+.luopan-yepian--tupian .luopan-fuhao { color: rgba(255, 191, 111, .98); text-shadow: 0 0 12px rgba(247, 172, 82, .7); }
+.luopan-wenzi { display: grid; gap: 3px; text-align: left; }
+.luopan-wenzi strong { color: rgba(248, 253, 255, .97); font-family: Georgia, "Noto Serif SC", serif; font-size: 20px; font-weight: 500; }
+.luopan-wenzi small { color: rgba(192, 218, 226, .63); font: 8px "Cascadia Code", monospace; letter-spacing: .04em; white-space: nowrap; }
+.luopan-kongzhuangtai { position: absolute; z-index: 5; top: 50%; left: 50%; color: rgba(210, 233, 239, .65); font-size: 14px; transform: translate(-50%, -50%); }
+
+/* 展开态采用一体成型的寒色玻璃舱，避免面板与内容层彼此割裂 */
+.lingdongchuangkou--zhankai {
+  border-radius: 68px;
+}
+
+.lingdongchuangkou--zhankai::after {
+  border-color: rgba(209, 241, 250, .62);
+  border-radius: 68px;
+  box-shadow:
+    0 0 0 1px rgba(53, 106, 126, .72),
+    0 0 0 4px rgba(101, 169, 191, .1),
+    inset 0 1px 0 rgba(244, 254, 255, .34),
+    inset 0 -1px 0 rgba(53, 120, 145, .46),
+    0 0 28px rgba(85, 180, 219, .14);
+}
+
+.lingdongchuangkou--zhankai .neibu-yingying {
+  inset: 5px;
+  border-radius: 63px;
+  background:
+    radial-gradient(ellipse at 50% -22%, rgba(164, 220, 237, .2), transparent 48%),
+    radial-gradient(ellipse at 50% 110%, rgba(33, 103, 132, .22), transparent 50%),
+    linear-gradient(145deg, rgba(19, 36, 43, .98), rgba(3, 9, 13, .985) 46%, rgba(10, 27, 35, .98));
+  box-shadow:
+    inset 0 1px 1px rgba(239, 253, 255, .36),
+    inset 0 15px 28px rgba(102, 181, 209, .08),
+    inset 0 -30px 38px rgba(0, 0, 0, .5);
+}
+
+.luopan-cang {
+  border-radius: 63px;
+  background:
+    linear-gradient(90deg, transparent 0 10%, rgba(137, 206, 226, .07) 27%, transparent 48% 52%, rgba(137, 206, 226, .07) 73%, transparent 90%),
+    repeating-linear-gradient(0deg, transparent 0 29px, rgba(178, 228, 241, .025) 30px 31px);
+}
+
+.luopan-cang::before,
+.luopan-cang::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.luopan-cang::before {
+  width: 378px;
+  height: 378px;
+  border: 1px solid rgba(161, 218, 234, .2);
+  box-shadow:
+    0 0 0 7px rgba(80, 153, 181, .055),
+    0 0 0 16px rgba(173, 230, 244, .025),
+    inset 0 0 40px rgba(61, 142, 174, .13);
+}
+
+.luopan-cang::after {
+  width: 330px;
+  height: 330px;
+  border: 1px solid rgba(156, 222, 240, .15);
+  background: radial-gradient(circle, rgba(74, 146, 174, .13), transparent 64%);
+}
+
+.luopan-kedu {
+  z-index: 1;
+  width: 390px;
+  height: 390px;
+  border-color: rgba(194, 233, 243, .34);
+  background: repeating-conic-gradient(from 0deg, rgba(200, 237, 246, .6) 0deg 1deg, transparent 1deg 3deg);
+  mask: radial-gradient(transparent 0 72%, #000 73% 75%, transparent 76%);
+  opacity: .9;
+}
+
+.luopan-zhongxin {
+  width: 178px;
+  height: 178px;
+  border: 1px solid rgba(214, 247, 255, .82);
+  background:
+    radial-gradient(circle at 38% 28%, rgba(166, 226, 240, .28), transparent 19%),
+    radial-gradient(circle at 50% 55%, rgba(24, 59, 72, .9), rgba(2, 9, 13, .98) 66%);
+  box-shadow:
+    0 0 0 5px rgba(124, 207, 234, .18),
+    0 0 0 11px rgba(81, 159, 189, .09),
+    0 0 28px rgba(92, 202, 240, .48),
+    inset 0 0 24px rgba(173, 236, 252, .24),
+    inset 0 -18px 24px rgba(0, 0, 0, .44);
+}
+
+.luopan-zhongxin::before { width: 238px; }
+.luopan-zhongxin::after { height: 238px; }
+.luopan-zhongxin input { top: 89px; width: 122px; }
+.luopan-zhongxin span { top: 117px; }
+
+/* 四个分类变为环绕透镜的弧形舱片，而非普通信息卡 */
+.luopan-yepian {
+  width: 262px;
+  height: 116px;
+  overflow: hidden;
+  border-color: rgba(176, 225, 238, .45);
+  background:
+    linear-gradient(100deg, rgba(106, 185, 213, .18), transparent 34%),
+    linear-gradient(145deg, rgba(22, 52, 64, .92), rgba(2, 9, 13, .94));
+  box-shadow:
+    0 0 0 1px rgba(49, 109, 133, .24),
+    inset 0 1px 1px rgba(232, 253, 255, .16),
+    inset 0 -18px 22px rgba(0, 0, 0, .32),
+    0 10px 24px rgba(0, 0, 0, .22);
+}
+
+.luopan-yepian::before {
+  position: absolute;
+  inset: 5px;
+  border: 1px solid rgba(205, 241, 249, .12);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.luopan-yepian--wenjian { top: 78px; left: 54px; border-radius: 74% 32% 54% 43% / 68% 52% 44% 35%; transform: rotate(-19deg); }
+.luopan-yepian--tupian { top: 78px; right: 54px; border-radius: 32% 74% 43% 54% / 52% 68% 35% 44%; transform: rotate(19deg); }
+.luopan-yepian--xiazai { bottom: 60px; left: 54px; border-radius: 43% 54% 74% 32% / 35% 44% 52% 68%; transform: rotate(19deg); }
+.luopan-yepian--xiangmu { right: 54px; bottom: 60px; border-radius: 54% 43% 32% 74% / 44% 35% 68% 52%; transform: rotate(-19deg); }
+
+.luopan-yepian:hover,
+.luopan-yepian--xuanzhong {
+  border-color: rgba(225, 248, 254, .92);
+  box-shadow:
+    0 0 0 1px rgba(137, 216, 241, .3),
+    inset 0 1px 2px rgba(241, 254, 255, .26),
+    inset 0 -18px 22px rgba(0, 0, 0, .3),
+    0 0 26px rgba(112, 211, 243, .3);
+  filter: brightness(1.08);
+}
+
+.luopan-yepian-neirong { padding: 20px 34px; }
+.luopan-fuhao { text-shadow: 0 0 13px rgba(172, 233, 251, .9); }
+.luopan-wenzi strong { text-shadow: 0 1px 7px rgba(190, 235, 248, .18); }
+
+/* 参考稿的展开态是扁平椭圆舱，所有部件围绕同一枚中心透镜排布 */
+.lingdongchuangkou--zhankai {
+  border-radius: 38px;
+}
+
+.lingdongchuangkou--zhankai::after {
+  border-color: rgba(220, 238, 244, .55);
+  border-radius: 38px;
+  box-shadow:
+    0 0 0 2px rgba(4, 10, 14, .88),
+    0 0 0 3px rgba(182, 223, 235, .25),
+    inset 0 1px 0 rgba(242, 251, 253, .26),
+    inset 0 -1px 0 rgba(133, 186, 203, .24),
+    0 0 18px rgba(100, 185, 219, .15);
+}
+
+.lingdongchuangkou--zhankai .neibu-yingying {
+  inset: 4px;
+  border-radius: 34px;
+  background:
+    radial-gradient(ellipse at 50% 46%, rgba(28, 75, 91, .33), transparent 33%),
+    linear-gradient(180deg, rgba(19, 31, 38, .96), rgba(2, 8, 12, .985) 58%, rgba(8, 19, 25, .97));
+  box-shadow:
+    inset 0 1px 0 rgba(208, 237, 245, .16),
+    inset 0 28px 50px rgba(76, 151, 178, .07),
+    inset 0 -28px 44px rgba(0, 0, 0, .5);
+}
+
+.luopan-cang {
+  border-radius: 34px;
+  background:
+    linear-gradient(90deg, transparent 0 8%, rgba(171, 219, 231, .035) 31%, transparent 47% 53%, rgba(171, 219, 231, .035) 69%, transparent 92%),
+    repeating-linear-gradient(0deg, transparent 0 26px, rgba(196, 228, 236, .022) 27px 28px);
+}
+
+.luopan-cang::before {
+  width: 292px;
+  height: 292px;
+  border-color: rgba(151, 209, 225, .16);
+  box-shadow:
+    0 0 0 20px rgba(91, 167, 194, .035),
+    inset 0 0 38px rgba(62, 143, 171, .11);
+}
+
+.luopan-cang::after {
+  width: 236px;
+  height: 236px;
+  border-color: rgba(178, 225, 235, .14);
+  background: radial-gradient(circle, rgba(62, 139, 167, .12), transparent 65%);
+}
+
+.luopan-guangquan {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  width: 326px;
+  height: 326px;
+  border: 1px solid rgba(167, 218, 230, .12);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9px rgba(113, 190, 215, .025);
+  transform: translate(-50%, -50%);
+}
+
+.luopan-kedu {
+  z-index: 2;
+  width: 318px;
+  height: 318px;
+  border: 0;
+  background: repeating-conic-gradient(from 0deg, rgba(203, 234, 241, .58) 0deg .6deg, transparent .7deg 3deg);
+  mask: radial-gradient(transparent 0 73%, #000 74% 75%, transparent 76%);
+  opacity: .68;
+}
+
+.luopan-zhibiao {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 50px;
+  background: linear-gradient(180deg, transparent, rgba(214, 240, 247, .72), transparent);
+  transform-origin: 50% 0;
+}
+
+.luopan-zhibiao--shang { transform: translate(-50%, -164px); }
+.luopan-zhibiao--xia { transform: translate(-50%, 114px) rotate(180deg); }
+.luopan-zhibiao--zuo { transform: translate(-164px, -50%) rotate(-90deg); }
+.luopan-zhibiao--you { transform: translate(164px, -50%) rotate(90deg); }
+
+.luopan-zhongxin {
+  z-index: 4;
+  width: 162px;
+  height: 162px;
+  border-color: rgba(220, 246, 253, .84);
+  background:
+    radial-gradient(circle at 38% 25%, rgba(176, 228, 241, .2), transparent 18%),
+    radial-gradient(circle at 50% 48%, rgba(22, 58, 72, .78), rgba(2, 9, 13, .98) 67%);
+  box-shadow:
+    0 0 0 5px rgba(110, 193, 223, .22),
+    0 0 0 10px rgba(71, 145, 171, .14),
+    0 0 24px rgba(89, 195, 233, .42),
+    inset 0 1px 1px rgba(234, 251, 255, .26),
+    inset 0 -16px 23px rgba(0, 0, 0, .47);
+}
+
+.luopan-zhongxin::before { width: 198px; }
+.luopan-zhongxin::after { height: 198px; }
+.luopan-zhongxin svg { width: 40px; height: 40px; margin-top: -17px; stroke-width: 1.4; }
+.luopan-zhongxin input { top: 92px; width: 116px; font: 500 17px Georgia, "Noto Serif SC", serif; letter-spacing: .01em; }
+.luopan-zhongxin input::placeholder { color: rgba(238, 248, 251, .94); }
+.luopan-zhongxin span { top: 119px; font-size: 7px; letter-spacing: .26em; }
+
+.luopan-shezhi {
+  z-index: 6;
+  top: 50px;
+  right: 52px;
+  width: 46px;
+  height: 46px;
+  border-color: rgba(204, 232, 240, .44);
+  background: radial-gradient(circle at 35% 25%, rgba(93, 159, 179, .24), rgba(5, 13, 17, .88) 68%);
+  box-shadow: inset 0 1px 1px rgba(235, 250, 253, .16), 0 0 15px rgba(142, 211, 231, .14);
+}
+
+.luopan-shezhi-ceng { z-index: 7; top: 101px; right: 37px; }
+
+/* 分类舱片采用参考稿的细长弧形与末端铆钉，不再使用大面积水滴形卡片 */
+.luopan-yepian {
+  z-index: 3;
+  width: 286px;
+  height: 104px;
+  overflow: visible;
+  border-color: rgba(194, 229, 239, .58);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(104, 181, 207, .15), transparent 55%),
+    linear-gradient(155deg, rgba(22, 44, 55, .88), rgba(3, 10, 14, .96) 78%);
+  box-shadow:
+    0 0 0 1px rgba(50, 115, 140, .42),
+    inset 0 1px 1px rgba(230, 249, 254, .2),
+    inset 0 -14px 20px rgba(0, 0, 0, .42),
+    0 8px 19px rgba(0, 0, 0, .2);
+}
+
+.luopan-yepian::before {
+  inset: 4px;
+  border-color: rgba(211, 239, 246, .13);
+}
+
+.luopan-yepian::after {
+  position: absolute;
+  right: -9px;
+  bottom: 8px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(193, 232, 244, .85);
+  border-radius: 50%;
+  background: rgba(7, 18, 24, .95);
+  box-shadow: 0 0 0 4px rgba(124, 204, 230, .15), 0 0 11px rgba(131, 216, 244, .46);
+  content: "";
+}
+
+.luopan-yepian--wenjian { top: 89px; left: 80px; border-radius: 62% 36% 45% 38% / 74% 63% 37% 29%; transform: rotate(-20deg); }
+.luopan-yepian--tupian { top: 89px; right: 80px; border-radius: 36% 62% 38% 45% / 63% 74% 29% 37%; transform: rotate(20deg); }
+.luopan-yepian--xiazai { bottom: 74px; left: 80px; border-radius: 38% 45% 62% 36% / 29% 37% 63% 74%; transform: rotate(20deg); }
+.luopan-yepian--xiangmu { right: 80px; bottom: 74px; border-radius: 45% 38% 36% 62% / 37% 29% 74% 63%; transform: rotate(-20deg); }
+.luopan-yepian--tupian { border-color: rgba(226, 184, 127, .7); background: radial-gradient(ellipse at 48% 0%, rgba(211, 151, 78, .19), transparent 58%), linear-gradient(155deg, rgba(46, 36, 27, .87), rgba(10, 9, 10, .96) 78%); }
+.luopan-yepian--tupian::after { border-color: rgba(249, 203, 139, .92); box-shadow: 0 0 0 4px rgba(234, 161, 76, .15), 0 0 11px rgba(247, 178, 91, .48); }
+
+.luopan-yepian-neirong { gap: 14px; padding: 19px 31px; }
+.luopan-yepian--wenjian .luopan-yepian-neirong { transform: rotate(20deg); }
+.luopan-yepian--tupian .luopan-yepian-neirong { transform: rotate(-20deg); }
+.luopan-yepian--xiazai .luopan-yepian-neirong { transform: rotate(-20deg); }
+.luopan-yepian--xiangmu .luopan-yepian-neirong { transform: rotate(20deg); }
+.luopan-fuhao { width: 39px; height: 39px; font-size: 36px; font-weight: 200; }
+.luopan-wenzi { gap: 2px; }
+.luopan-wenzi strong { font-family: Georgia, "Noto Serif SC", serif; font-size: 20px; font-weight: 500; letter-spacing: .01em; }
+.luopan-wenzi small { font-size: 7px; letter-spacing: .07em; }
+.luopan-wenzi small:last-child { color: rgba(196, 221, 229, .72); }
+
+.luopan-yepian:hover,
+.luopan-yepian--xuanzhong {
+  border-color: rgba(233, 249, 254, .95);
+  box-shadow:
+    0 0 0 1px rgba(157, 222, 241, .36),
+    inset 0 1px 2px rgba(244, 254, 255, .28),
+    inset 0 -14px 20px rgba(0, 0, 0, .36),
+    0 0 22px rgba(107, 211, 242, .3);
+  filter: none;
+}
+
+.luopan-yepian--tupian.luopan-yepian--xuanzhong { border-color: rgba(255, 208, 145, .96); box-shadow: 0 0 0 1px rgba(247, 188, 114, .3), inset 0 1px 2px rgba(255, 237, 207, .22), inset 0 -14px 20px rgba(0, 0, 0, .35), 0 0 22px rgba(240, 164, 78, .25); }
+
+/* 展开态保留真实的可交互结构，而非将视觉稿作为静态贴图 */
+.lingdongchuangkou--zhankai {
+  width: 820px;
+  height: 318px;
+  border-radius: 40px;
+}
+
+.lingdongchuangkou--zhankai::after {
+  display: block;
+  border: 1px solid rgba(214, 239, 246, .56);
+  border-radius: 40px;
+  box-shadow:
+    0 0 0 2px rgba(7, 15, 19, .86),
+    0 0 0 3px rgba(170, 218, 230, .22),
+    inset 0 1px 0 rgba(242, 252, 254, .26),
+    0 0 18px rgba(87, 180, 214, .14);
+}
+
+.lingdongchuangkou--zhankai .neibu-yingying {
+  display: block;
+  inset: 4px;
+  border-radius: 36px;
+  background:
+    radial-gradient(ellipse at 50% 53%, rgba(31, 83, 101, .29), transparent 38%),
+    linear-gradient(180deg, rgba(20, 31, 37, .97), rgba(3, 9, 13, .99) 60%, rgba(8, 20, 26, .98));
+  box-shadow: inset 0 1px 0 rgba(219, 243, 250, .16), inset 0 -25px 34px rgba(0, 0, 0, .45);
+}
+
+.lingdongchuangkou--zhankai .luopan-cang {
+  z-index: 2;
+  inset: 4px;
+  overflow: hidden;
+  border-radius: 36px;
+  background:
+    linear-gradient(90deg, transparent 0 11%, rgba(178, 224, 235, .04) 30%, transparent 46% 54%, rgba(178, 224, 235, .04) 70%, transparent 89%),
+    repeating-linear-gradient(0deg, transparent 0 22px, rgba(188, 225, 235, .025) 23px 24px);
+}
+
+.lingdongchuangkou--zhankai .luopan-cang::before,
+.lingdongchuangkou--zhankai .luopan-cang::after,
+.lingdongchuangkou--zhankai .luopan-guangquan,
+.lingdongchuangkou--zhankai .luopan-kedu,
+.lingdongchuangkou--zhankai .luopan-zhibiao {
+  display: block;
+}
+
+.lingdongchuangkou--zhankai .luopan-zhongxin {
+  z-index: 4;
+  opacity: 1;
+  top: 50%;
+  left: 50%;
+  width: 140px;
+  height: 140px;
+  border-color: rgba(219, 246, 253, .84);
+  background: radial-gradient(circle at 38% 25%, rgba(181, 231, 244, .18), transparent 18%), radial-gradient(circle at 50% 48%, rgba(22, 58, 72, .8), rgba(2, 9, 13, .98) 67%);
+  box-shadow: 0 0 0 4px rgba(105, 193, 223, .22), 0 0 0 9px rgba(71, 145, 171, .14), 0 0 22px rgba(89, 195, 233, .38), inset 0 1px 1px rgba(234, 251, 255, .26);
+  transform: translate(-50%, -50%);
+}
+
+.lingdongchuangkou--zhankai .luopan-shezhi {
+  z-index: 6;
+  opacity: 1;
+  top: 35px;
+  right: 54px;
+  width: 42px;
+  height: 42px;
+}
+
+.lingdongchuangkou--zhankai .luopan-yepian {
+  z-index: 3;
+  width: 212px;
+  height: 84px;
+  opacity: 1;
+  overflow: visible;
+  border-color: rgba(194, 229, 239, .62);
+  background: radial-gradient(ellipse at 50% 0%, rgba(104, 181, 207, .15), transparent 55%), linear-gradient(155deg, rgba(22, 44, 55, .9), rgba(3, 10, 14, .97) 78%);
+  box-shadow: 0 0 0 1px rgba(50, 115, 140, .38), inset 0 1px 1px rgba(230, 249, 254, .2), inset 0 -13px 18px rgba(0, 0, 0, .42), 0 7px 16px rgba(0, 0, 0, .2);
+}
+
+.lingdongchuangkou--zhankai .luopan-yepian--wenjian { top: 53px; left: 146px; border-radius: 62% 36% 45% 38% / 74% 63% 37% 29%; transform: rotate(-20deg); }
+.lingdongchuangkou--zhankai .luopan-yepian--tupian { top: 53px; right: 146px; border-radius: 36% 62% 38% 45% / 63% 74% 29% 37%; transform: rotate(20deg); }
+.lingdongchuangkou--zhankai .luopan-yepian--xiazai { bottom: 39px; left: 146px; border-radius: 38% 45% 62% 36% / 29% 37% 63% 74%; transform: rotate(20deg); }
+.lingdongchuangkou--zhankai .luopan-yepian--xiangmu { right: 146px; bottom: 39px; border-radius: 45% 38% 36% 62% / 37% 29% 74% 63%; transform: rotate(-20deg); }
+
+.lingdongchuangkou--zhankai .luopan-yepian-neirong { padding: 15px 24px; }
+.lingdongchuangkou--zhankai .luopan-fuhao { width: 30px; height: 30px; font-size: 29px; }
+.lingdongchuangkou--zhankai .luopan-wenzi strong { font-size: 16px; }
+.lingdongchuangkou--zhankai .luopan-wenzi small { font-size: 6px; }
+.lingdongchuangkou--zhankai .luopan-zhongxin svg { width: 34px; height: 34px; }
+.lingdongchuangkou--zhankai .luopan-zhongxin input { top: 77px; width: 104px; font-size: 15px; }
+.lingdongchuangkou--zhankai .luopan-zhongxin span { top: 102px; }
+
+/* 首版星图布局恢复为中等尺寸的完整圆角窗口 */
+.lingdongchuangkou--zhankai {
+  width: min(820px, calc(100vw - 40px));
+  height: 460px;
+  border-radius: 20px;
+}
+
+.lingdongchuangkou--zhankai::after {
+  border-radius: 20px;
+}
+
+.lingdongchuangkou--zhankai .neibu-yingying {
+  inset: 1px;
+  border-radius: 18px;
+}
+
+.xingtu-cang {
+  border-radius: 18px;
+}
+
+.xingtu-kongzhuangtai {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  color: rgba(210, 233, 239, .65);
+  font-size: 14px;
+  transform: translate(-50%, -50%);
+}
+
+/* 展开后仅保留干净的黑色玻璃窗口，不加载任何内容布局 */
+.lingdongchuangkou--zhankai {
+  width: min(820px, calc(100vw - 40px));
+  height: 460px;
+  border-radius: 20px;
+}
+
+.lingdongchuangkou--zhankai::after {
+  border: 1px solid rgba(255, 255, 255, .32);
+  border-radius: 20px;
+  box-shadow: 0 0 5px rgba(255, 255, 255, .14);
+}
+
+.lingdongchuangkou--zhankai .neibu-yingying {
+  inset: 1px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(13, 18, 21, .88), rgba(5, 8, 10, .9));
+  box-shadow: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .lingdongchuangkou { transition: none; }
