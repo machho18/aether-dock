@@ -1,11 +1,21 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } = require('electron')
 const os = require('node:os')
 const path = require('node:path')
+const fsp = require('node:fs/promises')
+const { chuangjianZiliaoku } = require('./ziliaoku.cjs')
+
+// 图片扩展名到 MIME 的映射，用于无 mimeType 时的回退推断
+const tupianMime = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml', '.avif': 'image/avif',
+}
 
 // 持有主窗口引用，避免被垃圾回收后自动关闭
 let zhuChuangkou = null
 let kaijiChuangkou = null
 let shangciCpuTongji = null
+let ziliaoku = null
 const chicunChuangkou = { width: 860, height: 560 }
 const chicunKaiJi = { width: 360, height: 360 }
 
@@ -138,6 +148,24 @@ function chuangjianKaiJiChuangkou() {
 }
 
 app.whenReady().then(() => {
+  // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
+  ziliaoku = chuangjianZiliaoku(path.join(app.getPath('userData'), 'aether-dock.db'))
+  // 以条目 ID 为键安全返回图片字节，路径仍由资料库层校验，不开放任意文件访问
+  protocol.handle('aetherdock-img', async (qingqiu) => {
+    try {
+      const id = new URL(qingqiu.url).hostname
+      if (!id) return new Response('missing id', { status: 400 })
+      const tiaomu = ziliaoku.duquTiaomuXiangqing(id)
+      if (!tiaomu || tiaomu.type !== 'image') return new Response('not found', { status: 404 })
+      const benDiLujing = ziliaoku.duquTiaomuBendiLujing(tiaomu)
+      if (!benDiLujing) return new Response('not found', { status: 404 })
+      const huanchong = await fsp.readFile(benDiLujing)
+      const mime = tiaomu.mimeType || tupianMime[path.extname(benDiLujing).toLowerCase()] || 'image/png'
+      return new Response(huanchong, { headers: { 'Content-Type': mime, 'Cache-Control': 'no-store' } })
+    } catch {
+      return new Response('error', { status: 500 })
+    }
+  })
   // 提供最小化的应用信息接口
   ipcMain.handle('yingyong:get-banben', () => app.getVersion())
   ipcMain.handle('xitong:duqu-zhuangtai', () => duquXitongZhuangtai())
@@ -155,6 +183,63 @@ app.whenReady().then(() => {
     zhuChuangkou.setIgnoreMouseEvents(true, { forward: true })
     zhuChuangkou.showInactive()
   })
+  // 选择资料库根目录，并创建必要的目录标记
+  ipcMain.handle('ziliaoku:xuanze-genmulu', async () => {
+    const jieguo = await dialog.showOpenDialog(zhuChuangkou, {
+      title: '选择 AetherDock 资料库目录',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (jieguo.canceled || !jieguo.filePaths[0]) return { quxiao: true }
+    return { quxiao: false, peizhi: await ziliaoku.sheZhiGenMulu(jieguo.filePaths[0]) }
+  })
+  ipcMain.handle('ziliaoku:duqu-peizhi', () => ziliaoku.duquPeizhi())
+  ipcMain.handle('shezhi:duqu-shouqi-donghua', () => ziliaoku.duquShouqiDonghua())
+  ipcMain.handle('shezhi:shezhi-shouqi-donghua', (_, donghua) => ziliaoku.sheZhiShouqiDonghua(donghua))
+  ipcMain.handle('ziliaoku:yinru', async (_, miaoshu) => ziliaoku.yinruNeirong(miaoshu))
+  ipcMain.handle('ziliaoku:duqu-tiaomu', () => ziliaoku.duquTiaomuLiebiao())
+  ipcMain.handle('ziliaoku:dakai-tiaomu', async (_, tiaomuId) => {
+    try {
+      const tiaomu = ziliaoku.duquTiaomuXiangqing(tiaomuId)
+      if (!tiaomu) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+      if (tiaomu?.storageMode === 'bookmark' && tiaomu.sourceUrl) {
+        await shell.openExternal(tiaomu.sourceUrl)
+        return { chenggong: true }
+      }
+      const benDiLujing = ziliaoku.duquTiaomuBendiLujing(tiaomu)
+      if (benDiLujing) {
+        const cuowu = await shell.openPath(benDiLujing)
+        return cuowu ? { chenggong: false, xiaoxi: cuowu } : { chenggong: true }
+      }
+      return { chenggong: false, xiaoxi: '条目缺少可打开的来源' }
+    } catch {
+      return { chenggong: false, xiaoxi: '系统未能打开该条目' }
+    }
+  })
+  ipcMain.handle('ziliaoku:dingwei-tiaomu', (_, tiaomuId) => {
+    const tiaomu = ziliaoku.duquTiaomuXiangqing(tiaomuId)
+    const benDiLujing = ziliaoku.duquTiaomuBendiLujing(tiaomu)
+    if (benDiLujing) shell.showItemInFolder(benDiLujing)
+  })
+  ipcMain.handle('ziliaoku:shanchu-tiaomu', async (_, tiaomuId) => {
+    try {
+      const tiaomu = ziliaoku.duquTiaomuXiangqing(tiaomuId)
+      if (!tiaomu) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+      // 主进程原生确认框挂载在主窗口上，避免渲染层 window.confirm 被置顶窗口遮挡
+      const queren = await dialog.showMessageBox(zhuChuangkou, {
+        type: 'warning',
+        buttons: ['删除', '取消'],
+        defaultId: 1,
+        cancelId: 1,
+        title: '删除资料',
+        message: '确定删除该资料？',
+        detail: `将同时删除本地文件与资料库记录，此操作不可撤销。\n${tiaomu.title || ''}`.trim(),
+      })
+      if (queren.response !== 0) return { quxiao: true }
+      return await ziliaoku.shanchuTiaomu(tiaomuId)
+    } catch {
+      return { chenggong: false, xiaoxi: '删除失败' }
+    }
+  })
   chuangjianZhuChuangkou()
   chuangjianKaiJiChuangkou()
 
@@ -167,5 +252,6 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  ziliaoku?.guanbi()
   if (process.platform !== 'darwin') app.quit()
 })
