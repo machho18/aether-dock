@@ -3,6 +3,7 @@ const os = require('node:os')
 const path = require('node:path')
 const fsp = require('node:fs/promises')
 const { createLibrary } = require('./ziliaoku.cjs')
+const { ipcTongdao } = require('./ipc.cjs')
 
 // 图片扩展名到 MIME 的映射，用于无 mimeType 时的回退推断
 const imageMime = {
@@ -19,15 +20,36 @@ let library = null
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
 
-// 根据开机阶段将透明窗口定位到屏幕中央或顶部
-function positionWindow(centered) {
+// 两类透明窗口共享安全的浏览器配置，仅尺寸与生命周期不同。
+function createWindowOptions(size) {
+  return {
+    ...size,
+    minWidth: size.width,
+    minHeight: size.height,
+    maxWidth: size.width,
+    maxHeight: size.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    useContentSize: true,
+    resizable: false,
+    alwaysOnTop: true,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  }
+}
+
+// 主灵动岛固定在主屏幕工作区顶部中央。
+function positionMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const workArea = screen.getPrimaryDisplay().workArea
   const coordX = Math.round(workArea.x + (workArea.width - mainWindowSize.width) / 2)
-  const coordY = centered
-    ? Math.round(workArea.y + (workArea.height - mainWindowSize.height) / 2)
-    : workArea.y
-  mainWindow.setPosition(coordX, coordY)
+  mainWindow.setPosition(coordX, workArea.y)
 }
 
 // 根据窗口角色加载相同渲染页面，开机窗口仅展示加载动画
@@ -71,34 +93,14 @@ function getSystemStatus() {
 
 // 创建应用主窗口
 function createMainWindow() {
-  mainWindow = new BrowserWindow({
-    width: mainWindowSize.width,
-    height: mainWindowSize.height,
-    minWidth: mainWindowSize.width,
-    minHeight: mainWindowSize.height,
-    maxWidth: mainWindowSize.width,
-    maxHeight: mainWindowSize.height,
-    show: false,
-    frame: false,
-    transparent: true,
-    useContentSize: true,
-    resizable: false,
-    alwaysOnTop: true,
-    hasShadow: false,
-    backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+  mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
 
   // 主灵动岛始终预加载在桌面顶部，等待开机动画结束后再显示
-  positionWindow(false)
+  positionMainWindow()
   mainWindow.once('ready-to-show', () => {
     // 透明窗口就绪后再次锁定内容尺寸，避免沿用旧窗口边界
     mainWindow.setContentSize(mainWindowSize.width, mainWindowSize.height)
-    positionWindow(false)
+    positionMainWindow()
     // 保持灵动岛位于普通应用窗口之上
     mainWindow.setAlwaysOnTop(true, 'screen-saver')
     // 透明安全区默认鼠标穿透，仅灵动岛本体接收交互
@@ -113,23 +115,7 @@ function createMainWindow() {
 
 // 创建独立开机窗口，避免重定位主灵动岛造成平移与卡顿
 function createStartupWindow() {
-  startupWindow = new BrowserWindow({
-    width: startupWindowSize.width,
-    height: startupWindowSize.height,
-    show: false,
-    frame: false,
-    transparent: true,
-    useContentSize: true,
-    resizable: false,
-    alwaysOnTop: true,
-    hasShadow: false,
-    backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+  startupWindow = new BrowserWindow(createWindowOptions(startupWindowSize))
 
   const workArea = screen.getPrimaryDisplay().workArea
   startupWindow.setPosition(
@@ -166,25 +152,21 @@ app.whenReady().then(() => {
       return new Response('error', { status: 500 })
     }
   })
-  // 提供最小化的应用信息接口
-  ipcMain.handle('app:get-version', () => app.getVersion())
-  ipcMain.handle('system:read-status', () => getSystemStatus())
-  ipcMain.handle('island:set-passthrough', (_, isPassthrough) => {
+  ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
+  ipcMain.handle(ipcTongdao.setIslandPassthrough, (_, isPassthrough) => {
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.setIgnoreMouseEvents(Boolean(isPassthrough), { forward: Boolean(isPassthrough) })
   })
-  // 开机动画结束后将灵动岛回归桌面顶部
-  ipcMain.handle('island:locate-top', () => positionWindow(false))
   // 开机窗口完成后直接显示已预加载的顶部灵动岛
-  ipcMain.handle('island:startup-complete', () => {
+  ipcMain.handle(ipcTongdao.completeStartup, () => {
     if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close()
     if (!mainWindow || mainWindow.isDestroyed()) return
-    positionWindow(false)
+    positionMainWindow()
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
   })
   // 选择资料库根目录，并创建必要的目录标记
-  ipcMain.handle('library:select-rootdir', async () => {
+  ipcMain.handle(ipcTongdao.selectLibraryRootdir, async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '选择 AetherDock 资料库目录',
       properties: ['openDirectory', 'createDirectory'],
@@ -192,12 +174,12 @@ app.whenReady().then(() => {
     if (result.canceled || !result.filePaths[0]) return { quxiao: true }
     return { quxiao: false, config: await library.setRootdir(result.filePaths[0]) }
   })
-  ipcMain.handle('library:read-config', () => library.getConfig())
-  ipcMain.handle('settings:read-collapsed-animation', () => library.getCollapsedAnimation())
-  ipcMain.handle('settings:set-collapsed-animation', (_, animation) => library.setCollapsedAnimation(animation))
-  ipcMain.handle('library:import', async (_, payload) => library.importContent(payload))
-  ipcMain.handle('library:read-items', () => library.getItemList())
-  ipcMain.handle('library:open-item', async (_, itemId) => {
+  ipcMain.handle(ipcTongdao.getLibraryConfig, () => library.getConfig())
+  ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
+  ipcMain.handle(ipcTongdao.setCollapsedAnimation, (_, animation) => library.setCollapsedAnimation(animation))
+  ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => library.importContent(payload))
+  ipcMain.handle(ipcTongdao.getLibraryItems, () => library.getItemList())
+  ipcMain.handle(ipcTongdao.openLibraryItem, async (_, itemId) => {
     try {
       const item = library.getItemDetail(itemId)
       if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
@@ -215,12 +197,12 @@ app.whenReady().then(() => {
       return { chenggong: false, xiaoxi: '系统未能打开该条目' }
     }
   })
-  ipcMain.handle('library:locate-item', (_, itemId) => {
+  ipcMain.handle(ipcTongdao.locateLibraryItem, (_, itemId) => {
     const item = library.getItemDetail(itemId)
     const localPath = library.getItemLocalPath(item)
     if (localPath) shell.showItemInFolder(localPath)
   })
-  ipcMain.handle('library:delete-item', async (_, itemId) => {
+  ipcMain.handle(ipcTongdao.deleteLibraryItem, async (_, itemId) => {
     // 删除确认由渲染层自定义弹窗完成，主进程仅负责执行删除与文件清理
     try {
       return await library.deleteItem(itemId)

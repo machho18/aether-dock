@@ -1,5 +1,21 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+// 沙箱预加载脚本不能引入本地模块，通道表需在隔离层内直接声明。
+const ipcTongdao = Object.freeze({
+  getSystemStatus: 'system:read-status',
+  setIslandPassthrough: 'island:set-passthrough',
+  completeStartup: 'island:startup-complete',
+  selectLibraryRootdir: 'library:select-rootdir',
+  getLibraryConfig: 'library:read-config',
+  getCollapsedAnimation: 'settings:read-collapsed-animation',
+  setCollapsedAnimation: 'settings:set-collapsed-animation',
+  importLibraryContent: 'library:import',
+  getLibraryItems: 'library:read-items',
+  openLibraryItem: 'library:open-item',
+  locateLibraryItem: 'library:locate-item',
+  deleteLibraryItem: 'library:delete-item',
+})
+
 // 在预加载隔离层直接读取原生 File，避免跨 Context Bridge 后丢失文件路径
 function convertDragFile(file) {
   return Array.from(file ?? []).flatMap((currentFile) => {
@@ -21,25 +37,23 @@ window.addEventListener('drop', (event) => {
 
 // 向渲染进程暴露受控接口
 contextBridge.exposeInMainWorld('aetherDock', {
-  getVersion: () => ipcRenderer.invoke('app:get-version'),
-  getSystemStatus: () => ipcRenderer.invoke('system:read-status'),
-  setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke('island:set-passthrough', isPassthrough),
-  locateToTop: () => ipcRenderer.invoke('island:locate-top'),
-  completeStartup: () => ipcRenderer.invoke('island:startup-complete'),
-  selectLibraryRootdir: () => ipcRenderer.invoke('library:select-rootdir'),
-  getLibraryConfig: () => ipcRenderer.invoke('library:read-config'),
-  getCollapsedAnimation: () => ipcRenderer.invoke('settings:read-collapsed-animation'),
-  setCollapsedAnimation: (animation) => ipcRenderer.invoke('settings:set-collapsed-animation', animation),
+  getSystemStatus: () => ipcRenderer.invoke(ipcTongdao.getSystemStatus),
+  setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke(ipcTongdao.setIslandPassthrough, isPassthrough),
+  completeStartup: () => ipcRenderer.invoke(ipcTongdao.completeStartup),
+  selectLibraryRootdir: () => ipcRenderer.invoke(ipcTongdao.selectLibraryRootdir),
+  getLibraryConfig: () => ipcRenderer.invoke(ipcTongdao.getLibraryConfig),
+  getCollapsedAnimation: () => ipcRenderer.invoke(ipcTongdao.getCollapsedAnimation),
+  setCollapsedAnimation: (animation) => ipcRenderer.invoke(ipcTongdao.setCollapsedAnimation, animation),
   importDragContent: ({ url }) => {
     const file = lastDragFiles
     lastDragFiles = []
-    return ipcRenderer.invoke('library:import', {
+    return ipcRenderer.invoke(ipcTongdao.importLibraryContent, {
       file,
       url: Array.from(url ?? []).filter((dangqianWangzhi) => typeof dangqianWangzhi === 'string'),
     })
   },
-  getLibraryItems: () => ipcRenderer.invoke('library:read-items'),
-  openLibraryItem: (itemId) => ipcRenderer.invoke('library:open-item', itemId),
-  locateLibraryItem: (itemId) => ipcRenderer.invoke('library:locate-item', itemId),
-  deleteLibraryItem: (itemId) => ipcRenderer.invoke('library:delete-item', itemId),
+  getLibraryItems: () => ipcRenderer.invoke(ipcTongdao.getLibraryItems),
+  openLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.openLibraryItem, itemId),
+  locateLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.locateLibraryItem, itemId),
+  deleteLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.deleteLibraryItem, itemId),
 })

@@ -1,54 +1,19 @@
-<script setup>
-import { watch } from 'vue'
-
-const props = defineProps({
-  visible: { type: Boolean, default: false },
-  text: { type: String, default: '' },
-  // success / error / info
-  type: { type: String, default: 'info' },
-  duration: { type: Number, default: 2200 },
-})
-
-const emit = defineEmits(['update:visible'])
-
-let timer = null
-
-function dismiss() {
-  if (timer) { clearTimeout(timer); timer = null }
-  emit('update:visible', false)
-}
-
-watch(
-  () => props.visible,
-  (visible) => {
-    if (timer) { clearTimeout(timer); timer = null }
-    if (visible && props.duration > 0) {
-      timer = setTimeout(dismiss, props.duration)
-    }
-  },
-  { immediate: true },
-)
-
-// 文案变更时重置倒计时，避免连续提示被前一条时长截断
-watch(
-  () => props.text,
-  () => {
-    if (timer) { clearTimeout(timer); timer = null }
-    if (props.visible && props.duration > 0) {
-      timer = setTimeout(dismiss, props.duration)
-    }
-  },
-)
-</script>
-
 <template>
   <Transition name="toast-rise">
-    <div v-if="visible && text" class="toast" :class="[`toast--${type}`]" role="status" aria-live="polite">
+    <div v-if="visible && text" class="toast" :class="`toast--${type}`" role="status" aria-live="polite">
       <span class="toast-dot" aria-hidden="true"></span>
       <span class="toast-text">{{ text }}</span>
     </div>
   </Transition>
 </template>
+
+<script setup>
+defineProps({
+  visible: { type: Boolean, default: false },
+  text: { type: String, default: '' },
+  type: { type: String, default: 'info' },
+})
+</script>
 
 <style scoped>
 .toast {
@@ -72,35 +37,12 @@ watch(
   transform: translateX(-50%);
 }
 
-.toast-dot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
+.toast-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; }
 .toast--success .toast-dot { background: #7be9ac; }
 .toast--error .toast-dot { background: #ff8a8a; }
 .toast--info .toast-dot { background: #84ceff; }
-
-.toast-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 从下往上贴底弹出 */
-.toast-rise-enter-active,
-.toast-rise-leave-active {
-  transition: opacity 220ms ease, transform 320ms cubic-bezier(.16, 1, .3, 1);
-}
-
-.toast-rise-enter-from {
-  opacity: 0;
-  transform: translate(-50%, 22px);
-}
-
-.toast-rise-leave-to {
-  opacity: 0;
-  transform: translate(-50%, 10px);
-}
+.toast-text { overflow: hidden; text-overflow: ellipsis; }
+.toast-rise-enter-active, .toast-rise-leave-active { transition: opacity 220ms ease, transform 320ms var(--motion-easing); }
+.toast-rise-enter-from { opacity: 0; transform: translate(-50%, 22px); }
+.toast-rise-leave-to { opacity: 0; transform: translate(-50%, 10px); }
 </style>

@@ -6,6 +6,7 @@ const path = require('node:path')
 
 const imageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
 const documentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
+const availableAnimations = new Set(['kulian', 'daxiao', 'aixin'])
 
 // 创建资料库持久层，所有数据库读写仅在主进程执行
 function createLibrary(dbPath) {
@@ -91,6 +92,19 @@ function createLibrary(dbPath) {
   const readItemStmt = db.prepare('SELECT * FROM items WHERE id = ?')
   const deleteItemStmt = db.prepare('DELETE FROM items WHERE id = ?')
 
+  // 数据库写入统一使用事务包装，保证异常时始终回滚。
+  function runTransaction(action) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const result = action()
+      db.exec('COMMIT')
+      return result
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   // 读取资料库根目录与稳定标识
   function getConfig() {
     return {
@@ -106,7 +120,6 @@ function createLibrary(dbPath) {
 
   // 保存允许范围内的收起态动画偏好
   function setCollapsedAnimation(animation) {
-    const availableAnimations = new Set(['kulian', 'daxiao', 'aixin'])
     if (!availableAnimations.has(animation)) throw new Error('不支持的收起态动画')
     writeSettingStmt.run('shouqiDonghua', animation, Date.now())
     return animation
@@ -234,17 +247,16 @@ function createLibrary(dbPath) {
         byteSize: stat.size,
         createdAt: timestamp,
       }
-      db.exec('BEGIN IMMEDIATE')
       try {
-        if (existing) {
-          updateManagedItemStmt.run(item.type, item.title, item.sourcePath, item.relativePath, item.mimeType, item.byteSize, timestamp, item.id)
-        } else {
-          insertItemStmt.run(item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp)
-        }
-        db.exec('COMMIT')
+        runTransaction(() => {
+          if (existing) {
+            updateManagedItemStmt.run(item.type, item.title, item.sourcePath, item.relativePath, item.mimeType, item.byteSize, timestamp, item.id)
+          } else {
+            insertItemStmt.run(item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp)
+          }
+        })
         added.push(item)
       } catch (error) {
-        db.exec('ROLLBACK')
         await fsp.rm(copyResult.finalPath, { force: true })
         if (String(error.message).includes('UNIQUE')) duplicates.push(item.id)
         else throw error
@@ -280,13 +292,12 @@ function createLibrary(dbPath) {
         byteSize: null,
         createdAt: timestamp,
       }
-      db.exec('BEGIN IMMEDIATE')
       try {
-        insertItemStmt.run(item.id, item.type, item.storageMode, item.title, item.sourcePath, null, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp)
-        db.exec('COMMIT')
+        runTransaction(() => {
+          insertItemStmt.run(item.id, item.type, item.storageMode, item.title, item.sourcePath, null, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp)
+        })
         added.push(item)
       } catch (error) {
-        db.exec('ROLLBACK')
         if (String(error.message).includes('UNIQUE')) duplicates.push(item.id)
         else throw error
       }
@@ -322,14 +333,7 @@ function createLibrary(dbPath) {
     const item = readItemStmt.get(id)
     if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
     const localPath = getItemLocalPath(item)
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      deleteItemStmt.run(id)
-      db.exec('COMMIT')
-    } catch (error) {
-      db.exec('ROLLBACK')
-      throw error
-    }
+    runTransaction(() => deleteItemStmt.run(id))
     // 入库删除已成功，本地副本清理失败只静默忽略，不回滚已删除的记录
     if (localPath) {
       try { await fsp.rm(localPath, { force: true }) } catch {}
