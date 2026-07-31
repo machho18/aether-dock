@@ -102,6 +102,7 @@ const jsIds = [
   ['yulanShibai', 'previewFailed'],
   ['shifouYinruZhong', 'isImporting'],
   ['dangqianYemian', 'currentPage'],
+  ['shezhi', 'settings'],
   ['dangqianShouqiDonghua', 'currentCollapsedAnimation'],
   ['ziliaokuLunboIndex', 'libraryCarouselIndex'],
   ['ziliaokuShujiZhengzaituodong', 'shelfDragging'],
@@ -329,6 +330,21 @@ const exactAll = [...ipc, ...api, ...customProps] // 精确串，全文件
 const jsSorted = sortByLenDesc(jsIds)
 const cssSorted = sortByLenDesc(cssSegments)
 
+// 资料库文件沿用现有文件名，避免标识符替换误改 CommonJS 引用路径
+function restoreModulePaths(text) {
+  return text.replaceAll("require('./library.cjs')", "require('./ziliaoku.cjs')")
+}
+
+// 图标文件未参与重命名，避免路径段替换后出现不存在的资源
+function restoreAssetPaths(text) {
+  return text
+    .replaceAll('./assets/icons/settings-orbit.svg', './assets/icons/shezhi-orbit.svg')
+    .replaceAll('./assets/icons/document-folder.svg', './assets/icons/wenjian-folder.svg')
+    .replaceAll('./assets/icons/image-folder.svg', './assets/icons/tupian-folder.svg')
+    .replaceAll('./assets/icons/url-link.svg', './assets/icons/wangzhi-link.svg')
+    .replaceAll('./assets/icons/image.svg', './assets/icons/tupian.svg')
+}
+
 function applyScript(text) {
   // 先精确串（IPC/API/自定义属性不在此区出现，安全），再整标识符
   for (const [o, n] of exactAll) text = replaceWord(text, o, n)
@@ -357,11 +373,13 @@ function processAppVue(src) {
   for (const [o, n] of exactAll) s = replaceWord(s, o, n)
   for (const [o, n] of jsSorted) s = replaceWord(s, o, n)
   for (const [o, n] of (perFileBare['src/App.vue'] || [])) s = replaceWord(s, o, n)
-  // template: 自定义属性精确串 + CSS 段
+  // template: 同步脚本标识符后再替换 CSS 段，避免绑定仍指向旧变量
   let t = tpl
+  for (const [o, n] of exactAll) t = replaceWord(t, o, n)
+  for (const [o, n] of jsSorted) t = replaceWord(t, o, n)
   for (const [o, n] of customProps) t = t.split(o).join(n)
   for (const [o, n] of cssSorted) t = replaceSegment(t, o, n)
-  return head + s + mid + t + tail
+  return restoreAssetPaths(head + s + mid + t + tail)
 }
 
 const files = [
@@ -386,7 +404,7 @@ for (const rel of files) {
     for (const [o, n] of exactAll) s = replaceWord(s, o, n)
     for (const [o, n] of jsSorted) s = replaceWord(s, o, n)
     for (const [o, n] of (perFileBare[rel] || [])) s = replaceWord(s, o, n)
-    src = s
+    src = restoreModulePaths(s)
   }
   if (src !== before) {
     writeFileSync(fp, src)
