@@ -23,6 +23,8 @@ let lastCpuStat = null
 let library = null
 let yingyongSyncPromise = null
 const yingyongIconCache = new Map()
+const yingyongIconRenwuQueue = []
+let yingyongIconHuodongRenwu = 0
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
@@ -210,9 +212,34 @@ function panduanMaybeGenericIcon(nativeIcon, iconData) {
   return size.width <= 32 && size.height <= 32 && iconData.length <= 1000
 }
 
+// 图标读取可能触发原生接口或 PowerShell，固定并发数避免占满主进程资源。
+function xianxingZhixingYingyongIconRenwu(action) {
+  return new Promise((resolve, reject) => {
+    yingyongIconRenwuQueue.push({ action, resolve, reject })
+    zhixingNextYingyongIconRenwu()
+  })
+}
+
+function zhixingNextYingyongIconRenwu() {
+  while (yingyongIconHuodongRenwu < 2 && yingyongIconRenwuQueue.length) {
+    const task = yingyongIconRenwuQueue.shift()
+    yingyongIconHuodongRenwu += 1
+    Promise.resolve(task.action())
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        yingyongIconHuodongRenwu -= 1
+        zhixingNextYingyongIconRenwu()
+      })
+  }
+}
+
+function huoquYingyongIconCacheKey(item) {
+  return `${item.id}:${item.updatedAt}:${item.status}`
+}
+
 async function huoquApplicationIconData(item) {
   if (item.type !== 'application') return ''
-  const cacheKey = `${item.id}:${item.updatedAt}:${item.status}`
+  const cacheKey = huoquYingyongIconCacheKey(item)
   if (yingyongIconCache.has(cacheKey)) return yingyongIconCache.get(cacheKey)
 
   const iconSources = []
@@ -257,12 +284,22 @@ async function huoquYingyongIconMap(itemIds) {
   const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
     .filter((itemId) => typeof itemId === 'string')
     .slice(0, 12)
-  const iconEntries = await Promise.all(validIds.map(async (itemId) => {
+  const iconEntries = await Promise.all(validIds.map((itemId) => xianxingZhixingYingyongIconRenwu(async () => {
     const item = library.getItemDetail(itemId)
     if (item?.type !== 'application') return [itemId, '']
     return [itemId, await huoquApplicationIconData(item)]
-  }))
+  })))
   return Object.fromEntries(iconEntries)
+}
+
+// 同步后仅清理失效图标，未变更快捷方式继续复用既有内存缓存。
+function qingliYingyongIconCache(items) {
+  const validKeys = new Set(items
+    .filter((item) => item.type === 'application')
+    .map(huoquYingyongIconCacheKey))
+  for (const cacheKey of yingyongIconCache.keys()) {
+    if (!validKeys.has(cacheKey)) yingyongIconCache.delete(cacheKey)
+  }
 }
 
 // 创建应用主窗口
@@ -363,12 +400,13 @@ app.whenReady().then(() => {
           scannedScopes: saomiaoResult.scannedScopes,
           scannedAt: Date.now(),
         })
-        yingyongIconCache.clear()
+        const items = huoquLibraryItems()
+        qingliYingyongIconCache(items)
         return {
           chenggong: true,
           ...tongbuResult,
           scanned: saomiaoResult.shortcuts.length,
-          items: huoquLibraryItems(),
+          items,
         }
       })().finally(() => { yingyongSyncPromise = null })
     }

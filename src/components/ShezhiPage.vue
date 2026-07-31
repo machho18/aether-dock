@@ -181,7 +181,7 @@ onUnmounted(() => {
   transition: border-color 220ms ease, background 220ms ease, transform 220ms var(--motion-easing);
 }
 
-.animation-choice:hover { border-color: rgba(38, 38, 38, .22); background: rgba(255, 255, 255, .58); transform: translateY(-2px); }
+.animation-choice:not(.animation-choice--selected):hover { border-color: rgba(38, 38, 38, .22); background: rgba(255, 255, 255, .58); transform: translateY(-2px); }
 .animation-choice--selected { border-color: rgba(99, 254, 19, .5); background: linear-gradient(145deg, rgba(242, 255, 230, .9), rgba(216, 255, 181, .38)); box-shadow: inset 0 1px rgba(255, 255, 255, .8), 0 0 0 3px rgba(99, 254, 19, .08); }
 .animation-preview { display: block; width: 100%; height: 74px; pointer-events: none; }
 .animation-preview :deep(svg) { display: block; width: 100%; height: 100%; }

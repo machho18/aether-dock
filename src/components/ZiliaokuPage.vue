@@ -164,6 +164,7 @@ const props = defineProps({
   libraryConfig: { type: Object, default: () => ({ rootdir: '' }) },
   initialCategory: { type: String, default: 'document' },
   isYingyongSyncing: { type: Boolean, default: false },
+  isAnimationBusy: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['open-settings', 'select-category', 'open-item', 'locate-item', 'delete-item', 'sync-applications'])
@@ -173,6 +174,7 @@ const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
 const yulanFailedIds = reactive(new Set())
 const yingyongIconMap = shallowRef({})
+let yingyongIconRenwu = 0
 
 const fenleiList = [
   { id: 'document', name: '文档', caption: 'DOC · PDF · TXT', icon: folderIcon },
@@ -232,15 +234,32 @@ const carouselCards = computed(() => {
 
 watch(currentItems, () => { carouselIndex.value = 0 }, { flush: 'post' })
 
-// 应用图标按可见轮播窗口懒加载，单次请求数量受主进程限制。
-watch(carouselCards, async (cards) => {
+watch(() => props.initialCategory, (category) => {
+  if (fenleiList.some(({ id }) => id === category)) currentCategory.value = category
+})
+
+// 应用图标仅在空闲期读取，展开动画期间延后任务，避免影响关键动画帧。
+watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) => {
   if (currentCategory.value !== 'application') return
+  if (isAnimationBusy) return
   const missingIds = cards
     .map(({ item }) => item.id)
     .filter((itemId) => !(itemId in yingyongIconMap.value))
   if (!missingIds.length) return
-  const iconMap = await window.aetherDock?.getApplicationIcons(missingIds)
-  if (iconMap) yingyongIconMap.value = { ...yingyongIconMap.value, ...iconMap }
+
+  const renwuId = ++yingyongIconRenwu
+  const duquIcons = async () => {
+    if (renwuId !== yingyongIconRenwu || props.isAnimationBusy) return
+    const iconMap = await window.aetherDock?.getApplicationIcons(missingIds)
+    if (iconMap && renwuId === yingyongIconRenwu) {
+      yingyongIconMap.value = { ...yingyongIconMap.value, ...iconMap }
+    }
+  }
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(duquIcons, { timeout: 1000 })
+  } else {
+    window.setTimeout(duquIcons, 120)
+  }
 }, { immediate: true })
 
 function xuanzeCategory(categoryId) {
@@ -264,9 +283,28 @@ function houyiCard() {
   tiaozhuanCarousel(carouselIndex.value + 1)
 }
 
+let gunlunLeijiweiyi = 0
+let gunlunSuoding = false
+let gunlunZhenRenwu = 0
+
+// 合并高精度触控板的连续滚轮输入，一帧至多移动一次卡片。
 function chuliShelfWheel(event) {
-  if (event.deltaY > 0) houyiCard()
-  if (event.deltaY < 0) qianyiCard()
+  gunlunLeijiweiyi += event.deltaY
+  if (gunlunZhenRenwu) return
+  gunlunZhenRenwu = window.requestAnimationFrame(() => {
+    gunlunZhenRenwu = 0
+    if (gunlunSuoding) {
+      gunlunLeijiweiyi = 0
+      return
+    }
+    if (Math.abs(gunlunLeijiweiyi) < 36) return
+    const direction = Math.sign(gunlunLeijiweiyi)
+    gunlunLeijiweiyi = 0
+    gunlunSuoding = true
+    if (direction > 0) houyiCard()
+    else qianyiCard()
+    window.setTimeout(() => { gunlunSuoding = false }, 100)
+  })
 }
 
 function huoquCardStyle(offset) {

@@ -27,23 +27,29 @@
         <span>{{ isImporting ? '正在归档' : '拖放归档' }}</span>
       </div>
 
-      <Transition name="glass-switch" mode="out-in">
+      <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
+      <div
+        class="library-stage"
+        :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && currentPage === 'library' }"
+      >
         <ZiliaokuPage
-          v-if="isExpanded && !isDragging && currentPage === 'library'"
-          key="library"
           :items="libraryItems"
           :library-config="libraryConfig"
           :initial-category="currentZiliaokuCategory"
           :is-yingyong-syncing="isYingyongSyncing"
-          @open-settings="currentPage = 'settings'"
+          :is-animation-busy="isExpansionAnimating"
+          @open-settings="qiehuanSettings"
           @select-category="xuanzeZiliaokuCategory"
           @open-item="dakaiLibraryItem"
           @locate-item="dingweiLibraryItem"
           @delete-item="qingqiuDeleteItem"
           @sync-applications="tongbuDesktopApplications"
         />
+      </div>
+
+      <Transition name="glass-switch" mode="out-in">
         <ShezhiPage
-          v-else-if="isExpanded && !isDragging"
+          v-if="isExpanded && !isDragging && currentPage === 'settings'"
           key="settings"
           :animation-id="currentCollapsedAnimation"
           :rootdir="libraryConfig.rootdir"
@@ -88,7 +94,11 @@ const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
 const currentPage = shallowRef('library')
 const currentZiliaokuCategory = shallowRef('document')
+const isLibraryContentVisible = shallowRef(false)
+const isExpansionAnimating = shallowRef(false)
 let isPassthrough = true
+let libraryContentTimer = 0
+let expansionAnimationTimer = 0
 
 const {
   toastState,
@@ -135,8 +145,30 @@ function wanchengStartup() {
 
 function qiehuanIslandState(expanded) {
   if (isDragging.value || (!expanded && confirmState.value.visible)) return
+  window.clearTimeout(libraryContentTimer)
+  window.clearTimeout(expansionAnimationTimer)
   isExpanded.value = expanded
-  if (!expanded) currentPage.value = 'library'
+  if (!expanded) {
+    isLibraryContentVisible.value = false
+    isExpansionAnimating.value = false
+    currentPage.value = 'library'
+    return
+  }
+
+  isExpansionAnimating.value = true
+  // 外壳展开约六成后再显示内容，避免初始化与关键动画帧抢占主线程。
+  libraryContentTimer = window.setTimeout(() => {
+    if (isExpanded.value && currentPage.value === 'library') isLibraryContentVisible.value = true
+  }, 280)
+  expansionAnimationTimer = window.setTimeout(() => {
+    isExpansionAnimating.value = false
+  }, 460)
+}
+
+// 切换设置时隐藏资料库内容，但保留其组件状态供返回时复用。
+function qiehuanSettings() {
+  isLibraryContentVisible.value = false
+  currentPage.value = 'settings'
 }
 
 function chuliIslandEnter() {
@@ -282,6 +314,25 @@ function shezhiMousePassthrough(passthrough) {
   box-shadow: inset 0 1px rgba(255, 255, 255, .72), 0 12px 32px rgba(0, 0, 0, .18);
 }
 
+.library-stage {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(0, 8px, 0);
+  transition: opacity 180ms ease, transform 220ms var(--motion-easing), visibility 0s linear 220ms;
+}
+
+.library-stage--visible {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
+  transition-delay: 0s;
+}
+
 .inner-glow {
   position: absolute;
   z-index: 0;
@@ -363,4 +414,14 @@ function shezhiMousePassthrough(passthrough) {
 .glass-switch-leave-active { transition: opacity 150ms ease; }
 .glass-switch-enter-from,
 .glass-switch-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lingdongchuangkou,
+  .inner-glow,
+  .library-stage,
+  .glass-switch-enter-active,
+  .glass-switch-leave-active {
+    transition-duration: 80ms;
+  }
+}
 </style>
