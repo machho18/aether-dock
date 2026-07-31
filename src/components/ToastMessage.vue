@@ -27,10 +27,11 @@ defineProps({
   max-width: calc(100% - 36px);
   padding: 7px 16px;
   border-radius: 999px;
-  background: rgba(8, 12, 15, .86);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .42);
-  color: rgba(238, 246, 248, .92);
-  font: 500 12px "Microsoft YaHei UI", "Bahnschrift", sans-serif;
+  border: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(15, 17, 16, .9);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .08), 0 8px 22px rgba(15, 17, 16, .32);
+  color: var(--text-on-ink);
+  font: 500 13px var(--font-body);
   letter-spacing: .04em;
   pointer-events: none;
   white-space: nowrap;
@@ -38,9 +39,9 @@ defineProps({
 }
 
 .toast-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; }
-.toast--success .toast-dot { background: #7be9ac; }
-.toast--error .toast-dot { background: #ff8a8a; }
-.toast--info .toast-dot { background: #84ceff; }
+.toast--success .toast-dot { background: var(--success); box-shadow: 0 0 7px rgba(99, 254, 19, .42); }
+.toast--error .toast-dot { background: var(--danger); }
+.toast--info .toast-dot { background: var(--info); }
 .toast-text { overflow: hidden; text-overflow: ellipsis; }
 .toast-rise-enter-active, .toast-rise-leave-active { transition: opacity 220ms ease, transform 320ms var(--motion-easing); }
 .toast-rise-enter-from { opacity: 0; transform: translate(-50%, 22px); }

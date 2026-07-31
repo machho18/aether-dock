@@ -3,6 +3,37 @@
 /* 应用只保留跨组件的画布与动效变量，具体视觉由组件局部样式维护。 */
 :root {
   --motion-easing: cubic-bezier(.16, 1, .3, 1);
+  --paper: #fafafa;
+  --paper-soft: #f5f5f5;
+  --paper-deep: #f0f0f0;
+  --paper-white: #fff;
+  --ink: #262626;
+  --ink-soft: #434343;
+  --ink-muted: #595959;
+  --ink-faint: #8c8c8c;
+  --ink-deep: #0f1110;
+  --line: #d9d9d9;
+  --line-strong: #bfbfbf;
+  --accent: #63fe13;
+  --accent-soft: #83ff3b;
+  --accent-deep: #218c00;
+  --accent-tint: rgba(99, 254, 19, .1);
+  --danger: #e85d5d;
+  --danger-deep: #b63232;
+  --info: #5bbcff;
+  --success: #63fe13;
+  --surface-glass: rgba(255, 255, 255, .42);
+  --surface-glass-strong: rgba(255, 255, 255, .68);
+  --surface-ink: rgba(15, 17, 16, .9);
+  --text-on-ink: rgba(250, 250, 250, .96);
+  --text-on-ink-muted: rgba(217, 217, 217, .76);
+  --border-light: rgba(255, 255, 255, .2);
+  --border-ink: rgba(38, 38, 38, .14);
+  --shadow-ink: rgba(15, 17, 16, .24);
+  --font-display: "Bahnschrift", "Segoe UI Variable Display", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", "JetBrains Mono", monospace;
+  --font-body: "Microsoft YaHei UI", "Segoe UI Variable", "Bahnschrift", sans-serif;
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   background: transparent;
   color-scheme: dark;
   font-synthesis: none;
@@ -22,6 +53,9 @@ body,
   margin: 0;
   overflow: hidden;
   background: transparent !important;
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -31,7 +65,7 @@ input {
 
 button:focus-visible,
 input:focus-visible {
-  outline: 1px solid rgba(219, 246, 255, .8);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 

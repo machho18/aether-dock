@@ -248,9 +248,9 @@ function shezhiMousePassthrough(passthrough) {
   z-index: 5;
   inset: 0;
   border: 1px solid transparent;
-  border-bottom-color: rgba(255, 255, 255, .32);
+  border-bottom-color: rgba(255, 255, 255, .28);
   border-radius: inherit;
-  box-shadow: 0 1px 3px rgba(255, 255, 255, .16);
+  box-shadow: 0 1px 3px rgba(255, 255, 255, .12);
   content: "";
   pointer-events: none;
   transition: border-color 300ms ease, box-shadow 300ms ease;
@@ -264,10 +264,9 @@ function shezhiMousePassthrough(passthrough) {
 
 .lingdongchuangkou--expanded::after {
   display: block;
-  border: 1px solid rgba(255, 255, 255, .32);
-  border-color: rgba(220, 238, 244, .55);
+  border: 1px solid var(--border-ink);
   border-radius: 20px;
-  box-shadow: 0 0 5px rgba(255, 255, 255, .14);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .72), 0 12px 32px rgba(0, 0, 0, .18);
 }
 
 .inner-glow {
@@ -275,7 +274,7 @@ function shezhiMousePassthrough(passthrough) {
   z-index: 0;
   inset: 0 0 1px;
   border-radius: 0 0 29px 29px;
-  background: linear-gradient(180deg, rgba(13, 18, 21, .88), rgba(5, 8, 10, .9));
+  background: linear-gradient(180deg, rgba(24, 26, 25, .92), rgba(9, 11, 10, .94));
   transition: inset 380ms var(--motion-easing), border-radius 420ms var(--motion-easing);
 }
 
@@ -283,8 +282,10 @@ function shezhiMousePassthrough(passthrough) {
   display: block;
   inset: 1px;
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(13, 18, 21, .88), rgba(5, 8, 10, .9));
-  box-shadow: none;
+  background: linear-gradient(155deg, rgba(255, 255, 255, .96), rgba(245, 245, 245, .93) 52%, rgba(239, 239, 236, .95));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .86), inset 0 -1px rgba(38, 38, 38, .08);
+  backdrop-filter: blur(24px) saturate(92%);
+  -webkit-backdrop-filter: blur(24px) saturate(92%);
 }
 
 /* 拖放态保持重构前的宽幅投放尺寸与银白轮廓。 */
@@ -295,8 +296,8 @@ function shezhiMousePassthrough(passthrough) {
 }
 
 .lingdongchuangkou--drop::after {
-  border-color: rgba(236, 250, 255, .56);
-  box-shadow: 0 0 9px rgba(220, 247, 255, .2), inset 0 0 12px rgba(225, 247, 255, .06);
+  border-color: rgba(99, 254, 19, .72);
+  box-shadow: 0 0 12px rgba(99, 254, 19, .18), inset 0 0 14px rgba(99, 254, 19, .06);
 }
 
 .lingdongchuangkou--drop .inner-glow {
@@ -312,12 +313,12 @@ function shezhiMousePassthrough(passthrough) {
   display: grid;
   justify-items: center;
   gap: 1px;
-  color: rgba(247, 253, 255, .96);
-  font: 600 9px/1 "Bahnschrift SemiBold", "Segoe UI Variable Display", sans-serif;
+  color: var(--text-on-ink);
+  font: 600 11px/1 var(--font-display);
   letter-spacing: .14em;
   opacity: 0;
   pointer-events: none;
-  text-shadow: 0 0 10px rgba(224, 249, 255, .45);
+  text-shadow: 0 0 12px rgba(99, 254, 19, .26);
   transform: translate(-50%, -50%) scale(.72);
   transition: opacity 160ms ease, transform 260ms var(--motion-easing);
 }
@@ -327,14 +328,14 @@ function shezhiMousePassthrough(passthrough) {
   width: 24px;
   height: 24px;
   place-items: center;
-  border: 1px solid rgba(241, 252, 255, .62);
+  border: 1px solid rgba(99, 254, 19, .7);
   border-radius: 50%;
-  font: 300 23px/.8 "Cascadia Code", monospace;
+  font: 300 23px/.8 var(--font-mono);
 }
 
 .lingdongchuangkou--drop .drop-hint {
   gap: 14px;
-  font-size: 11px;
+  font-size: 13px;
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
 }
@@ -342,8 +343,8 @@ function shezhiMousePassthrough(passthrough) {
 .lingdongchuangkou--drop .drop-plus {
   width: 62px;
   height: 62px;
-  border-color: rgba(241, 252, 255, .72);
-  box-shadow: 0 0 18px rgba(224, 249, 255, .2), inset 0 0 14px rgba(230, 250, 255, .08);
+  border-color: var(--accent);
+  box-shadow: 0 0 20px rgba(99, 254, 19, .2), inset 0 0 14px rgba(99, 254, 19, .08);
   font-size: 52px;
 }
 

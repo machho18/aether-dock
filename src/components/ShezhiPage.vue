@@ -92,7 +92,8 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
   padding: 28px 34px 26px;
   overflow: hidden;
   border-radius: inherit;
-  color: rgba(239, 249, 251, .92);
+  color: var(--ink);
+  color-scheme: light;
   -webkit-app-region: no-drag;
 }
 
@@ -105,16 +106,15 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
 
 .settings-title small {
   display: block;
-  color: rgba(202, 225, 232, .78);
-  font: 9px "Cascadia Code", monospace;
+  color: var(--ink-faint);
+  font: 600 11px var(--font-mono);
   letter-spacing: .1em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .82);
 }
 
 .settings-title h2 {
   margin: 3px 0 0;
-  color: rgba(247, 252, 253, .96);
-  font: 500 20px "Noto Serif SC", "Microsoft YaHei UI", serif;
+  color: var(--ink);
+  font: 500 20px var(--font-serif);
   letter-spacing: .08em;
 }
 
@@ -123,16 +123,16 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid rgba(229, 246, 251, .14);
+  border: 1px solid var(--border-ink);
   border-radius: 50%;
-  background: rgba(226, 245, 250, .05);
-  color: rgba(231, 248, 252, .85);
+  background: rgba(255, 255, 255, .44);
+  color: var(--ink-soft);
   cursor: pointer;
   font-size: 18px;
   transition: background 180ms ease, border-color 180ms ease;
 }
 
-.settings-back:hover { border-color: rgba(239, 251, 255, .35); background: rgba(233, 248, 252, .1); }
+.settings-back:hover { border-color: rgba(99, 254, 19, .56); background: var(--accent-tint); }
 .settings-group { margin-top: 18px; }
 .settings-group--directory { margin-top: 24px; }
 
@@ -143,8 +143,8 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
   margin-bottom: 10px;
 }
 
-.settings-group-title > span { color: rgba(247, 252, 253, .96); font: 500 13px "Microsoft YaHei UI", sans-serif; letter-spacing: .06em; text-shadow: 0 1px 3px rgba(0, 0, 0, .88); }
-.settings-group-title small { display: block; color: rgba(202, 225, 232, .78); font: 9px "Cascadia Code", monospace; letter-spacing: .1em; text-shadow: 0 1px 2px rgba(0, 0, 0, .82); }
+.settings-group-title > span { color: var(--ink);   font: 500 14px var(--font-body); letter-spacing: .06em; }
+.settings-group-title small { display: block; color: var(--ink-faint); font: 600 11px var(--font-mono); letter-spacing: .1em; }
 
 .animation-choice-panel {
   display: grid;
@@ -159,22 +159,22 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
   grid-template-rows: 74px auto;
   padding: 7px 8px 10px;
   overflow: hidden;
-  border: 1px solid rgba(223, 244, 250, .09);
+  border: 1px solid rgba(38, 38, 38, .1);
   border-radius: 17px;
-  background: linear-gradient(145deg, rgba(216, 241, 247, .065), rgba(9, 17, 20, .26));
+  background: rgba(255, 255, 255, .38);
   color: inherit;
   cursor: pointer;
   text-align: left;
   transition: border-color 220ms ease, background 220ms ease, transform 220ms var(--motion-easing);
 }
 
-.animation-choice:hover { border-color: rgba(231, 249, 254, .22); transform: translateY(-2px); }
-.animation-choice--selected { border-color: rgba(235, 250, 255, .42); background: linear-gradient(145deg, rgba(217, 245, 251, .15), rgba(23, 61, 72, .18)); box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 0 18px rgba(129, 205, 227, .1); }
+.animation-choice:hover { border-color: rgba(38, 38, 38, .22); background: rgba(255, 255, 255, .58); transform: translateY(-2px); }
+.animation-choice--selected { border-color: rgba(99, 254, 19, .5); background: linear-gradient(145deg, rgba(242, 255, 230, .9), rgba(216, 255, 181, .38)); box-shadow: inset 0 1px rgba(255, 255, 255, .8), 0 0 0 3px rgba(99, 254, 19, .08); }
 .animation-preview { display: block; width: 100%; height: 74px; pointer-events: none; }
 .animation-preview :deep(svg) { display: block; width: 100%; height: 100%; }
 .animation-choice > span:last-child { display: grid; gap: 2px; padding-left: 3px; }
-.animation-choice strong { color: rgba(247, 252, 253, .96); font: 500 12px "Microsoft YaHei UI", sans-serif; text-shadow: 0 1px 3px rgba(0, 0, 0, .88); }
-.animation-choice small { color: rgba(202, 225, 232, .78); font: 9px "Microsoft YaHei UI", sans-serif; text-shadow: 0 1px 2px rgba(0, 0, 0, .82); }
+.animation-choice strong { color: var(--ink); font: 500 13px var(--font-body); }
+.animation-choice small { color: var(--ink-muted); font: 600 11px var(--font-body); }
 
 .library-directory-display {
   display: flex;
@@ -182,17 +182,16 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
   align-items: center;
   gap: 12px;
   padding: 8px 9px 8px 14px;
-  border: 1px solid rgba(224, 245, 249, .1);
+  border: 1px solid rgba(38, 38, 38, .12);
   border-radius: 14px;
-  background: rgba(7, 14, 17, .25);
+  background: rgba(255, 255, 255, .42);
 }
 
 .library-directory-display span {
   overflow: hidden;
   flex: 1;
-  color: rgba(222, 242, 247, .88);
-  font: 10px "Cascadia Code", monospace;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
+  color: var(--ink-muted);
+  font: 600 11px var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -200,15 +199,15 @@ onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
 .library-directory-display button {
   flex: 0 0 auto;
   padding: 7px 10px;
-  border: 1px solid rgba(233, 249, 253, .2);
+  border: 1px solid var(--ink);
   border-radius: 9px;
-  background: rgba(230, 248, 252, .07);
-  color: rgba(239, 251, 254, .92);
+  background: var(--ink);
+  color: var(--paper);
   cursor: pointer;
-  font: 10px "Microsoft YaHei UI", sans-serif;
+  font: 600 11px var(--font-body);
 }
 
-.library-directory-display button:hover { border-color: rgba(242, 252, 255, .42); background: rgba(231, 248, 252, .13); }
+.library-directory-display button:hover { border-color: var(--accent-deep); background: var(--accent); color: var(--ink-deep); }
 
 .glass-switch-enter-active .settings-title,
 .glass-switch-enter-active .settings-group {

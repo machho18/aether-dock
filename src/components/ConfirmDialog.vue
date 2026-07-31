@@ -61,33 +61,33 @@ useEventListener(window, 'keydown', (event) => {
   place-items: center;
   overflow: hidden;
   border-radius: inherit;
-  background: radial-gradient(ellipse at 50% 38%, rgba(4, 12, 16, .58), rgba(0, 0, 0, .82));
-  backdrop-filter: blur(8px) saturate(.7);
-  -webkit-backdrop-filter: blur(8px) saturate(.7);
+  background: radial-gradient(ellipse at 50% 38%, rgba(38, 38, 38, .38), rgba(15, 17, 16, .72));
+  backdrop-filter: blur(10px) saturate(.8);
+  -webkit-backdrop-filter: blur(10px) saturate(.8);
 }
 
 .confirm-card {
   width: min(360px, calc(100% - 48px));
   padding: 22px 24px 20px;
-  border: 1px solid rgba(221, 244, 255, .42);
+  border: 1px solid rgba(99, 254, 19, .42);
   border-radius: 22px;
-  background: radial-gradient(ellipse at 50% 0%, rgba(112, 176, 199, .16), transparent 55%), linear-gradient(155deg, rgba(19, 31, 38, .97), rgba(3, 9, 13, .985) 60%, rgba(10, 22, 28, .97));
-  box-shadow: 0 0 0 1px rgba(6, 16, 20, .9), 0 0 0 4px rgba(101, 169, 191, .12), inset 0 1px rgba(244, 254, 255, .26), inset 0 -16px 26px rgba(0, 0, 0, .42), 0 24px 60px rgba(0, 0, 0, .6);
+  background: radial-gradient(ellipse at 50% 0%, rgba(99, 254, 19, .12), transparent 55%), linear-gradient(155deg, rgba(38, 40, 39, .98), rgba(15, 17, 16, .99) 62%, rgba(27, 30, 28, .98));
+  box-shadow: 0 0 0 1px rgba(15, 17, 16, .9), 0 0 0 4px rgba(99, 254, 19, .08), inset 0 1px rgba(255, 255, 255, .18), inset 0 -16px 26px rgba(0, 0, 0, .36), 0 24px 60px rgba(0, 0, 0, .48);
 }
 
 .confirm-card--danger {
-  border-color: rgba(255, 142, 142, .52);
-  background: radial-gradient(ellipse at 50% 0%, rgba(214, 78, 78, .22), transparent 55%), linear-gradient(155deg, rgba(34, 22, 24, .97), rgba(10, 6, 7, .985) 60%, rgba(26, 14, 16, .97));
-  box-shadow: 0 0 0 1px rgba(18, 8, 9, .9), 0 0 0 4px rgba(214, 78, 78, .14), inset 0 1px rgba(255, 220, 220, .22), inset 0 -16px 26px rgba(0, 0, 0, .42), 0 24px 60px rgba(0, 0, 0, .6);
+  border-color: rgba(232, 93, 93, .62);
+  background: radial-gradient(ellipse at 50% 0%, rgba(232, 93, 93, .2), transparent 55%), linear-gradient(155deg, rgba(42, 29, 30, .98), rgba(18, 13, 13, .99) 62%, rgba(34, 20, 21, .98));
+  box-shadow: 0 0 0 1px rgba(24, 12, 13, .9), 0 0 0 4px rgba(232, 93, 93, .12), inset 0 1px rgba(255, 220, 220, .18), inset 0 -16px 26px rgba(0, 0, 0, .38), 0 24px 60px rgba(0, 0, 0, .5);
 }
 
 .confirm-head { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
-.confirm-icon { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid rgba(221, 244, 255, .28); border-radius: 9px; color: rgba(186, 226, 236, .86); }
-.confirm-card--danger .confirm-icon { border-color: rgba(255, 168, 168, .42); color: rgba(255, 124, 124, .96); }
+.confirm-icon { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid rgba(99, 254, 19, .34); border-radius: 9px; color: var(--accent); }
+.confirm-card--danger .confirm-icon { border-color: rgba(232, 93, 93, .48); color: var(--danger); }
 .confirm-icon svg { width: 17px; height: 17px; }
-.confirm-title { margin: 0; color: rgba(244, 251, 253, .96); font: 600 16px "Bahnschrift", "Microsoft YaHei UI", sans-serif; letter-spacing: .04em; }
-.confirm-message { margin: 0 0 6px; color: rgba(228, 240, 244, .9); font: 500 13px/1.55 "Microsoft YaHei UI", sans-serif; }
-.confirm-detail { margin: 0 0 18px; color: rgba(176, 202, 210, .6); font: 11px/1.55 "Cascadia Code", "Microsoft YaHei UI", monospace; white-space: pre-wrap; }
+.confirm-title { margin: 0; color: var(--text-on-ink); font: 600 17px var(--font-display); letter-spacing: .04em; }
+.confirm-message { margin: 0 0 6px; color: rgba(245, 245, 245, .9); font: 500 14px/1.55 var(--font-body); }
+.confirm-detail { margin: 0 0 18px; color: var(--text-on-ink-muted); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 .confirm-btn {
@@ -96,18 +96,18 @@ useEventListener(window, 'keydown', (event) => {
   border: 1px solid transparent;
   border-radius: 12px;
   cursor: pointer;
-  color: rgba(245, 252, 255, .98);
-  font: 600 13px "Bahnschrift", "Microsoft YaHei UI", sans-serif;
+  color: var(--text-on-ink);
+  font: 600 14px var(--font-display);
   letter-spacing: .06em;
   transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 160ms var(--motion-easing);
 }
 
-.confirm-btn--ghost { border-color: rgba(221, 244, 255, .22); background: rgba(221, 244, 255, .04); color: rgba(214, 236, 242, .82); }
-.confirm-btn--ghost:hover { border-color: rgba(221, 244, 255, .42); background: rgba(221, 244, 255, .08); }
-.confirm-btn--solid { border-color: rgba(101, 169, 191, .5); background: linear-gradient(145deg, rgba(96, 175, 202, .82), rgba(54, 120, 144, .9)); color: rgba(245, 252, 255, .98); box-shadow: inset 0 1px rgba(255, 255, 255, .28), 0 6px 16px rgba(45, 110, 132, .36); }
-.confirm-btn--default:hover { transform: translateY(-1px); box-shadow: inset 0 1px rgba(255, 255, 255, .34), 0 8px 20px rgba(45, 110, 132, .46); }
-.confirm-btn--danger { border-color: rgba(214, 78, 78, .62); background: linear-gradient(145deg, rgba(224, 92, 92, .9), rgba(176, 44, 44, .94)); color: rgba(255, 245, 245, .98); box-shadow: inset 0 1px rgba(255, 200, 200, .3), 0 6px 16px rgba(176, 40, 40, .4); }
-.confirm-btn--danger:hover { transform: translateY(-1px); box-shadow: inset 0 1px rgba(255, 200, 200, .36), 0 8px 20px rgba(176, 40, 40, .5); }
+.confirm-btn--ghost { border-color: rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .04); color: var(--text-on-ink-muted); }
+.confirm-btn--ghost:hover { border-color: rgba(255, 255, 255, .34); background: rgba(255, 255, 255, .08); }
+.confirm-btn--solid { border-color: rgba(99, 254, 19, .72); background: linear-gradient(145deg, var(--accent-soft), var(--accent)); color: var(--ink-deep); box-shadow: inset 0 1px rgba(255, 255, 255, .38), 0 6px 16px rgba(33, 140, 0, .28); }
+.confirm-btn--default:hover { transform: translateY(-1px); box-shadow: inset 0 1px rgba(255, 255, 255, .48), 0 8px 20px rgba(33, 140, 0, .38); }
+.confirm-btn--danger { border-color: rgba(232, 93, 93, .7); background: linear-gradient(145deg, var(--danger), var(--danger-deep)); color: rgba(255, 245, 245, .98); box-shadow: inset 0 1px rgba(255, 200, 200, .3), 0 6px 16px rgba(182, 50, 50, .34); }
+.confirm-btn--danger:hover { transform: translateY(-1px); box-shadow: inset 0 1px rgba(255, 200, 200, .36), 0 8px 20px rgba(182, 50, 50, .44); }
 .confirm-fade-enter-active, .confirm-fade-leave-active { transition: opacity 220ms ease; }
 .confirm-fade-enter-from, .confirm-fade-leave-to { opacity: 0; }
 .confirm-pop-enter-active, .confirm-pop-leave-active { transition: opacity 240ms ease, transform 320ms var(--motion-easing); }

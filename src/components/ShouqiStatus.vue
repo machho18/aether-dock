@@ -90,8 +90,8 @@ onUnmounted(() => lottiePlayer?.destroy())
 .shouqi-xinxi {
   position: absolute;
   inset: 0;
-  color: rgba(238, 245, 247, .92);
-  font-family: "Bahnschrift SemiBold", "Cascadia Code", "Microsoft YaHei UI", sans-serif;
+  color: var(--text-on-ink);
+  font-family: var(--font-display);
   pointer-events: none;
   transition: opacity 180ms ease, transform 260ms var(--motion-easing);
 }
@@ -100,12 +100,12 @@ onUnmounted(() => lottiePlayer?.destroy())
   position: absolute;
   top: 50%;
   left: 50%;
-  color: rgba(255, 255, 255, .98);
+  color: var(--paper-white);
   font-size: 22px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: .06em;
-  text-shadow: 0 0 12px rgba(231, 249, 255, .3), 0 0 2px rgba(255, 255, 255, .45);
+  text-shadow: 0 0 12px rgba(99, 254, 19, .12), 0 0 2px rgba(255, 255, 255, .36);
   transform: translate(-50%, -50%);
 }
 
@@ -117,7 +117,7 @@ onUnmounted(() => lottiePlayer?.destroy())
   min-width: 66px;
   gap: 3px;
   padding-left: 9px;
-  font: 9px/1.1 "Cascadia Code", monospace;
+  font: 11px/1.1 var(--font-mono);
   font-variant-numeric: tabular-nums;
   transform: translateY(-50%);
 }
@@ -128,7 +128,7 @@ onUnmounted(() => lottiePlayer?.destroy())
   bottom: 1px;
   left: 0;
   width: 1px;
-  background: linear-gradient(transparent, rgba(218, 239, 244, .38), transparent);
+  background: linear-gradient(transparent, rgba(99, 254, 19, .42), transparent);
   content: "";
 }
 
@@ -139,14 +139,14 @@ onUnmounted(() => lottiePlayer?.destroy())
 }
 
 .xitong-status b {
-  color: rgba(177, 207, 214, .58);
+  color: var(--text-on-ink-muted);
   font-weight: 600;
   letter-spacing: .1em;
 }
 
 .xitong-status em {
-  color: rgba(244, 252, 255, .92);
-  font-size: 10px;
+  color: var(--text-on-ink);
+  font-size: 12px;
   font-style: normal;
   font-weight: 650;
   text-align: right;

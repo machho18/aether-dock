@@ -40,6 +40,8 @@
       :style="{ '--switch-direction': switchDirection }"
       @wheel.prevent="chuliShelfWheel"
     >
+      <div class="library-shelf-aura" aria-hidden="true"></div>
+      <div class="library-shelf-backdrop" aria-hidden="true"></div>
       <Transition name="data-switch" mode="out-in">
         <div
           v-if="currentItems.length"
@@ -107,6 +109,7 @@ import settingsIcon from '@/assets/icons/shezhi-orbit.svg'
 import folderIcon from '@/assets/icons/wenjian-folder.svg'
 import imageFolderIcon from '@/assets/icons/tupian-folder.svg'
 import urlIcon from '@/assets/icons/wangzhi-link.svg'
+import yingyongIcon from '@/assets/icons/yingyongchengxu.svg'
 import enterIcon from '@/assets/icons/enter.svg'
 import deleteIcon from '@/assets/icons/delete.svg'
 import { geshiCardTime, huoquCardInfo, huoquCardName } from '@/utils/ziliaokuItem'
@@ -128,6 +131,7 @@ const fenleiList = [
   { id: 'document', name: '文档', caption: 'DOC · PDF · TXT', icon: folderIcon },
   { id: 'image', name: '图片', caption: 'JPG · PNG · RAW', icon: imageFolderIcon },
   { id: 'url', name: '网址', caption: 'WEB · URL', icon: urlIcon },
+  { id: 'application', name: '应用程序', caption: 'APP · EXE', icon: yingyongIcon },
 ]
 
 const fenleiCounts = computed(() => Object.fromEntries(
@@ -204,6 +208,7 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   inset: 0;
   overflow: hidden;
   border-radius: inherit;
+  color-scheme: light;
 }
 
 .library-status {
@@ -215,10 +220,10 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   min-height: 20px;
   align-items: center;
   gap: 10px;
-  color: rgba(202, 225, 232, .78);
-  font: 10px "Microsoft YaHei UI", sans-serif;
+  color: var(--ink-muted);
+  font: 11px var(--font-body);
   letter-spacing: .08em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .82);
+  text-shadow: 0 1px rgba(255, 255, 255, .7);
 }
 
 .library-connection {
@@ -235,10 +240,10 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   content: "";
 }
 
-.library-connection--normal { color: rgba(132, 238, 184, .95); }
-.library-connection--normal::before { background: #7be9ac; box-shadow: 0 0 7px rgba(106, 235, 167, .82); }
-.library-connection--abnormal { color: rgba(255, 143, 143, .95); }
-.library-connection--abnormal::before { background: #ff7777; box-shadow: 0 0 7px rgba(255, 109, 109, .76); }
+.library-connection--normal { color: var(--accent-deep); }
+.library-connection--normal::before { background: var(--success); box-shadow: 0 0 7px rgba(99, 254, 19, .42); }
+.library-connection--abnormal { color: var(--danger-deep); }
+.library-connection--abnormal::before { background: var(--danger); box-shadow: 0 0 7px rgba(232, 93, 93, .34); }
 
 .expanded-top {
   position: absolute;
@@ -261,19 +266,19 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   align-items: center;
   gap: 10px;
   padding: 0 15px 0 11px;
-  border: 1px solid rgba(232, 240, 241, .3);
+  border: 1px solid var(--border-ink);
   border-radius: 22px;
-  background: linear-gradient(145deg, rgba(63, 74, 78, .62), rgba(17, 23, 26, .78));
-  box-shadow: inset 0 1px rgba(250, 254, 254, .16), 0 7px 18px rgba(0, 0, 0, .16);
+  background: rgba(255, 255, 255, .48);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .76), 0 7px 18px rgba(38, 38, 38, .08);
   pointer-events: auto;
   transform: translateX(-50%);
   -webkit-app-region: no-drag;
 }
 
-.expanded-search:focus-within { border-color: rgba(244, 250, 250, .68); box-shadow: inset 0 1px rgba(255, 255, 255, .25), 0 7px 18px rgba(0, 0, 0, .2); }
-.expanded-search img { width: 28px; height: 28px; flex: 0 0 auto; filter: brightness(0) invert(1); -webkit-user-drag: none; user-select: none; }
-.expanded-search input { width: 100%; border: 0; outline: 0; background: transparent; color: rgba(240, 251, 254, .95); font: 500 15px "Bahnschrift", "Segoe UI Variable Display", sans-serif; letter-spacing: .04em; }
-.expanded-search input::placeholder { color: rgba(191, 218, 225, .58); }
+.expanded-search:focus-within { border-color: rgba(99, 254, 19, .72); box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 0 0 3px rgba(99, 254, 19, .1), 0 7px 18px rgba(38, 38, 38, .1); }
+.expanded-search img { width: 28px; height: 28px; flex: 0 0 auto; filter: brightness(0); opacity: .72; -webkit-user-drag: none; user-select: none; }
+.expanded-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font: 500 16px var(--font-display); letter-spacing: .04em; }
+.expanded-search input::placeholder { color: var(--ink-faint); }
 
 .expanded-settings {
   position: absolute;
@@ -291,8 +296,8 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   -webkit-app-region: no-drag;
 }
 
-.expanded-settings img { width: 30px; height: 30px; filter: brightness(0) invert(1); -webkit-user-drag: none; user-select: none; }
-.expanded-settings:hover img { filter: brightness(0) invert(1); }
+.expanded-settings img { width: 30px; height: 30px; filter: brightness(0); opacity: .72; transition: opacity 180ms ease, transform 220ms var(--motion-easing); -webkit-user-drag: none; user-select: none; }
+.expanded-settings:hover img { opacity: 1; transform: rotate(18deg); }
 
 .folder-panel {
   position: absolute;
@@ -304,10 +309,10 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   width: max-content;
   gap: 3px;
   padding: 4px;
-  border: 1px solid rgba(229, 244, 249, .08);
+  border: 1px solid rgba(38, 38, 38, .1);
   border-radius: 18px;
-  background: rgba(3, 8, 10, .2);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .04);
+  background: rgba(255, 255, 255, .34);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .68);
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
@@ -323,21 +328,24 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   border: 1px solid transparent;
   border-radius: 13px;
   background: transparent;
-  color: rgba(240, 250, 251, .94);
+  color: var(--ink);
   cursor: pointer;
   text-align: left;
   transition: background 220ms ease, border-color 220ms ease, box-shadow 220ms ease, transform 220ms var(--motion-easing);
   -webkit-app-region: no-drag;
 }
 
-.folder-card:hover { border-color: transparent; background: rgba(239, 251, 255, .05); transform: none; }
-.folder-card--selected { border-color: rgba(238, 250, 255, .17); background: linear-gradient(145deg, rgba(236, 250, 255, .14), rgba(128, 174, 188, .06)); box-shadow: inset 0 1px rgba(255, 255, 255, .14), 0 3px 10px rgba(0, 0, 0, .18); transform: none; }
-.folder-card--selected::after { position: absolute; bottom: 4px; left: 50%; width: 17px; height: 1px; background: rgba(237, 250, 255, .96); box-shadow: 0 0 6px rgba(231, 249, 255, .95); content: ""; transform: translateX(-50%); }
-.folder-card img { width: 30px; height: 30px; margin: 0; filter: brightness(0) invert(1); opacity: .52; transform: scale(.94); transition: filter 220ms ease, opacity 220ms ease, transform 220ms var(--motion-easing); -webkit-user-drag: none; user-select: none; }
-.folder-card--selected img { filter: brightness(0) invert(1) drop-shadow(0 0 5px rgba(239, 250, 255, .62)); opacity: 1; transform: scale(1); }
+.folder-card:hover { border-color: transparent; background: rgba(255, 255, 255, .54); transform: none; }
+.folder-card--selected { border-color: rgba(99, 254, 19, .34); background: linear-gradient(145deg, rgba(242, 255, 230, .9), rgba(216, 255, 181, .42)); box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 3px 10px rgba(38, 38, 38, .08); transform: none; }
+.folder-card--selected::after { position: absolute; right: 0; bottom: 3px; left: 0; width: 17px; height: 2px; margin-inline: auto; border-radius: 999px; background: var(--accent); box-shadow: 0 0 7px rgba(99, 254, 19, .48); content: ""; }
+.folder-card img { width: 30px; height: 30px; margin: 0; filter: brightness(0); opacity: .48; transform: scale(.94); transition: filter 220ms ease, opacity 220ms ease, transform 220ms var(--motion-easing); -webkit-user-drag: none; user-select: none; }
+.folder-card--selected img { filter: brightness(0); opacity: .88; transform: translateY(-3px) scale(1); }
+/* 程序图标保留 SVG 内定义的灰色背景与白色几何前景。 */
+.folder-card--application img { filter: none; opacity: .72; }
+.folder-card--application.folder-card--selected img { filter: grayscale(1) contrast(100); opacity: 1; }
 .folder-card span { display: none; }
-.folder-card strong { font: 600 13px "Microsoft YaHei UI", sans-serif; }
-.folder-card small { color: rgba(184, 207, 213, .55); font: 9px "Cascadia Code", monospace; }
+.folder-card strong { font: 600 14px var(--font-body); }
+.folder-card small { color: var(--ink-faint); font: 11px var(--font-mono); }
 .folder-card i { display: none; }
 
 .library-list {
@@ -347,13 +355,40 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   right: 30px;
   bottom: 28px;
   left: 30px;
-  overflow: hidden auto;
-  border-top: 1px solid rgba(229, 244, 249, .1);
+  overflow: hidden;
+  border-top: 1px solid rgba(38, 38, 38, .12);
   padding-top: 12px;
   -webkit-app-region: no-drag;
 }
 
-.library-shelf { position: relative; width: 100%; height: 100%; overflow: hidden; perspective: 820px; perspective-origin: 50% 58%; transform-style: preserve-3d; -webkit-app-region: no-drag; mask: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%); }
+.library-shelf-aura {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: radial-gradient(ellipse at 29% 48%, rgba(190, 255, 140, .22), rgba(190, 255, 140, 0) 38%), radial-gradient(ellipse at 62% 50%, rgba(140, 140, 140, .16), rgba(140, 140, 140, 0) 44%), linear-gradient(180deg, rgba(255, 255, 255, .3), rgba(217, 217, 217, .22));
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%), linear-gradient(180deg, transparent 0, #000 11%, #000 89%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%), linear-gradient(180deg, transparent 0, #000 11%, #000 89%, transparent 100%);
+  mask-composite: intersect;
+}
+
+.library-shelf-backdrop {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .5), rgba(240, 240, 240, .36));
+  backdrop-filter: blur(22px) saturate(96%);
+  -webkit-backdrop-filter: blur(22px) saturate(96%);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .58), inset 0 -1px rgba(38, 38, 38, .06);
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%), linear-gradient(180deg, transparent 0, #000 11%, #000 89%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%), linear-gradient(180deg, transparent 0, #000 11%, #000 89%, transparent 100%);
+  mask-composite: intersect;
+}
+
+.library-shelf { position: relative; z-index: 2; width: 100%; height: 100%; overflow: hidden; perspective: 820px; perspective-origin: 50% 58%; transform-style: preserve-3d; -webkit-app-region: no-drag; mask: linear-gradient(90deg, transparent 0, #000 4%, #000 96%, transparent 100%); }
 
 .library-shelf-card {
   position: absolute;
@@ -365,10 +400,10 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   height: 150px;
   margin-left: 0;
   overflow: visible;
-  border: 1px solid rgba(144, 164, 178, .28);
+  border: 1px solid rgba(191, 191, 191, .42);
   border-radius: 14px;
-  background: linear-gradient(165deg, rgba(36, 46, 55, .95), rgba(15, 21, 27, .97) 58%, rgba(24, 32, 39, .94));
-  box-shadow: inset 0 1px rgba(255, 255, 255, .06), 0 0 20px rgba(255, 255, 255, .24), 0 16px 26px rgba(0, 0, 0, .5);
+  background: linear-gradient(165deg, rgba(48, 50, 49, .97), rgba(15, 17, 16, .98) 58%, rgba(30, 33, 31, .96));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .08), 0 16px 28px rgba(15, 17, 16, .32);
   transform-style: preserve-3d;
   transform-origin: 50% 100%;
   -webkit-font-smoothing: antialiased;
@@ -377,15 +412,15 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   transition: transform 420ms var(--motion-easing), opacity 360ms ease, box-shadow 260ms ease, border-color 260ms ease;
 }
 
-.library-shelf-card--center { border-color: rgba(182, 202, 216, .56); box-shadow: inset 0 1px rgba(255, 255, 255, .08), inset 0 0 0 1px rgba(180, 202, 216, .08), 0 0 26px rgba(255, 255, 255, .34), 0 22px 38px rgba(0, 0, 0, .6); }
+.library-shelf-card--center { border-color: rgba(99, 254, 19, .62); box-shadow: inset 0 1px rgba(255, 255, 255, .1), inset 0 0 0 1px rgba(99, 254, 19, .08), 0 0 22px rgba(99, 254, 19, .14), 0 22px 38px rgba(15, 17, 16, .42); }
 .library-shelf-card--missing { filter: grayscale(.8); }
 .library-shelf-main { position: relative; z-index: 1; display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; padding: 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
 .library-shelf-view { position: relative; display: flex; width: 100%; height: auto; min-height: auto; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
 .library-shelf-icon { position: relative; z-index: 2; width: 56px; height: 56px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
 .library-shelf-preview { position: relative; z-index: 2; width: 118px; height: 96px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
 .library-shelf-cover { display: flex; width: 100%; flex: none; flex-direction: column; align-items: center; justify-content: flex-start; gap: 7px; margin: 0; padding: 14px 12px 0; border: 0; background: transparent; text-align: center; }
-.library-shelf-cover strong { overflow: hidden; width: 100%; color: rgba(250, 254, 255, 1); font: 600 12px/1.35 "Microsoft YaHei UI", sans-serif; letter-spacing: .02em; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); white-space: nowrap; }
-.library-shelf-cover small { overflow: hidden; width: 100%; color: rgba(176, 198, 210, .72); font: 9px/1.3 "Cascadia Code", monospace; letter-spacing: .04em; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); white-space: nowrap; }
+.library-shelf-cover strong { overflow: hidden; width: 100%; color: var(--text-on-ink); font: 600 13px/1.35 var(--font-body); letter-spacing: .02em; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); white-space: nowrap; }
+.library-shelf-cover small { overflow: hidden; width: 100%; color: var(--text-on-ink-muted); font: 11px/1.3 var(--font-mono); letter-spacing: .04em; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); white-space: nowrap; }
 
 .library-shelf-action {
   position: absolute;
@@ -406,15 +441,15 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 .library-shelf-enter { right: 10px; }
 .library-shelf-delete { left: 10px; }
 .library-shelf-action img { width: 17px; height: 17px; pointer-events: none; }
-.library-shelf-enter img { filter: invert(92%) sepia(13%) saturate(632%) hue-rotate(146deg) brightness(102%) contrast(95%); }
+.library-shelf-enter img { filter: brightness(0) saturate(100%) invert(87%) sepia(100%) saturate(2148%) hue-rotate(40deg) brightness(104%) contrast(104%); }
 .library-shelf-card--center:hover .library-shelf-action { opacity: 1; }
 .library-shelf-action:hover { transform: scale(1.08); }
-.library-shelf-delete:hover { color: rgba(248, 113, 113, 1); }
+.library-shelf-delete:hover { color: var(--danger); }
 
-.library-shelf-card:hover { border-color: rgba(162, 182, 196, .42); box-shadow: inset 0 1px rgba(255, 255, 255, .07), 0 0 22px rgba(255, 255, 255, .28), 0 19px 32px rgba(0, 0, 0, .54); }
-.library-shelf-card--center:hover { border-color: rgba(196, 214, 226, .62); box-shadow: inset 0 1px rgba(255, 255, 255, .09), inset 0 0 0 1px rgba(190, 212, 224, .1), 0 0 28px rgba(255, 255, 255, .4), 0 22px 38px rgba(0, 0, 0, .62); }
+.library-shelf-card:hover { border-color: rgba(99, 254, 19, .34); box-shadow: inset 0 1px rgba(255, 255, 255, .09), 0 19px 32px rgba(15, 17, 16, .38); }
+.library-shelf-card--center:hover { border-color: rgba(99, 254, 19, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .11), inset 0 0 0 1px rgba(99, 254, 19, .12), 0 0 28px rgba(99, 254, 19, .18), 0 22px 38px rgba(15, 17, 16, .46); }
 
-.library-empty { margin: 24px 0; color: rgba(247, 252, 253, .96); font: 12px "Microsoft YaHei UI", sans-serif; text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, .88); }
+.library-empty { position: relative; z-index: 2; margin: 24px 0; color: var(--ink-muted); font: 13px var(--font-body); text-align: center; }
 .data-switch-enter-active,
 .data-switch-leave-active {
   will-change: opacity, transform;
