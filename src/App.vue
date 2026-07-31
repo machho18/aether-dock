@@ -3,7 +3,7 @@
     <QidongOverlay v-if="isStartupWindow && isStartingUp" @complete="wanchengStartup" />
 
     <section
-      v-show="!isStartupWindow"
+      v-if="!isStartupWindow"
       ref="islandHolder"
       class="lingdongchuangkou"
       :class="{ 'lingdongchuangkou--expanded': isExpanded, 'lingdongchuangkou--drop': isDragging }"
@@ -33,11 +33,14 @@
           key="library"
           :items="libraryItems"
           :library-config="libraryConfig"
-          :initial-category="importedCategory"
+          :initial-category="currentZiliaokuCategory"
+          :is-yingyong-syncing="isYingyongSyncing"
           @open-settings="currentPage = 'settings'"
+          @select-category="xuanzeZiliaokuCategory"
           @open-item="dakaiLibraryItem"
           @locate-item="dingweiLibraryItem"
           @delete-item="qingqiuDeleteItem"
+          @sync-applications="tongbuDesktopApplications"
         />
         <ShezhiPage
           v-else-if="isExpanded && !isDragging"
@@ -84,7 +87,7 @@ const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
 const currentPage = shallowRef('library')
-const importedCategory = shallowRef('document')
+const currentZiliaokuCategory = shallowRef('document')
 let isPassthrough = true
 
 const {
@@ -101,12 +104,14 @@ const {
   libraryConfig,
   currentCollapsedAnimation,
   isImporting,
+  isYingyongSyncing,
   jiazaiLibrary,
   xuanzeLibraryRootdir,
   daoruDragContent,
   dakaiLibraryItem,
   dingweiLibraryItem,
   shanchuLibraryItem,
+  tongbuDesktopApplications,
   shezhiCollapsedAnimation,
 } = useZiliaokuLibrary(xianshiToast)
 
@@ -179,9 +184,14 @@ async function chuliDrop(event) {
   const addedItems = await daoruDragContent(event.dataTransfer)
   if (!addedItems.length) return
 
-  importedCategory.value = addedItems[0].type ?? 'document'
+  currentZiliaokuCategory.value = addedItems[0].type ?? 'document'
   currentPage.value = 'library'
-  isExpanded.value = true
+  isExpanded.value = false
+}
+
+// 记录用户选择的资料库 Tab，供下次展开时恢复。
+function xuanzeZiliaokuCategory(category) {
+  currentZiliaokuCategory.value = category
 }
 
 function qingliDragState() {
@@ -189,12 +199,15 @@ function qingliDragState() {
 }
 
 function qingqiuDeleteItem(item) {
+  const isKuaijieShortcut = item.storageMode === 'shortcut'
   qingqiuConfirm({
-    title: '删除资料',
-    message: '确定删除该资料？',
-    detail: `将同时删除本地文件与资料库记录，此操作不可撤销。\n${item.title || ''}`.trim(),
-    confirmText: '删除',
-    tone: 'danger',
+    title: isKuaijieShortcut ? '移除程序' : '删除资料',
+    message: isKuaijieShortcut ? '确定从程序列表移除？' : '确定删除该资料？',
+    detail: isKuaijieShortcut
+      ? `仅移除 AetherDock 记录，不会删除桌面快捷方式或目标程序。\n${item.title || ''}`.trim()
+      : `将同时删除本地文件与资料库记录，此操作不可撤销。\n${item.title || ''}`.trim(),
+    confirmText: isKuaijieShortcut ? '移除' : '删除',
+    tone: isKuaijieShortcut ? 'default' : 'danger',
   }, () => shanchuLibraryItem(item))
 }
 
@@ -274,7 +287,7 @@ function shezhiMousePassthrough(passthrough) {
   z-index: 0;
   inset: 0 0 1px;
   border-radius: 0 0 29px 29px;
-  background: linear-gradient(180deg, rgba(24, 26, 25, .92), rgba(9, 11, 10, .94));
+  background: linear-gradient(180deg, rgba(24, 26, 25, .98), rgba(9, 11, 10, .99));
   transition: inset 380ms var(--motion-easing), border-radius 420ms var(--motion-easing);
 }
 
@@ -282,10 +295,8 @@ function shezhiMousePassthrough(passthrough) {
   display: block;
   inset: 1px;
   border-radius: 18px;
-  background: linear-gradient(155deg, rgba(255, 255, 255, .96), rgba(245, 245, 245, .93) 52%, rgba(239, 239, 236, .95));
+  background: linear-gradient(155deg, rgba(255, 255, 255, .99), rgba(246, 246, 245, .98) 52%, rgba(239, 239, 236, .99));
   box-shadow: inset 0 1px rgba(255, 255, 255, .86), inset 0 -1px rgba(38, 38, 38, .08);
-  backdrop-filter: blur(24px) saturate(92%);
-  -webkit-backdrop-filter: blur(24px) saturate(92%);
 }
 
 /* 拖放态保持重构前的宽幅投放尺寸与银白轮廓。 */

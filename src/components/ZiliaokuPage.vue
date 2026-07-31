@@ -1,9 +1,7 @@
 <template>
   <section class="library-page" aria-label="资料库">
     <div class="library-status">
-      <span class="library-connection" :class="libraryConfig.rootdir ? 'library-connection--normal' : 'library-connection--abnormal'">
-        {{ libraryConfig.rootdir ? '资料库已连接' : '资料库未连接' }}
-      </span>
+      <span class="library-connection library-connection--normal">资料库已连接</span>
     </div>
 
     <section class="expanded-top" aria-label="窗口工具栏">
@@ -34,6 +32,17 @@
       </button>
     </nav>
 
+    <button
+      v-if="currentCategory === 'application' && fenleiCounts.application"
+      class="application-sync"
+      type="button"
+      :disabled="isYingyongSyncing"
+      @click.stop="emit('sync-applications')"
+    >
+      <span aria-hidden="true">↻</span>
+      {{ isYingyongSyncing ? '扫描中' : '重新扫描' }}
+    </button>
+
     <section
       class="library-list"
       aria-label="资料库内容"
@@ -49,21 +58,24 @@
           class="library-shelf"
         >
           <article
-            v-for="{ item, offset, index } in carouselCards"
+            v-for="{ item, offset, index, cardInfo } in carouselCards"
             :key="item.id"
             class="library-shelf-card"
-            :class="{
-              'library-shelf-card--center': offset === 0,
-              'library-shelf-card--missing': item.status === 'missing',
-            }"
+            :class="[
+              `library-shelf-card--${item.type}`,
+              {
+                'library-shelf-card--center': offset === 0,
+                'library-shelf-card--missing': item.status !== 'ready',
+              },
+            ]"
             :style="huoquCardStyle(offset)"
           >
             <button class="library-shelf-main" type="button" @click.stop="offset === 0 ? emit('open-item', item) : tiaozhuanCarousel(index)">
               <div class="library-shelf-view" aria-hidden="true">
                 <img
-                  v-if="huoquCardInfo(item, yulanFailedIds).preview"
+                  v-if="cardInfo.preview"
                   class="library-shelf-preview"
-                  :src="huoquCardInfo(item, yulanFailedIds).preview"
+                  :src="cardInfo.preview"
                   alt=""
                   draggable="false"
                   @error="biaojiPreviewFailed(item.id)"
@@ -71,18 +83,20 @@
                 <img
                   v-else
                   class="library-shelf-icon"
-                  :src="huoquCardInfo(item, yulanFailedIds).icon"
+                  :src="cardInfo.icon"
                   alt=""
                   draggable="false"
                 >
               </div>
               <span class="library-shelf-cover">
                 <strong>{{ huoquCardName(item) }}</strong>
-                <small>{{ geshiCardTime(item.createdAt) }}</small>
+                <small :class="{ 'library-shelf-status--missing': item.status !== 'ready' }">
+                  {{ item.type === 'application' ? huoquApplicationStatus(item) : geshiCardTime(item.createdAt) }}
+                </small>
               </span>
             </button>
             <button
-              v-if="item.storageMode !== 'bookmark'"
+              v-if="item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing'"
               class="library-shelf-action library-shelf-enter"
               type="button"
               aria-label="在文件夹中定位"
@@ -95,7 +109,38 @@
             </button>
           </article>
         </div>
-        <p v-else key="empty" class="library-empty">拖入文件或网址，即可在此处统一管理。</p>
+        <div v-else-if="currentCategory === 'application' && !fenleiCounts.application" key="application-empty" class="application-empty">
+          <img :src="yingyongIcon" alt="" aria-hidden="true" draggable="false">
+          <strong class="kongzhuangtai-zifu-line">
+            <span
+              v-for="(zifu, index) in huoquZifuList('暂无已导入的应用程序')"
+              :key="`application-title-${index}`"
+              class="kongzhuangtai-zifu"
+              :style="{ '--zifu-delay': `${index * 42}ms` }"
+            >{{ zifu }}</span>
+          </strong>
+          <small class="kongzhuangtai-zifu-line">
+            <span
+              v-for="(zifu, index) in huoquZifuList('扫描桌面快捷方式，不会移动或修改原文件')"
+              :key="`application-detail-${index}`"
+              class="kongzhuangtai-zifu"
+              :style="{ '--zifu-delay': `${160 + index * 28}ms` }"
+            >{{ zifu }}</span>
+          </small>
+          <button type="button" :disabled="isYingyongSyncing" @click.stop="emit('sync-applications')">
+            {{ isYingyongSyncing ? '正在扫描…' : '一键导入' }}
+          </button>
+        </div>
+        <p v-else :key="`empty-${currentCategory}-${searchKeyword}`" class="library-empty">
+          <span class="kongzhuangtai-zifu-line">
+            <span
+              v-for="(zifu, index) in huoquZifuList(kongzhuangtaiWenAn)"
+              :key="`${zifu}-${index}`"
+              class="kongzhuangtai-zifu"
+              :style="{ '--zifu-delay': `${index * 42}ms` }"
+            >{{ zifu }}</span>
+          </span>
+        </p>
       </Transition>
     </section>
   </section>
@@ -112,20 +157,22 @@ import urlIcon from '@/assets/icons/wangzhi-link.svg'
 import yingyongIcon from '@/assets/icons/yingyongchengxu.svg'
 import enterIcon from '@/assets/icons/enter.svg'
 import deleteIcon from '@/assets/icons/delete.svg'
-import { geshiCardTime, huoquCardInfo, huoquCardName } from '@/utils/ziliaokuItem'
+import { geshiCardTime, huoquApplicationStatus, huoquCardInfo, huoquCardName } from '@/utils/ziliaokuItem'
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
   libraryConfig: { type: Object, default: () => ({ rootdir: '' }) },
   initialCategory: { type: String, default: 'document' },
+  isYingyongSyncing: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'open-item', 'locate-item', 'delete-item'])
+const emit = defineEmits(['open-settings', 'select-category', 'open-item', 'locate-item', 'delete-item', 'sync-applications'])
 const searchKeyword = shallowRef('')
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
 const yulanFailedIds = reactive(new Set())
+const yingyongIconMap = shallowRef({})
 
 const fenleiList = [
   { id: 'document', name: '文档', caption: 'DOC · PDF · TXT', icon: folderIcon },
@@ -134,14 +181,34 @@ const fenleiList = [
   { id: 'application', name: '应用程序', caption: 'APP · EXE', icon: yingyongIcon },
 ]
 
+// 根据当前分类生成更明确的空状态提示。
+const kongzhuangtaiWenAn = computed(() => {
+  const currentFenlei = fenleiList.find(({ id }) => id === currentCategory.value)
+  const fenleiName = currentFenlei?.name ?? '内容'
+
+  if (searchKeyword.value.trim()) return `未找到匹配的${fenleiName}`
+
+  const kongzhuangtaiMap = {
+    document: '暂无文档，拖入文件即可开始整理',
+    image: '暂无图片，拖入图片即可开始整理',
+    url: '暂无网址，拖入链接即可开始收藏',
+  }
+  return kongzhuangtaiMap[currentCategory.value] ?? `暂无${fenleiName}`
+})
+
+// 一次遍历建立分类索引，避免每次展开分别扫描四次完整资料库。
+const fenleiItems = computed(() => props.items.reduce((result, item) => {
+  if (result[item.type]) result[item.type].push(item)
+  return result
+}, { document: [], image: [], url: [], application: [] }))
+
 const fenleiCounts = computed(() => Object.fromEntries(
-  fenleiList.map(({ id }) => [id, props.items.filter((item) => item.type === id).length]),
+  fenleiList.map(({ id }) => [id, fenleiItems.value[id].length]),
 ))
 
 const currentItems = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
-  return props.items.filter((item) => {
-    if (item.type !== currentCategory.value) return false
+  return fenleiItems.value[currentCategory.value].filter((item) => {
     if (!keyword) return true
     return [item.title, item.sourcePath, item.sourceUrl]
       .filter(Boolean)
@@ -149,13 +216,32 @@ const currentItems = computed(() => {
   })
 })
 
-// 计算每张卡片相对中心位置的偏移。
-const carouselCards = computed(() => currentItems.value.map((item, index) => {
-  const offset = index - carouselIndex.value
-  return { item, index, offset }
-}))
+const keshikapianRange = 4
+
+// 两端保留透明缓冲卡，让可见卡淡出后再卸载，避免轮播边缘突现或突消。
+const carouselCards = computed(() => {
+  const startIndex = Math.max(carouselIndex.value - keshikapianRange, 0)
+  const endIndex = Math.min(carouselIndex.value + keshikapianRange + 1, currentItems.value.length)
+
+  return currentItems.value.slice(startIndex, endIndex).map((item, visibleIndex) => {
+    const index = startIndex + visibleIndex
+    const offset = index - carouselIndex.value
+    return { item, index, offset, cardInfo: huoquCardInfo({ ...item, yingyongIcon: yingyongIconMap.value[item.id] }, yulanFailedIds) }
+  })
+})
 
 watch(currentItems, () => { carouselIndex.value = 0 }, { flush: 'post' })
+
+// 应用图标按可见轮播窗口懒加载，单次请求数量受主进程限制。
+watch(carouselCards, async (cards) => {
+  if (currentCategory.value !== 'application') return
+  const missingIds = cards
+    .map(({ item }) => item.id)
+    .filter((itemId) => !(itemId in yingyongIconMap.value))
+  if (!missingIds.length) return
+  const iconMap = await window.aetherDock?.getApplicationIcons(missingIds)
+  if (iconMap) yingyongIconMap.value = { ...yingyongIconMap.value, ...iconMap }
+}, { immediate: true })
 
 function xuanzeCategory(categoryId) {
   if (categoryId === currentCategory.value) return
@@ -163,6 +249,7 @@ function xuanzeCategory(categoryId) {
   const nextIndex = fenleiList.findIndex(({ id }) => id === categoryId)
   switchDirection.value = nextIndex >= currentIndex ? 1 : -1
   currentCategory.value = categoryId
+  emit('select-category', categoryId)
 }
 
 function tiaozhuanCarousel(index) {
@@ -187,7 +274,7 @@ function huoquCardStyle(offset) {
   const angle = offset === 0 ? 0 : (offset < 0 ? 1 : -1) * Math.min(32 + distance * 12, 62)
   return {
     transform: `translateX(calc(-50% + ${offset * 184}px)) translateZ(${-distance * 55}px) rotateY(${angle}deg) scale(${Math.max(1 - distance * .12, .72)})`,
-    opacity: Math.max(1 - distance * .22, .45),
+    opacity: Math.max(1 - distance * .25, 0),
     zIndex: 10 - distance,
     pointerEvents: distance <= 2 ? 'auto' : 'none',
   }
@@ -195,6 +282,11 @@ function huoquCardStyle(offset) {
 
 function biaojiPreviewFailed(itemId) {
   yulanFailedIds.add(itemId)
+}
+
+// 将提示文本拆分为可独立执行动画的字符。
+function huoquZifuList(text) {
+  return Array.from(text)
 }
 
 onKeyStroke('ArrowLeft', (event) => { event.preventDefault(); qianyiCard() })
@@ -205,9 +297,12 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 .library-page {
   position: absolute;
   z-index: 2;
-  inset: 0;
+  /* 与内层玻璃共用 1px 内缩和 18px 圆角，避免背景越过外框。 */
+  inset: 1px;
   overflow: hidden;
-  border-radius: inherit;
+  border-radius: 18px;
+  /* 分割线上方使用统一的浅灰背景。 */
+  background: linear-gradient(to bottom, #ececec 0 154px, transparent 154px);
   color-scheme: light;
 }
 
@@ -348,6 +443,33 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 .folder-card small { color: var(--ink-faint); font: 11px var(--font-mono); }
 .folder-card i { display: none; }
 
+.application-sync {
+  position: absolute;
+  z-index: 3;
+  top: 92px;
+  right: 31px;
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid rgba(38, 38, 38, .14);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, .56);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .76), 0 4px 10px rgba(38, 38, 38, .07);
+  color: var(--ink-muted);
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  letter-spacing: .04em;
+  transition: border-color 180ms ease, color 180ms ease, transform 180ms var(--motion-easing);
+  -webkit-app-region: no-drag;
+}
+
+.application-sync span { font: 17px/1 var(--font-mono); transition: transform 260ms var(--motion-easing); }
+.application-sync:hover { border-color: rgba(99, 254, 19, .52); color: var(--ink); transform: translateY(-1px); }
+.application-sync:hover span { transform: rotate(45deg); }
+.application-sync:disabled { cursor: wait; opacity: .56; transform: none; }
+
 .library-list {
   position: absolute;
   z-index: 2;
@@ -377,9 +499,8 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   position: absolute;
   z-index: 1;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .5), rgba(240, 240, 240, .36));
-  backdrop-filter: blur(22px) saturate(96%);
-  -webkit-backdrop-filter: blur(22px) saturate(96%);
+  /* 使用静态半透明层替代实时背景模糊，避免首次展开创建高开销合成层。 */
+  background: linear-gradient(180deg, rgba(255, 255, 255, .72), rgba(240, 240, 240, .58));
   box-shadow: inset 0 1px rgba(255, 255, 255, .58), inset 0 -1px rgba(38, 38, 38, .06);
   pointer-events: none;
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%), linear-gradient(180deg, transparent 0, #000 11%, #000 89%, transparent 100%);
@@ -414,13 +535,16 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 
 .library-shelf-card--center { border-color: rgba(99, 254, 19, .62); box-shadow: inset 0 1px rgba(255, 255, 255, .1), inset 0 0 0 1px rgba(99, 254, 19, .08), 0 0 22px rgba(99, 254, 19, .14), 0 22px 38px rgba(15, 17, 16, .42); }
 .library-shelf-card--missing { filter: grayscale(.8); }
-.library-shelf-main { position: relative; z-index: 1; display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; padding: 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
-.library-shelf-view { position: relative; display: flex; width: 100%; height: auto; min-height: auto; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
+.library-shelf-main { position: relative; z-index: 1; display: flex; width: 100%; height: 100%; box-sizing: border-box; flex-direction: column; align-items: center; justify-content: flex-start; padding: 10px 10px 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
+/* 预览图与卡片边缘保持一致的 10px 留白。 */
+.library-shelf-view { position: relative; display: flex; width: 100%; height: 78px; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
 .library-shelf-icon { position: relative; z-index: 2; width: 56px; height: 56px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
-.library-shelf-preview { position: relative; z-index: 2; width: 118px; height: 96px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
-.library-shelf-cover { display: flex; width: 100%; flex: none; flex-direction: column; align-items: center; justify-content: flex-start; gap: 7px; margin: 0; padding: 14px 12px 0; border: 0; background: transparent; text-align: center; }
+.library-shelf-card--application .library-shelf-icon { border-radius: 12px; }
+.library-shelf-preview { position: relative; z-index: 2; width: 100%; height: 78px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
+.library-shelf-cover { display: flex; width: 100%; flex: none; flex-direction: column; align-items: center; justify-content: flex-start; gap: 7px; margin: 0; padding: 10px 2px 0; border: 0; background: transparent; text-align: center; }
 .library-shelf-cover strong { overflow: hidden; width: 100%; color: var(--text-on-ink); font: 600 13px/1.35 var(--font-body); letter-spacing: .02em; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); white-space: nowrap; }
 .library-shelf-cover small { overflow: hidden; width: 100%; color: var(--text-on-ink-muted); font: 11px/1.3 var(--font-mono); letter-spacing: .04em; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); white-space: nowrap; }
+.library-shelf-cover .library-shelf-status--missing { color: #ff9f9f; }
 
 .library-shelf-action {
   position: absolute;
@@ -449,7 +573,53 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 .library-shelf-card:hover { border-color: rgba(99, 254, 19, .34); box-shadow: inset 0 1px rgba(255, 255, 255, .09), 0 19px 32px rgba(15, 17, 16, .38); }
 .library-shelf-card--center:hover { border-color: rgba(99, 254, 19, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .11), inset 0 0 0 1px rgba(99, 254, 19, .12), 0 0 28px rgba(99, 254, 19, .18), 0 22px 38px rgba(15, 17, 16, .46); }
 
-.library-empty { position: relative; z-index: 2; margin: 24px 0; color: var(--ink-muted); font: 13px var(--font-body); text-align: center; }
+.application-empty {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--ink);
+  text-align: center;
+}
+
+.application-empty > img { width: 36px; height: 36px; margin-bottom: 2px; filter: grayscale(1); opacity: .78; }
+.application-empty > strong { font: 650 14px var(--font-display); letter-spacing: .04em; }
+.application-empty > small { color: var(--ink-muted); font: 10px var(--font-body); }
+.kongzhuangtai-zifu-line { display: inline-flex; }
+.kongzhuangtai-zifu { display: inline-block; animation: kongzhuangtai-zifu-rise 420ms var(--motion-easing) both; animation-delay: var(--zifu-delay, 0ms); }
+.application-empty > button {
+  height: 32px;
+  margin-top: 5px;
+  padding: 0 17px;
+  border: 1px solid rgba(99, 254, 19, .55);
+  border-radius: 16px;
+  background: var(--ink);
+  box-shadow: 0 5px 12px rgba(38, 38, 38, .16), inset 0 1px rgba(255, 255, 255, .12);
+  color: var(--paper-white);
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  letter-spacing: .06em;
+  transition: box-shadow 180ms ease, transform 180ms var(--motion-easing);
+}
+
+.application-empty > button:hover { box-shadow: 0 7px 16px rgba(38, 38, 38, .2), 0 0 0 2px rgba(99, 254, 19, .12); transform: translateY(-1px); }
+.application-empty > button:disabled { cursor: wait; opacity: .58; transform: none; }
+.library-empty { position: relative; z-index: 2; display: grid; width: 100%; height: 100%; margin: 0; color: var(--ink-muted); font: 13px var(--font-body); place-items: center; text-align: center; }
+.library-empty .kongzhuangtai-zifu { margin-inline: .02em; }
+
+/* 空状态文字逐字由下向上浮现。 */
+@keyframes kongzhuangtai-zifu-rise {
+  from { opacity: 0; transform: translate3d(0, 9px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kongzhuangtai-zifu { animation: none; }
+}
 .data-switch-enter-active,
 .data-switch-leave-active {
   will-change: opacity, transform;

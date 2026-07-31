@@ -47,7 +47,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted } from 'vue'
 import lottie from 'lottie-web/build/player/lottie_light'
-import { donghuaList } from '@/constants/donghua'
+import { donghuaList, jiazaiDonghuaData } from '@/constants/donghua'
 
 defineProps({
   animationId: { type: String, default: 'kulian' },
@@ -57,6 +57,7 @@ defineProps({
 const emit = defineEmits(['back', 'select-animation', 'select-rootdir'])
 const previewHolders = new Map()
 let previewPlayers = []
+let isPreviewActive = false
 
 function jiluPreviewHolder(animationId, element) {
   if (element) previewHolders.set(animationId, element)
@@ -66,22 +67,34 @@ function jiluPreviewHolder(animationId, element) {
 // 设置页挂载后统一创建三个预览实例，卸载时一次性释放。
 async function chushihuaPreviews() {
   await nextTick()
-  previewPlayers = donghuaList.flatMap((animation) => {
+  const players = await Promise.all(donghuaList.map(async (animation) => {
     const holder = previewHolders.get(animation.id)
-    if (!holder) return []
-    return [lottie.loadAnimation({
+    const animationData = await jiazaiDonghuaData(animation.id)
+    if (!isPreviewActive || !holder || !animationData) return null
+    return lottie.loadAnimation({
       container: holder,
       renderer: 'svg',
       loop: true,
       autoplay: true,
-      animationData: structuredClone(animation.data),
+      animationData: structuredClone(animationData),
       rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
-    })]
-  })
+    })
+  }))
+  if (!isPreviewActive) {
+    players.forEach((player) => player?.destroy())
+    return
+  }
+  previewPlayers = players.filter(Boolean)
 }
 
-onMounted(chushihuaPreviews)
-onUnmounted(() => previewPlayers.forEach((player) => player.destroy()))
+onMounted(() => {
+  isPreviewActive = true
+  chushihuaPreviews()
+})
+onUnmounted(() => {
+  isPreviewActive = false
+  previewPlayers.forEach((player) => player.destroy())
+})
 </script>
 
 <style scoped>

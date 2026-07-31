@@ -6,6 +6,7 @@ export function useZiliaokuLibrary(xianshiToast) {
   const libraryConfig = shallowRef({ rootdir: '', libraryId: '' })
   const currentCollapsedAnimation = shallowRef('kulian')
   const isImporting = shallowRef(false)
+  const isYingyongSyncing = shallowRef(false)
 
   function huoquBridge() {
     return window.aetherDock
@@ -67,8 +68,15 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function dakaiLibraryItem(item) {
-    if (item.status === 'missing') {
-      xianshiToast('来源文件已不可用', 'error')
+    if (item.status !== 'ready') {
+      const statusXiaoxi = {
+        shortcut_missing: '桌面快捷方式已消失，请重新扫描',
+        target_missing: '目标程序可能已卸载',
+        offline: '程序所在设备或网络暂不可用',
+        unreadable: '快捷方式暂时无法读取',
+        missing: '来源文件已不可用',
+      }
+      xianshiToast(statusXiaoxi[item.status] || '该条目暂时不可用', 'error')
       return
     }
     const result = await huoquBridge()?.openLibraryItem(item.id)
@@ -95,6 +103,40 @@ export function useZiliaokuLibrary(xianshiToast) {
     }
   }
 
+  // 扫描由主进程限定的桌面目录，同步结果直接替换当前列表以避免二次读取。
+  async function tongbuDesktopApplications() {
+    if (isYingyongSyncing.value) return false
+    isYingyongSyncing.value = true
+    try {
+      const result = await huoquBridge()?.tongbuDesktopApplications()
+      if (!result?.chenggong) {
+        xianshiToast(result?.xiaoxi || '桌面程序扫描失败', 'error')
+        return false
+      }
+      if (Array.isArray(result.items)) libraryItems.value = result.items
+      else await jiazaiLibrary()
+
+      const changeCount = result.added + result.updated + result.recovered + result.missing
+      if (!result.scanned && !changeCount) {
+        xianshiToast('桌面未发现程序快捷方式', 'info')
+        return true
+      }
+      const resultParts = []
+      if (result.added) resultParts.push(`新增 ${result.added}`)
+      if (result.updated) resultParts.push(`更新 ${result.updated}`)
+      if (result.recovered) resultParts.push(`恢复 ${result.recovered}`)
+      if (result.missing) resultParts.push(`失效 ${result.missing}`)
+      if (!resultParts.length) resultParts.push(`已同步 ${result.scanned} 个程序`)
+      xianshiToast(resultParts.join(' · '), result.missing ? 'info' : 'success')
+      return true
+    } catch {
+      xianshiToast('桌面程序扫描失败', 'error')
+      return false
+    } finally {
+      isYingyongSyncing.value = false
+    }
+  }
+
   async function shezhiCollapsedAnimation(animationId) {
     try {
       const result = await huoquBridge()?.setCollapsedAnimation(animationId)
@@ -109,12 +151,14 @@ export function useZiliaokuLibrary(xianshiToast) {
     libraryConfig,
     currentCollapsedAnimation,
     isImporting,
+    isYingyongSyncing,
     jiazaiLibrary,
     xuanzeLibraryRootdir,
     daoruDragContent,
     dakaiLibraryItem,
     dingweiLibraryItem,
     shanchuLibraryItem,
+    tongbuDesktopApplications,
     shezhiCollapsedAnimation,
   }
 }

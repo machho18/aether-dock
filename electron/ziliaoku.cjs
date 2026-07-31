@@ -21,41 +21,11 @@ function createLibrary(dbPath) {
     );
   `)
 
-  const oldItemsTable = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'").get()
-  // 旧版本仅支持 reference；升级时保留既有记录并增加受管副本字段
-  if (oldItemsTable?.sql && !oldItemsTable.sql.includes("'managed'")) {
-    db.exec(`
-      BEGIN IMMEDIATE;
-      DROP INDEX IF EXISTS idx_items_reference_source_path;
-      DROP INDEX IF EXISTS idx_items_bookmark_normalized_url;
-      ALTER TABLE items RENAME TO items_legacy;
-      CREATE TABLE items (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK(type IN ('document', 'image', 'url')),
-        storageMode TEXT NOT NULL CHECK(storageMode IN ('reference', 'managed', 'bookmark')),
-        title TEXT NOT NULL,
-        sourcePath TEXT,
-        relativePath TEXT,
-        sourceUrl TEXT,
-        normalizedUrl TEXT,
-        mimeType TEXT,
-        byteSize INTEGER,
-        status TEXT NOT NULL DEFAULT 'ready',
-        createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
-      );
-      INSERT INTO items (id, type, storageMode, title, sourcePath, sourceUrl, normalizedUrl, mimeType, byteSize, status, createdAt, updatedAt)
-        SELECT id, type, storageMode, title, sourcePath, sourceUrl, normalizedUrl, mimeType, byteSize, status, createdAt, updatedAt FROM items_legacy;
-      DROP TABLE items_legacy;
-      COMMIT;
-    `)
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS items (
+  const itemsBiaoSchema = `
+    CREATE TABLE items (
       id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('document', 'image', 'url')),
-      storageMode TEXT NOT NULL CHECK(storageMode IN ('reference', 'managed', 'bookmark')),
+      type TEXT NOT NULL CHECK(type IN ('document', 'image', 'url', 'application')),
+      storageMode TEXT NOT NULL CHECK(storageMode IN ('reference', 'managed', 'bookmark', 'shortcut')),
       title TEXT NOT NULL,
       sourcePath TEXT,
       relativePath TEXT,
@@ -63,16 +33,57 @@ function createLibrary(dbPath) {
       normalizedUrl TEXT,
       mimeType TEXT,
       byteSize INTEGER,
+      targetPath TEXT,
+      launchArgs TEXT,
+      workingDirectory TEXT,
+      shortcutFingerprint TEXT,
+      sourceScope TEXT,
+      lastSeenAt INTEGER,
+      lastCheckedAt INTEGER,
+      missingReason TEXT,
       status TEXT NOT NULL DEFAULT 'ready',
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
+  `
+  const itemsTable = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'").get()
+  // 表约束无法通过 ALTER 修改；发现旧结构时事务内重建并仅复制双方共有字段。
+  if (itemsTable?.sql && (!itemsTable.sql.includes("'application'") || !itemsTable.sql.includes("'shortcut'") || !itemsTable.sql.includes('targetPath'))) {
+    const legacyZiduan = new Set(db.prepare('PRAGMA table_info(items)').all().map(({ name }) => name))
+    const currentZiduan = [
+      'id', 'type', 'storageMode', 'title', 'sourcePath', 'relativePath', 'sourceUrl',
+      'normalizedUrl', 'mimeType', 'byteSize', 'status', 'createdAt', 'updatedAt',
+    ].filter((column) => legacyZiduan.has(column))
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_items_reference_source_path;
+        DROP INDEX IF EXISTS idx_items_bookmark_normalized_url;
+        DROP INDEX IF EXISTS idx_items_shortcut_source_path;
+        ALTER TABLE items RENAME TO items_legacy;
+        ${itemsBiaoSchema}
+        INSERT INTO items (${currentZiduan.join(', ')}) SELECT ${currentZiduan.join(', ')} FROM items_legacy;
+        DROP TABLE items_legacy;
+      `)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  } else if (!itemsTable) {
+    db.exec(itemsBiaoSchema)
+  }
+
+  db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_reference_source_path
       ON items(sourcePath)
       WHERE storageMode = 'reference' AND sourcePath IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_bookmark_normalized_url
       ON items(normalizedUrl)
       WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_items_shortcut_source_path
+      ON items(sourcePath COLLATE NOCASE)
+      WHERE storageMode = 'shortcut' AND sourcePath IS NOT NULL;
   `)
 
   const readSettingStmt = db.prepare('SELECT value FROM settings WHERE key = ?')
@@ -87,6 +98,26 @@ function createLibrary(dbPath) {
   `)
   const updateManagedItemStmt = db.prepare(`
     UPDATE items SET type = ?, storageMode = 'managed', title = ?, sourcePath = ?, relativePath = ?, mimeType = ?, byteSize = ?, status = 'ready', updatedAt = ? WHERE id = ?
+  `)
+  const readShortcutByPathStmt = db.prepare("SELECT * FROM items WHERE storageMode = 'shortcut' AND sourcePath = ? COLLATE NOCASE LIMIT 1")
+  const readShortcutByFingerprintStmt = db.prepare("SELECT * FROM items WHERE storageMode = 'shortcut' AND shortcutFingerprint = ? LIMIT 1")
+  const insertShortcutStmt = db.prepare(`
+    INSERT INTO items (
+      id, type, storageMode, title, sourcePath, mimeType, targetPath, launchArgs,
+      workingDirectory, shortcutFingerprint, sourceScope, lastSeenAt, lastCheckedAt,
+      missingReason, status, createdAt, updatedAt
+    ) VALUES (?, 'application', 'shortcut', ?, ?, 'application/x-ms-shortcut', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const updateShortcutStmt = db.prepare(`
+    UPDATE items SET
+      title = ?, sourcePath = ?, targetPath = ?, launchArgs = ?, workingDirectory = ?,
+      shortcutFingerprint = ?, sourceScope = ?, lastSeenAt = ?, lastCheckedAt = ?,
+      missingReason = ?, status = ?, updatedAt = ?
+    WHERE id = ?
+  `)
+  const markMissingShortcutsStmt = db.prepare(`
+    UPDATE items SET status = 'shortcut_missing', missingReason = 'shortcut_missing', lastCheckedAt = ?, updatedAt = ?
+    WHERE storageMode = 'shortcut' AND sourceScope = ? AND (lastSeenAt IS NULL OR lastSeenAt < ?) AND status != 'shortcut_missing'
   `)
   const readItemsStmt = db.prepare('SELECT * FROM items ORDER BY createdAt DESC')
   const readItemStmt = db.prepare('SELECT * FROM items WHERE id = ?')
@@ -306,16 +337,59 @@ function createLibrary(dbPath) {
     return { added, duplicates }
   }
 
-  // 读取条目时同步受管副本或本地引用状态，避免显示失效文件为正常状态
-  function getItemList() {
-    return readItemsStmt.all().map((item) => {
-      if (item.storageMode === 'reference' || item.storageMode === 'managed') {
-        const localPath = item.storageMode === 'managed' ? resolveManagedPath(item) : item.sourcePath
-        const exists = Boolean(localPath && fs.existsSync(localPath))
-        return { ...item, status: exists ? 'ready' : 'missing' }
+  // 将桌面扫描结果幂等同步到资料库；快捷方式移动时通过目标指纹复用原条目。
+  function tongbuDesktopShortcuts({ shortcuts = [], scannedScopes = [], scannedAt = Date.now() }) {
+    const result = { added: 0, updated: 0, recovered: 0, missing: 0, skipped: 0, unreadable: 0 }
+    runTransaction(() => {
+      for (const shortcut of shortcuts) {
+        const existingByPath = readShortcutByPathStmt.get(shortcut.sourcePath)
+        const existingByFingerprint = shortcut.shortcutFingerprint
+          ? readShortcutByFingerprintStmt.get(shortcut.shortcutFingerprint)
+          : null
+        const existing = existingByPath ?? existingByFingerprint
+        const status = shortcut.status || 'ready'
+        const missingReason = status === 'ready' ? null : status
+
+        if (!existing) {
+          const id = randomUUID()
+          insertShortcutStmt.run(
+            id, shortcut.title, shortcut.sourcePath, shortcut.targetPath, shortcut.launchArgs,
+            shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.sourceScope,
+            scannedAt, scannedAt, missingReason, status, scannedAt, scannedAt,
+          )
+          result.added += 1
+          if (status === 'unreadable') result.unreadable += 1
+          continue
+        }
+
+        const changed = existing.title !== shortcut.title
+          || existing.sourcePath.toLowerCase() !== shortcut.sourcePath.toLowerCase()
+          || existing.targetPath !== shortcut.targetPath
+          || existing.launchArgs !== shortcut.launchArgs
+          || existing.workingDirectory !== shortcut.workingDirectory
+          || existing.status !== status
+        if (existing.status !== 'ready' && status === 'ready') result.recovered += 1
+        else if (changed) result.updated += 1
+        else result.skipped += 1
+        if (status === 'unreadable') result.unreadable += 1
+        updateShortcutStmt.run(
+          shortcut.title, shortcut.sourcePath, shortcut.targetPath, shortcut.launchArgs,
+          shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.sourceScope,
+          scannedAt, scannedAt, missingReason, status, scannedAt, existing.id,
+        )
       }
-      return item
+
+      for (const scope of scannedScopes) {
+        const updateResult = markMissingShortcutsStmt.run(scannedAt, scannedAt, scope, scannedAt)
+        result.missing += Number(updateResult.changes ?? 0)
+      }
     })
+    return result
+  }
+
+  // 列表读取只返回数据库索引，避免首次展开对每个条目执行同步磁盘探测。
+  function getItemList() {
+    return readItemsStmt.all()
   }
 
   // 主进程按条目 ID 读取来源，避免信任渲染层提交的任意路径
@@ -325,6 +399,7 @@ function createLibrary(dbPath) {
 
   function getItemLocalPath(item) {
     if (item?.storageMode === 'managed') return resolveManagedPath(item)
+    if (item?.storageMode === 'shortcut') return item.sourcePath || ''
     return item?.storageMode === 'reference' ? item.sourcePath : ''
   }
 
@@ -332,7 +407,7 @@ function createLibrary(dbPath) {
   async function deleteItem(id) {
     const item = readItemStmt.get(id)
     if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
-    const localPath = getItemLocalPath(item)
+    const localPath = item.storageMode === 'managed' ? resolveManagedPath(item) : ''
     runTransaction(() => deleteItemStmt.run(id))
     // 入库删除已成功，本地副本清理失败只静默忽略，不回滚已删除的记录
     if (localPath) {
@@ -345,7 +420,7 @@ function createLibrary(dbPath) {
     db.close()
   }
 
-  return { getConfig, getCollapsedAnimation, setCollapsedAnimation, setRootdir, importContent, getItemList, getItemDetail, getItemLocalPath, deleteItem, close }
+  return { getConfig, getCollapsedAnimation, setCollapsedAnimation, setRootdir, importContent, tongbuDesktopShortcuts, getItemList, getItemDetail, getItemLocalPath, deleteItem, close }
 }
 
 module.exports = { createLibrary }

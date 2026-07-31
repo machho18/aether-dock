@@ -4,6 +4,7 @@ import xlsIcon from '@/assets/icons/xls.svg'
 import fileIcon from '@/assets/icons/wendang.svg'
 import imageIcon from '@/assets/icons/tupian.svg'
 import urlIcon from '@/assets/icons/wangzhi-link.svg'
+import yingyongIcon from '@/assets/icons/yingyongchengxu.svg'
 
 const fileIconRules = [
   { extensions: ['.pdf'], type: 'PDF', icon: pdfIcon },
@@ -18,6 +19,7 @@ export function huoquCardInfo(item, previewFailed) {
     return { type: 'IMG', icon: canPreview ? '' : imageIcon, preview: canPreview ? `aetherdock-img://${item.id}` : '' }
   }
   if (item.type === 'url') return { type: 'URL', icon: urlIcon, preview: '' }
+  if (item.type === 'application') return { type: 'APP', icon: item.yingyongIcon || yingyongIcon, preview: '' }
 
   const lowerTitle = (item.title || item.sourcePath || '').toLowerCase()
   const matchRule = fileIconRules.find((rule) => rule.extensions.some((extension) => lowerTitle.endsWith(extension)))
@@ -40,4 +42,14 @@ export function geshiCardTime(timestamp) {
     minute: '2-digit',
     hour12: false,
   }).format(new Date(timestamp))
+}
+
+export function huoquApplicationStatus(item) {
+  const statusBiaoqian = {
+    shortcut_missing: '快捷方式已消失',
+    target_missing: '程序可能已卸载',
+    offline: '设备或网络暂不可用',
+    unreadable: '快捷方式无法读取',
+  }
+  return statusBiaoqian[item.status] || '桌面快捷方式'
 }

@@ -15,7 +15,7 @@
 import { onMounted, onUnmounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import lottie from 'lottie-web/build/player/lottie_light'
-import { donghuaList } from '@/constants/donghua'
+import { jiazaiDonghuaData } from '@/constants/donghua'
 
 const props = defineProps({
   animationId: { type: String, default: 'kulian' },
@@ -27,6 +27,7 @@ const lottieHolder = useTemplateRef('lottieHolder')
 const currentTime = shallowRef('')
 const systemStatus = shallowRef({ cpu: 0, neicun: 0 })
 let lottiePlayer = null
+let currentLottieRequest = 0
 
 function gengxinCurrentTime() {
   currentTime.value = new Intl.DateTimeFormat('zh-CN', {
@@ -45,17 +46,21 @@ async function gengxinSystemStatus() {
   }
 }
 
-function chongjianLottie() {
-  const animation = donghuaList.find((item) => item.id === props.animationId)
-  if (!animation || !lottieHolder.value) return
+async function chongjianLottie() {
+  if (!lottieHolder.value) return
 
+  const requestId = ++currentLottieRequest
   lottiePlayer?.destroy()
+  lottiePlayer = null
+  const animationData = await jiazaiDonghuaData(props.animationId)
+  if (requestId !== currentLottieRequest || !animationData || !lottieHolder.value) return
+
   lottiePlayer = lottie.loadAnimation({
     container: lottieHolder.value,
     renderer: 'svg',
     loop: true,
     autoplay: true,
-    animationData: structuredClone(animation.data),
+    animationData: structuredClone(animationData),
     rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
   })
 }
@@ -64,7 +69,10 @@ useIntervalFn(gengxinCurrentTime, 1000, { immediateCallback: true })
 useIntervalFn(gengxinSystemStatus, 2000, { immediateCallback: true })
 watch(() => props.animationId, chongjianLottie)
 onMounted(chongjianLottie)
-onUnmounted(() => lottiePlayer?.destroy())
+onUnmounted(() => {
+  currentLottieRequest += 1
+  lottiePlayer?.destroy()
+})
 </script>
 
 <style scoped>

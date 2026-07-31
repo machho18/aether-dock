@@ -1,7 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, screen, shell } = require('electron')
+const { execFile } = require('node:child_process')
+const { createHash } = require('node:crypto')
+const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const fsp = require('node:fs/promises')
+const { promisify } = require('node:util')
 const { createLibrary } = require('./ziliaoku.cjs')
 const { ipcTongdao } = require('./ipc.cjs')
 
@@ -17,6 +21,9 @@ let mainWindow = null
 let startupWindow = null
 let lastCpuStat = null
 let library = null
+let yingyongSyncPromise = null
+const yingyongIconCache = new Map()
+const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
 
@@ -89,6 +96,173 @@ function getSystemStatus() {
     cpu: getCpuUsage(),
     neicun: Math.round((1 - os.freemem() / totalMem) * 100),
   }
+}
+
+function chuangjianShortcutFingerprint(details, shortcutPath) {
+  const parts = [details.target, details.args, details.cwd, details.appUserModelId]
+    .map((value) => String(value ?? '').trim().toLowerCase())
+  const content = parts.some(Boolean) ? parts.join('\0') : `unreadable\0${shortcutPath.toLowerCase()}`
+  return createHash('sha256').update(content).digest('hex')
+}
+
+function panduanShortcutTargetStatus(targetPath) {
+  if (!targetPath || !path.isAbsolute(targetPath) || fs.existsSync(targetPath)) return 'ready'
+  const targetRoot = path.parse(targetPath).root
+  const isOffline = targetPath.startsWith('\\\\') || (targetRoot && !fs.existsSync(targetRoot))
+  return isOffline ? 'offline' : 'target_missing'
+}
+
+// 只扫描系统确认的用户与公共桌面目录，渲染层无法提交任意扫描路径。
+async function saomiaoDesktopShortcuts() {
+  if (process.platform !== 'win32') return { shortcuts: [], scannedScopes: [], unsupported: true }
+  const publicDesktop = process.env.PUBLIC ? path.join(process.env.PUBLIC, 'Desktop') : ''
+  const sources = [
+    { scope: 'public-desktop', directory: publicDesktop },
+    { scope: 'user-desktop', directory: app.getPath('desktop') },
+  ]
+  const uniqueDirectories = new Set()
+  const shortcuts = []
+  const scannedScopes = []
+
+  for (const source of sources) {
+    if (!source.directory) continue
+    const normalizedDirectory = path.resolve(source.directory).toLowerCase()
+    if (uniqueDirectories.has(normalizedDirectory)) continue
+    uniqueDirectories.add(normalizedDirectory)
+
+    let entries
+    try {
+      entries = await fsp.readdir(source.directory, { withFileTypes: true })
+      scannedScopes.push(source.scope)
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.lnk') continue
+      const shortcutPath = path.join(source.directory, entry.name)
+      const title = path.basename(entry.name, path.extname(entry.name))
+      try {
+        const details = shell.readShortcutLink(shortcutPath)
+        const targetPath = String(details.target ?? '')
+        shortcuts.push({
+          title,
+          sourcePath: shortcutPath,
+          targetPath,
+          launchArgs: String(details.args ?? ''),
+          workingDirectory: String(details.cwd ?? ''),
+          shortcutFingerprint: chuangjianShortcutFingerprint(details, shortcutPath),
+          sourceScope: source.scope,
+          status: panduanShortcutTargetStatus(targetPath),
+        })
+      } catch {
+        shortcuts.push({
+          title,
+          sourcePath: shortcutPath,
+          targetPath: '',
+          launchArgs: '',
+          workingDirectory: '',
+          shortcutFingerprint: chuangjianShortcutFingerprint({}, shortcutPath),
+          sourceScope: source.scope,
+          status: 'unreadable',
+        })
+      }
+    }
+  }
+  return { shortcuts, scannedScopes, unsupported: false }
+}
+
+// 使用 Windows 原生关联图标接口，补足 Electron 对部分 EXE 图标资源的解析缺失。
+async function huoquWindowsShellIconData(filePath) {
+  if (process.platform !== 'win32' || path.extname(filePath).toLowerCase() !== '.exe') return ''
+  const script = [
+    'Add-Type -AssemblyName System.Drawing',
+    '$icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:AETHERDOCK_ICON_PATH)',
+    'if ($null -eq $icon) { exit 2 }',
+    '$bitmap = $icon.ToBitmap()',
+    '$stream = [System.IO.MemoryStream]::new()',
+    'try {',
+    '  $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)',
+    '  [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))',
+    '} finally {',
+    '  $stream.Dispose(); $bitmap.Dispose(); $icon.Dispose()',
+    '}',
+  ].join('; ')
+
+  try {
+    const { stdout } = await zhixingFileAsync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
+    ], {
+      windowsHide: true,
+      timeout: 5000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, AETHERDOCK_ICON_PATH: filePath },
+    })
+    const base64 = stdout.trim()
+    return base64 ? `data:image/png;base64,${base64}` : ''
+  } catch {
+    return ''
+  }
+}
+
+function panduanMaybeGenericIcon(nativeIcon, iconData) {
+  const size = nativeIcon.getSize()
+  return size.width <= 32 && size.height <= 32 && iconData.length <= 1000
+}
+
+async function huoquApplicationIconData(item) {
+  if (item.type !== 'application') return ''
+  const cacheKey = `${item.id}:${item.updatedAt}:${item.status}`
+  if (yingyongIconCache.has(cacheKey)) return yingyongIconCache.get(cacheKey)
+
+  const iconSources = []
+  if (item.sourcePath && fs.existsSync(item.sourcePath)) {
+    try {
+      const shortcutDetails = shell.readShortcutLink(item.sourcePath)
+      iconSources.push(shortcutDetails.icon, shortcutDetails.target)
+    } catch {}
+  }
+  iconSources.push(item.targetPath, item.sourcePath)
+
+  // 优先读取快捷方式显式图标和目标程序，最后才使用 Windows 的通用 .lnk 图标。
+  const uniqueIconSources = [...new Set(iconSources.filter((source) => source && fs.existsSync(source)))]
+  for (const iconSource of uniqueIconSources) {
+    try {
+      const nativeIcon = path.extname(iconSource).toLowerCase() === '.ico'
+        ? nativeImage.createFromPath(iconSource)
+        : await app.getFileIcon(iconSource, { size: 'large' })
+      if (nativeIcon.isEmpty()) continue
+      const iconData = nativeIcon.toDataURL()
+      if (!iconData) continue
+
+      // Electron 会把无法解析的 EXE 返回为小尺寸通用图标，此时改由 Windows 原生接口提取。
+      const windowsIconData = panduanMaybeGenericIcon(nativeIcon, iconData)
+        ? await huoquWindowsShellIconData(iconSource)
+        : ''
+      const resolvedIconData = windowsIconData || iconData
+      yingyongIconCache.set(cacheKey, resolvedIconData)
+      return resolvedIconData
+    } catch {}
+  }
+  yingyongIconCache.set(cacheKey, '')
+  return ''
+}
+
+function huoquLibraryItems() {
+  return library.getItemList()
+}
+
+// 仅在应用卡进入可视范围后提取图标，避免列表读取因大量系统图标阻塞首帧。
+async function huoquYingyongIconMap(itemIds) {
+  const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
+    .filter((itemId) => typeof itemId === 'string')
+    .slice(0, 12)
+  const iconEntries = await Promise.all(validIds.map(async (itemId) => {
+    const item = library.getItemDetail(itemId)
+    if (item?.type !== 'application') return [itemId, '']
+    return [itemId, await huoquApplicationIconData(item)]
+  }))
+  return Object.fromEntries(iconEntries)
 }
 
 // 创建应用主窗口
@@ -178,7 +352,30 @@ app.whenReady().then(() => {
   ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
   ipcMain.handle(ipcTongdao.setCollapsedAnimation, (_, animation) => library.setCollapsedAnimation(animation))
   ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => library.importContent(payload))
-  ipcMain.handle(ipcTongdao.getLibraryItems, () => library.getItemList())
+  ipcMain.handle(ipcTongdao.tongbuDesktopApplications, async () => {
+    if (!yingyongSyncPromise) {
+      yingyongSyncPromise = (async () => {
+        const saomiaoResult = await saomiaoDesktopShortcuts()
+        if (saomiaoResult.unsupported) return { chenggong: false, xiaoxi: '桌面程序导入目前仅支持 Windows' }
+        if (!saomiaoResult.scannedScopes.length) return { chenggong: false, xiaoxi: '无法读取 Windows 桌面目录' }
+        const tongbuResult = library.tongbuDesktopShortcuts({
+          shortcuts: saomiaoResult.shortcuts,
+          scannedScopes: saomiaoResult.scannedScopes,
+          scannedAt: Date.now(),
+        })
+        yingyongIconCache.clear()
+        return {
+          chenggong: true,
+          ...tongbuResult,
+          scanned: saomiaoResult.shortcuts.length,
+          items: huoquLibraryItems(),
+        }
+      })().finally(() => { yingyongSyncPromise = null })
+    }
+    return yingyongSyncPromise
+  })
+  ipcMain.handle(ipcTongdao.getLibraryItems, () => huoquLibraryItems())
+  ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
   ipcMain.handle(ipcTongdao.openLibraryItem, async (_, itemId) => {
     try {
       const item = library.getItemDetail(itemId)
