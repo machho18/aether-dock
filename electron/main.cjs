@@ -1,7 +1,11 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, screen, shell } = require('electron')
 const { execFile } = require('node:child_process')
 const { createHash } = require('node:crypto')
+const dns = require('node:dns/promises')
 const fs = require('node:fs')
+const http = require('node:http')
+const https = require('node:https')
+const nodeNet = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
 const fsp = require('node:fs/promises')
@@ -29,6 +33,23 @@ let isHeavyTasksPaused = false
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
+const maxRemoteFileBytes = 100 * 1024 * 1024
+const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
+const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
+const remoteMimeExtensions = new Map([
+  ['image/avif', '.avif'], ['image/bmp', '.bmp'], ['image/gif', '.gif'],
+  ['image/heic', '.heic'], ['image/jpeg', '.jpg'], ['image/png', '.png'],
+  ['image/webp', '.webp'], ['application/pdf', '.pdf'],
+  ['application/msword', '.doc'], ['application/rtf', '.rtf'], ['text/csv', '.csv'],
+  ['text/markdown', '.md'], ['text/plain', '.txt'],
+  ['application/vnd.ms-excel', '.xls'], ['application/vnd.ms-powerpoint', '.ppt'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
+  ['application/vnd.oasis.opendocument.text', '.odt'],
+  ['application/vnd.oasis.opendocument.spreadsheet', '.ods'],
+  ['application/vnd.oasis.opendocument.presentation', '.odp'],
+])
 
 // 两类透明窗口共享安全的浏览器配置，仅尺寸与生命周期不同。
 function createWindowOptions(size) {
@@ -98,6 +119,160 @@ function getSystemStatus() {
   return {
     cpu: getCpuUsage(),
     neicun: Math.round((1 - os.freemem() / totalMem) * 100),
+  }
+}
+
+function panduanPrivateIpv4(address) {
+  const parts = address.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true
+  const [a, b] = parts
+  return a === 0 || a === 10 || a === 127 || a >= 224
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && [0, 168].includes(b))
+    || (a === 198 && [18, 19, 51].includes(b))
+    || (a === 203 && b === 0)
+}
+
+function panduanPrivateIp(address) {
+  if (nodeNet.isIPv4(address)) return panduanPrivateIpv4(address)
+  if (!nodeNet.isIPv6(address)) return true
+  const normalized = address.toLowerCase().split('%')[0]
+  const mappedIpv4 = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1]
+  if (mappedIpv4) return panduanPrivateIpv4(mappedIpv4)
+  // IPv6 仅允许全球单播 2000::/3，并排除文档、Teredo 与 6to4 过渡网段。
+  return !/^[23]/.test(normalized)
+    || normalized.startsWith('2001:0:')
+    || normalized.startsWith('2001:db8:')
+    || normalized.startsWith('2002:')
+}
+
+async function jiaoyanRemoteUrl(rawUrl) {
+  const url = new URL(rawUrl)
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('不支持的网络地址')
+  const hostname = url.hostname.toLowerCase()
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('不允许访问本地地址')
+  const addresses = await dns.lookup(hostname, { all: true, verbatim: true })
+  if (!addresses.length || addresses.some(({ address }) => panduanPrivateIp(address))) throw new Error('不允许访问内网地址')
+  return { url, addresses }
+}
+
+async function qingqiuRemoteResource(rawUrl, signal) {
+  let currentTarget = await jiaoyanRemoteUrl(rawUrl)
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    const { url: currentUrl, addresses } = currentTarget
+    const response = await new Promise((resolve, reject) => {
+      const request = (currentUrl.protocol === 'https:' ? https : http).request(currentUrl, {
+        method: 'GET',
+        signal,
+        headers: {
+          Accept: 'image/*,application/pdf,text/plain,application/octet-stream;q=0.8,*/*;q=0.5',
+          'Accept-Encoding': 'identity',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+          'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/${process.versions.chrome} Safari/537.36`,
+        },
+        lookup: (hostname, options, callback) => {
+          if (options.all) {
+            callback(null, addresses)
+            return
+          }
+          const selectedAddress = addresses.find(({ family }) => !options.family || family === options.family) ?? addresses[0]
+          callback(null, selectedAddress.address, selectedAddress.family)
+        },
+      }, resolve)
+      request.on('error', reject)
+      request.end()
+    })
+    response.status = response.statusCode ?? 0
+    response.ok = response.status >= 200 && response.status < 300
+    response.body = response
+    response.header = (name) => {
+      const value = response.headers[name.toLowerCase()]
+      return Array.isArray(value) ? value[0] : value || ''
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: currentUrl }
+    const location = response.header('location')
+    response.destroy()
+    if (!location || redirectCount === 5) throw new Error('网络资源重定向过多')
+    currentTarget = await jiaoyanRemoteUrl(new URL(location, currentUrl).toString())
+  }
+  throw new Error('网络资源重定向失败')
+}
+
+function tiquRemoteFilename(response, finalUrl, mimeType) {
+  const disposition = response.header('content-disposition')
+  const encodedFilename = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(disposition)?.[1]
+  const plainFilename = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition)?.[1]
+  let filename = encodedFilename || plainFilename || path.basename(finalUrl.pathname)
+  try { filename = decodeURIComponent(filename.replace(/^"|"$/g, '')) } catch {}
+  filename = path.basename(filename || 'download')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || 'download'
+  if (remoteMimeExtensions.has(mimeType)) {
+    const expectedExtension = remoteMimeExtensions.get(mimeType)
+    const currentExtension = path.extname(filename)
+    const acceptsJpegAlias = mimeType === 'image/jpeg' && ['.jpg', '.jpeg'].includes(currentExtension.toLowerCase())
+    if (!acceptsJpegAlias && currentExtension.toLowerCase() !== expectedExtension) {
+      filename = `${path.basename(filename, currentExtension)}${expectedExtension}`
+    }
+  }
+  return filename
+}
+
+function panduanRemoteResource(filename, mimeType) {
+  if (mimeType === 'text/html' || mimeType === 'application/xhtml+xml') return false
+  const extension = path.extname(filename).toLowerCase()
+  if (remoteMimeExtensions.has(mimeType)) return true
+  if (!mimeType || mimeType === 'application/octet-stream') {
+    return remoteImageExts.has(extension) || remoteDocumentExts.has(extension)
+  }
+  return remoteImageExts.has(extension) || remoteDocumentExts.has(extension)
+}
+
+async function changshiDownloadRemoteResource(rawUrl, batchSignal) {
+  const existing = library.getItemByUrl(rawUrl)
+  if (existing) return { added: [], duplicates: [existing.id], bookmark: false }
+
+  const controller = new AbortController()
+  const abortFromBatch = () => controller.abort()
+  if (batchSignal?.aborted) controller.abort()
+  else batchSignal?.addEventListener('abort', abortFromBatch, { once: true })
+  const timeout = setTimeout(() => controller.abort(), 30000)
+  try {
+    const { response, finalUrl } = await qingqiuRemoteResource(rawUrl, controller.signal)
+    if (!response.ok || !response.body) {
+      response.destroy()
+      return { added: [], duplicates: [], bookmark: true }
+    }
+    const mimeType = response.header('content-type').split(';')[0].trim().toLowerCase()
+    const contentEncoding = response.header('content-encoding').trim().toLowerCase()
+    if (contentEncoding && contentEncoding !== 'identity') {
+      response.destroy()
+      return { added: [], duplicates: [], bookmark: true }
+    }
+    const filename = tiquRemoteFilename(response, finalUrl, mimeType)
+    if (!panduanRemoteResource(filename, mimeType)) {
+      response.destroy()
+      return { added: [], duplicates: [], bookmark: true }
+    }
+    const contentLength = Number(response.header('content-length')) || 0
+    const result = await library.importRemoteContent({
+      sourceUrl: finalUrl.toString(),
+      filename,
+      mimeType,
+      contentLength,
+      body: response.body,
+      maxBytes: maxRemoteFileBytes,
+    })
+    return { ...result, bookmark: !result.added.length && !result.duplicates.length }
+  } catch {
+    return { added: [], duplicates: [], bookmark: true }
+  } finally {
+    clearTimeout(timeout)
+    batchSignal?.removeEventListener('abort', abortFromBatch)
   }
 }
 
@@ -575,7 +750,40 @@ app.whenReady().then(async () => {
   ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
   ipcMain.handle(ipcTongdao.setCollapsedAnimation, (_, animation) => library.setCollapsedAnimation(animation))
   ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => {
-    const result = await library.importContent(payload)
+    const localResult = await library.importContent({ file: payload?.file ?? [], url: [] })
+    const remoteAdded = []
+    const remoteDuplicates = []
+    const bookmarkUrls = []
+    const remoteUrls = [...new Set(Array.isArray(payload?.url) ? payload.url : [])].slice(0, 20)
+    const remoteResults = new Array(remoteUrls.length)
+    const batchController = new AbortController()
+    const batchTimeout = setTimeout(() => batchController.abort(), 45000)
+    let nextRemoteIndex = 0
+    const downloadWorker = async () => {
+      while (nextRemoteIndex < remoteUrls.length) {
+        if (batchController.signal.aborted) return
+        const index = nextRemoteIndex
+        nextRemoteIndex += 1
+        remoteResults[index] = await changshiDownloadRemoteResource(remoteUrls[index], batchController.signal)
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, remoteUrls.length) }, downloadWorker))
+    } finally {
+      clearTimeout(batchTimeout)
+    }
+    for (let index = 0; index < remoteResults.length; index += 1) {
+      const remoteResult = remoteResults[index] ?? { added: [], duplicates: [], bookmark: true }
+      remoteAdded.push(...remoteResult.added)
+      remoteDuplicates.push(...remoteResult.duplicates)
+      if (remoteResult.bookmark) bookmarkUrls.push(remoteUrls[index])
+    }
+    const bookmarkResult = await library.importContent({ file: [], url: bookmarkUrls })
+    const result = {
+      added: [...localResult.added, ...remoteAdded, ...bookmarkResult.added],
+      duplicates: [...localResult.duplicates, ...remoteDuplicates, ...bookmarkResult.duplicates],
+      downloaded: remoteAdded.length,
+    }
     const imageIds = result.added.filter(({ type }) => type === 'image').map(({ id }) => id)
     if (imageIds.length) {
       setTimeout(() => {

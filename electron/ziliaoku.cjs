@@ -3,6 +3,8 @@ const { randomUUID } = require('node:crypto')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
+const { Readable, Transform } = require('node:stream')
+const { pipeline } = require('node:stream/promises')
 
 const imageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
 const documentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
@@ -91,6 +93,13 @@ function createLibrary(dbPath) {
     SET iconCacheKey = shortcutFingerprint, iconStatus = 'pending'
     WHERE type = 'application' AND shortcutFingerprint IS NOT NULL AND iconCacheKey IS NULL
   `)
+  // 旧版本没有全局 URL 唯一约束；保留首条记录并解除其余重复项的去重键。
+  db.exec(`
+    UPDATE items SET normalizedUrl = NULL
+    WHERE normalizedUrl IS NOT NULL AND rowid NOT IN (
+      SELECT MIN(rowid) FROM items WHERE normalizedUrl IS NOT NULL GROUP BY normalizedUrl
+    )
+  `)
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_reference_source_path
@@ -99,6 +108,9 @@ function createLibrary(dbPath) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_bookmark_normalized_url
       ON items(normalizedUrl)
       WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_items_normalized_url
+      ON items(normalizedUrl)
+      WHERE normalizedUrl IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_shortcut_source_path
       ON items(sourcePath COLLATE NOCASE)
       WHERE storageMode = 'shortcut' AND sourcePath IS NOT NULL;
@@ -369,6 +381,94 @@ function createLibrary(dbPath) {
     return { added, duplicates }
   }
 
+  // 网络资源直接流入资料库暂存区，完成大小校验后再原子提交。
+  async function importRemoteContent({ sourceUrl, filename, mimeType, contentLength, body, maxBytes }) {
+    const normalizedUrl = normalizeUrl(sourceUrl)
+    if (!normalizedUrl || !body) return { added: [], duplicates: [] }
+    const existing = findItemStmt.get('', normalizedUrl)
+    if (existing) {
+      if (typeof body.cancel === 'function') await body.cancel().catch(() => {})
+      else body.destroy?.()
+      return { added: [], duplicates: [existing.id] }
+    }
+
+    const safeFilename = path.basename(filename || 'download')
+    const classification = classifyLocalFile({ name: safeFilename, path: safeFilename, type: mimeType })
+    if (!classification) {
+      if (typeof body.cancel === 'function') await body.cancel().catch(() => {})
+      else body.destroy?.()
+      return { added: [], duplicates: [] }
+    }
+    if (contentLength > maxBytes) {
+      if (typeof body.cancel === 'function') await body.cancel().catch(() => {})
+      else body.destroy?.()
+      throw new Error('网络资源超过允许大小')
+    }
+
+    const { rootdir } = getConfig()
+    if (!rootdir) {
+      if (typeof body.cancel === 'function') await body.cancel().catch(() => {})
+      else body.destroy?.()
+      throw new Error('请先设置资料库目录')
+    }
+    const id = randomUUID()
+    const categoryDir = classification.type === 'image' ? 'images' : 'documents'
+    const relativePath = path.join(categoryDir, generateManagedFilename(safeFilename, id))
+    const finalPath = path.resolve(rootdir, relativePath)
+    const stagingPath = path.join(rootdir, '.staging', `${id}.download`)
+    let byteSize = 0
+    const sizeLimiter = new Transform({
+      transform(chunk, encoding, callback) {
+        byteSize += chunk.length
+        callback(byteSize > maxBytes ? new Error('网络资源超过允许大小') : null, chunk)
+      },
+    })
+
+    try {
+      await pipeline(
+        typeof body.getReader === 'function' ? Readable.fromWeb(body) : body,
+        sizeLimiter,
+        fs.createWriteStream(stagingPath, { flags: 'wx' }),
+      )
+      if (!byteSize) throw new Error('网络资源为空')
+      await fsp.rename(stagingPath, finalPath)
+    } catch (error) {
+      await fsp.rm(stagingPath, { force: true }).catch(() => {})
+      throw error
+    }
+
+    const timestamp = Date.now()
+    const item = {
+      id,
+      type: classification.type,
+      storageMode: 'managed',
+      title: safeFilename,
+      sourcePath: null,
+      relativePath,
+      sourceUrl,
+      normalizedUrl,
+      mimeType: mimeType || classification.mimeType,
+      byteSize,
+      createdAt: timestamp,
+    }
+    try {
+      runTransaction(() => {
+        insertItemStmt.run(
+          item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath,
+          item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp,
+        )
+      })
+      return { added: [item], duplicates: [] }
+    } catch (error) {
+      await fsp.rm(finalPath, { force: true }).catch(() => {})
+      if (String(error.message).includes('UNIQUE')) {
+        const duplicate = findItemStmt.get('', normalizedUrl)
+        return { added: [], duplicates: duplicate ? [duplicate.id] : [] }
+      }
+      throw error
+    }
+  }
+
   // 将桌面扫描结果幂等同步到资料库；快捷方式移动时通过目标指纹复用原条目。
   function tongbuDesktopShortcuts({ shortcuts = [], scannedScopes = [], scannedAt = Date.now() }) {
     const result = { added: 0, updated: 0, recovered: 0, missing: 0, skipped: 0, unreadable: 0 }
@@ -494,6 +594,15 @@ function createLibrary(dbPath) {
     return readApplicationCacheItemsStmt.all()
   }
 
+  function getItemByUrl(rawUrl) {
+    try {
+      const normalizedUrl = normalizeUrl(rawUrl)
+      return normalizedUrl ? findItemStmt.get('', normalizedUrl) ?? null : null
+    } catch {
+      return null
+    }
+  }
+
   function setApplicationIconCache(id, cacheKey, status) {
     if (!['pending', 'ready', 'failed'].includes(status)) throw new Error('不支持的图标缓存状态')
     updateApplicationIconStmt.run(cacheKey, status, id)
@@ -538,11 +647,13 @@ function createLibrary(dbPath) {
     setCollapsedAnimation,
     setRootdir,
     importContent,
+    importRemoteContent,
     tongbuDesktopShortcuts,
     getLibrarySummary,
     getLibraryPage,
     searchLibrary,
     getApplicationCacheItems,
+    getItemByUrl,
     setApplicationIconCache,
     setImageThumbnailCache,
     getItemDetail,

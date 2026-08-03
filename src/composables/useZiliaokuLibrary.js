@@ -217,12 +217,15 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function daoruDragContent(dataTransfer) {
-    if (isImporting.value || !(await quebaoLibrary())) return []
+    if (isImporting.value) return []
+    // DataTransfer 仅在 drop 事件周期内可靠，先同步提取网络地址再打开目录选择器。
+    const draggedUrls = tiquDraggedUrls(dataTransfer)
+    if (!(await quebaoLibrary())) return []
     isImporting.value = true
     try {
       const result = await huoquBridge()?.importDragContent({
         document: dataTransfer?.files,
-        url: tiquDraggedUrls(dataTransfer),
+        url: draggedUrls,
       })
       const addedItems = result?.added ?? []
       if (!addedItems.length) {
@@ -230,7 +233,8 @@ export function useZiliaokuLibrary(xianshiToast) {
         return []
       }
       await shuaxinLibraryIndex()
-      xianshiToast(`已添加 ${addedItems.length} 项`, 'success')
+      const downloadText = result.downloaded ? `，其中下载 ${result.downloaded} 项` : ''
+      xianshiToast(`已添加 ${addedItems.length} 项${downloadText}`, 'success')
       return addedItems
     } catch {
       xianshiToast('导入失败，请稍后重试', 'error')
@@ -346,11 +350,21 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 }
 
-// 从拖放文本中提取网址，并忽略 URI 列表里的注释行。
+// 浏览器拖拽图片时优先使用 HTML 中的图片源，避免误收藏包裹图片的网页链接。
 function tiquDraggedUrls(dataTransfer) {
+  const html = dataTransfer?.getData('text/html') || ''
+  if (html) {
+    const htmlDocument = new DOMParser().parseFromString(html, 'text/html')
+    const imageUrls = [...htmlDocument.querySelectorAll('img[src]')]
+      .map((image) => image.getAttribute('src')?.trim())
+      .filter((url) => /^https?:\/\//i.test(url || ''))
+    if (imageUrls.length) return [...new Set(imageUrls)].slice(0, 20)
+  }
+
   const rawText = dataTransfer?.getData('text/uri-list') || dataTransfer?.getData('text/plain') || ''
-  return rawText
+  return [...new Set(rawText
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
+    .filter((line) => line && !line.startsWith('#') && /^https?:\/\//i.test(line)))]
+    .slice(0, 20)
 }
