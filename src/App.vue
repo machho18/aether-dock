@@ -6,7 +6,11 @@
       v-if="!isStartupWindow"
       ref="islandHolder"
       class="lingdongchuangkou"
-      :class="{ 'lingdongchuangkou--expanded': isExpanded, 'lingdongchuangkou--drop': isDragging }"
+      :class="{
+        'lingdongchuangkou--expanded': isExpanded,
+        'lingdongchuangkou--drop': isDragging || isDropping,
+        'lingdongchuangkou--dropping': isDropping,
+      }"
       aria-label="黑色玻璃灵动窗口"
       tabindex="0"
       @mouseenter="chuliIslandEnter"
@@ -20,17 +24,25 @@
       @blur="qiehuanIslandState(false)"
     >
       <div class="inner-glow"></div>
-      <ShouqiStatus :animation-id="currentCollapsedAnimation" :hidden="isExpanded" :dragging="isDragging" />
+      <ShouqiStatus :animation-id="currentCollapsedAnimation" :hidden="isExpanded" :dragging="isDragging || isDropping" />
 
       <div class="drop-hint" aria-hidden="true">
-        <span class="drop-plus">+</span>
-        <span>{{ isImporting ? '正在归档' : '拖放归档' }}</span>
+        <span class="drop-paste-stage">
+          <i class="drop-paste-target"></i>
+          <span class="drop-token">
+            <i></i>
+            <i></i>
+            <i></i>
+          </span>
+          <i class="drop-paste-ripple"></i>
+        </span>
+        <span class="drop-label">{{ isDropping ? '贴入归档' : isImporting ? '正在归档' : '松手贴入' }}</span>
       </div>
 
       <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
       <div
         class="library-stage"
-        :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && currentPage === 'library' }"
+        :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && currentPage === 'library' }"
       >
         <ZiliaokuPage
           :items="libraryItems"
@@ -52,7 +64,7 @@
 
       <Transition name="glass-switch" mode="out-in">
         <ShezhiPage
-          v-if="isExpanded && !isDragging && currentPage === 'settings'"
+          v-if="isExpanded && !isDragging && !isDropping && currentPage === 'settings'"
           key="settings"
           :animation-id="currentCollapsedAnimation"
           :rootdir="libraryConfig.rootdir"
@@ -95,6 +107,7 @@ const islandHolder = useTemplateRef('islandHolder')
 const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
+const isDropping = shallowRef(false)
 const currentPage = shallowRef('library')
 const isLibraryContentVisible = shallowRef(false)
 const isExpansionAnimating = shallowRef(false)
@@ -198,7 +211,7 @@ function baohanDragContent(event) {
 }
 
 function chuliDragEnter(event) {
-  if (!baohanDragContent(event)) return
+  if (isDropping.value || !baohanDragContent(event)) return
   event.preventDefault()
   isDragging.value = true
   isExpanded.value = false
@@ -220,10 +233,17 @@ function chuliDragLeave(event) {
 }
 
 async function chuliDrop(event) {
-  if (!baohanDragContent(event)) return
+  if (isDropping.value || !baohanDragContent(event)) return
   event.preventDefault()
-  qingliDragState()
-  const addedItems = await daoruDragContent(event.dataTransfer)
+  isDropping.value = true
+  isDragging.value = true
+  const importPromise = daoruDragContent(event.dataTransfer)
+  const animationDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 120 : 640
+  await new Promise((resolve) => window.setTimeout(resolve, animationDuration))
+  isDropping.value = false
+  qingliDragState(true)
+
+  const addedItems = await importPromise
   if (!addedItems.length) return
 
   await xuanzeLibraryCategory(addedItems[0].type ?? 'document')
@@ -236,7 +256,8 @@ function xuanzeZiliaokuCategory(category) {
   xuanzeLibraryCategory(category)
 }
 
-function qingliDragState() {
+function qingliDragState(force = false) {
+  if (isDropping.value && force !== true) return
   isDragging.value = false
 }
 
@@ -362,9 +383,9 @@ function shezhiMousePassthrough(passthrough) {
 
 /* 拖放态保持重构前的宽幅投放尺寸与银白轮廓。 */
 .lingdongchuangkou--drop {
-  width: min(820px, calc(100vw - 40px));
-  height: 180px;
-  border-radius: 32px;
+  width: min(520px, calc(100vw - 48px));
+  height: 142px;
+  border-radius: 28px;
 }
 
 .lingdongchuangkou--drop::after {
@@ -374,7 +395,7 @@ function shezhiMousePassthrough(passthrough) {
 
 .lingdongchuangkou--drop .inner-glow {
   inset: 1px;
-  border-radius: 31px;
+  border-radius: 27px;
 }
 
 .drop-hint {
@@ -384,7 +405,7 @@ function shezhiMousePassthrough(passthrough) {
   left: 50%;
   display: grid;
   justify-items: center;
-  gap: 1px;
+  gap: 8px;
   color: var(--text-on-ink);
   font: 600 11px/1 var(--font-display);
   letter-spacing: .14em;
@@ -395,29 +416,138 @@ function shezhiMousePassthrough(passthrough) {
   transition: opacity 160ms ease, transform 260ms var(--motion-easing);
 }
 
-.drop-plus {
-  display: grid;
-  width: 24px;
+.drop-paste-stage {
+  position: relative;
+  display: block;
+  width: 82px;
+  height: 72px;
+  perspective: 180px;
+}
+
+.drop-paste-target {
+  position: absolute;
+  z-index: 0;
+  top: 11px;
+  left: 16px;
+  width: 50px;
+  height: 50px;
+  border: 1px dashed rgba(255, 255, 255, .22);
+  border-radius: 13px;
+  background: radial-gradient(circle, rgba(99, 254, 19, .08), transparent 65%);
+  box-shadow: inset 0 0 16px rgba(99, 254, 19, .04);
+  transform: rotate(-3deg);
+}
+
+.drop-token {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 21px;
+  display: flex;
+  width: 40px;
+  height: 48px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid rgba(99, 254, 19, .76);
+  border-radius: 8px 8px 11px 11px;
+  background: linear-gradient(145deg, rgba(244, 255, 237, .2), rgba(99, 254, 19, .07));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .2), 0 9px 22px rgba(0, 0, 0, .34), 0 0 18px rgba(99, 254, 19, .14);
+  animation: drop-token-hover 1.35s ease-in-out infinite;
+  transform-style: preserve-3d;
+}
+
+.drop-token::after {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 9px;
+  height: 9px;
+  border-bottom: 1px solid rgba(99, 254, 19, .5);
+  border-left: 1px solid rgba(99, 254, 19, .5);
+  background: rgba(9, 11, 10, .9);
+  content: "";
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+
+.drop-token > i {
+  display: block;
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .52);
+  box-shadow: 0 0 4px rgba(255, 255, 255, .08);
+}
+
+.drop-token > i:nth-child(2) { width: 76%; }
+.drop-token > i:nth-child(3) { width: 48%; }
+
+.drop-paste-ripple {
+  position: absolute;
+  z-index: 1;
+  top: 35px;
+  left: 50%;
+  width: 42px;
   height: 24px;
-  place-items: center;
-  border: 1px solid rgba(99, 254, 19, .7);
+  border: 1px solid var(--accent);
   border-radius: 50%;
-  font: 300 23px/.8 var(--font-mono);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(.35);
+}
+
+.drop-label {
+  min-width: 7em;
+  text-align: center;
 }
 
 .lingdongchuangkou--drop .drop-hint {
-  gap: 14px;
   font-size: 13px;
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
 }
 
-.lingdongchuangkou--drop .drop-plus {
-  width: 62px;
-  height: 62px;
-  border-color: var(--accent);
-  box-shadow: 0 0 20px rgba(99, 254, 19, .2), inset 0 0 14px rgba(99, 254, 19, .08);
-  font-size: 52px;
+.lingdongchuangkou--dropping::after { animation: drop-shell-impact 640ms var(--motion-easing) both; }
+.lingdongchuangkou--dropping .drop-token { animation: drop-token-paste 640ms cubic-bezier(.16, 1, .3, 1) both; }
+.lingdongchuangkou--dropping .drop-paste-target { animation: drop-target-stick 640ms var(--motion-easing) both; }
+.lingdongchuangkou--dropping .drop-paste-ripple { animation: drop-paste-ripple 640ms ease-out both; }
+.lingdongchuangkou--dropping .drop-label { animation: drop-label-confirm 640ms ease both; }
+
+@keyframes drop-token-hover {
+  0%, 100% { transform: translate3d(0, -4px, 16px) rotateX(-6deg) rotateZ(-3deg); }
+  50% { transform: translate3d(0, 1px, 12px) rotateX(-2deg) rotateZ(2deg); }
+}
+
+@keyframes drop-token-paste {
+  0% { transform: translate3d(-9px, -12px, 30px) rotateX(-18deg) rotateY(9deg) rotateZ(-9deg) scale(1.08); }
+  42% { transform: translate3d(3px, 2px, 8px) rotateX(-4deg) rotateY(-2deg) rotateZ(3deg) scale(1.02); }
+  58% { border-color: rgba(99, 254, 19, 1); box-shadow: inset 0 1px rgba(255, 255, 255, .24), 0 1px 3px rgba(0, 0, 0, .24), 0 0 28px rgba(99, 254, 19, .4); transform: translate3d(0, 5px, 0) rotateX(7deg) rotateZ(0) scaleX(1.08) scaleY(.9); }
+  76% { transform: translate3d(0, 2px, 1px) rotateX(-2deg) scaleX(.98) scaleY(1.03); }
+  100% { border-color: rgba(99, 254, 19, .86); box-shadow: inset 0 1px rgba(255, 255, 255, .2), 0 1px 2px rgba(0, 0, 0, .2), 0 0 16px rgba(99, 254, 19, .22); transform: translate3d(0, 3px, 0) rotateX(0) rotateZ(0) scale(1); }
+}
+
+@keyframes drop-target-stick {
+  0%, 42% { border-color: rgba(255, 255, 255, .2); opacity: .7; transform: rotate(-3deg) scale(1); }
+  58% { border-color: rgba(99, 254, 19, .9); opacity: 1; transform: rotate(0) scale(1.13); }
+  100% { border-color: rgba(99, 254, 19, .22); opacity: .18; transform: rotate(0) scale(.96); }
+}
+
+@keyframes drop-paste-ripple {
+  0%, 52% { opacity: 0; transform: translate(-50%, -50%) scale(.35); }
+  58% { opacity: .9; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(3.1); }
+}
+
+@keyframes drop-shell-impact {
+  0%, 52% { box-shadow: 0 0 12px rgba(99, 254, 19, .18), inset 0 0 14px rgba(99, 254, 19, .06); }
+  60% { box-shadow: 0 0 30px rgba(99, 254, 19, .38), inset 0 0 24px rgba(99, 254, 19, .12); }
+  100% { box-shadow: 0 0 12px rgba(99, 254, 19, .18), inset 0 0 14px rgba(99, 254, 19, .06); }
+}
+
+@keyframes drop-label-confirm {
+  0%, 46% { color: var(--text-on-ink); letter-spacing: .14em; opacity: .72; }
+  62% { color: var(--accent); letter-spacing: .24em; opacity: 1; }
+  100% { color: var(--text-on-ink); letter-spacing: .14em; opacity: .92; }
 }
 
 .glass-switch-enter-active { transition: opacity 240ms ease; }

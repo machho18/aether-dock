@@ -98,18 +98,20 @@
                 </small>
               </span>
             </button>
-            <button
-              v-if="item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing'"
-              class="library-shelf-action library-shelf-enter"
-              type="button"
-              aria-label="在文件夹中定位"
-              @click.stop="emit('locate-item', item)"
-            >
-              <img :src="enterIcon" alt="" aria-hidden="true" draggable="false">
-            </button>
-            <button class="library-shelf-action library-shelf-delete" type="button" aria-label="删除" @click.stop="emit('delete-item', item)">
-              <img :src="deleteIcon" alt="" aria-hidden="true" draggable="false">
-            </button>
+            <div v-if="offset === 0" class="library-shelf-actions" aria-label="卡片操作">
+              <button
+                v-if="item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing'"
+                class="library-shelf-action library-shelf-enter"
+                type="button"
+                aria-label="在文件夹中定位"
+                @click.stop="emit('locate-item', item)"
+              >
+                <img :src="enterIcon" alt="" aria-hidden="true" draggable="false">
+              </button>
+              <button class="library-shelf-action library-shelf-delete" type="button" aria-label="删除" @click.stop="emit('delete-item', item)">
+                <img :src="deleteIcon" alt="" aria-hidden="true" draggable="false">
+              </button>
+            </div>
           </article>
         </div>
         <div v-else-if="currentCategory === 'application' && !categoryCounts.application" key="application-empty" class="application-empty">
@@ -643,9 +645,22 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   transition: transform 420ms var(--motion-easing), opacity 360ms ease, box-shadow 260ms ease, border-color 260ms ease;
 }
 
+.library-shelf-card::before {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border: 1px solid rgba(191, 191, 191, .42);
+  border-radius: inherit;
+  background: linear-gradient(165deg, rgba(48, 50, 49, .97), rgba(15, 17, 16, .98) 58%, rgba(30, 33, 31, .96));
+  content: "";
+  pointer-events: none;
+  transform: translateZ(1px);
+}
+
 .library-shelf-card--center { border-color: rgba(99, 254, 19, .62); box-shadow: inset 0 1px rgba(255, 255, 255, .1), inset 0 0 0 1px rgba(99, 254, 19, .08), 0 0 22px rgba(99, 254, 19, .14), 0 22px 38px rgba(15, 17, 16, .42); }
+.library-shelf-card--center::before { border-color: rgba(99, 254, 19, .62); }
 .library-shelf-card--missing { filter: grayscale(.8); }
-.library-shelf-main { position: relative; z-index: 1; display: flex; width: 100%; height: 100%; box-sizing: border-box; flex-direction: column; align-items: center; justify-content: flex-start; padding: 10px 10px 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
+.library-shelf-main { position: relative; z-index: 3; display: flex; width: 100%; height: 100%; box-sizing: border-box; flex-direction: column; align-items: center; justify-content: flex-start; padding: 10px 10px 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
 /* 预览图与卡片边缘保持一致的 10px 留白。 */
 .library-shelf-view { position: relative; display: flex; width: 100%; height: 78px; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
 .library-shelf-icon { position: relative; z-index: 2; width: 56px; height: 56px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
@@ -658,32 +673,66 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 .library-shelf-cover small { overflow: hidden; width: 100%; color: var(--text-on-ink-muted); font: 11px/1.3 var(--font-mono); letter-spacing: .04em; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); white-space: nowrap; }
 .library-shelf-cover .library-shelf-status--missing { color: #ff9f9f; }
 
-.library-shelf-action {
+.library-shelf-actions {
   position: absolute;
-  top: 10px;
-  display: grid;
-  z-index: 4;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
+  z-index: 1;
+  bottom: -24px;
+  left: 50%;
+  display: flex;
+  height: 24px;
+  align-items: flex-start;
+  gap: 22px;
   opacity: 0;
-  transition: opacity 160ms ease, background 160ms ease, transform 160ms ease;
+  pointer-events: none;
+  transform: translate3d(-50%, -22px, -12px);
+  transition: opacity 130ms ease, transform 240ms var(--motion-easing);
 }
 
-.library-shelf-enter { right: 10px; }
-.library-shelf-delete { left: 10px; }
-.library-shelf-action img { width: 17px; height: 17px; pointer-events: none; }
+.library-shelf-actions::before {
+  position: absolute;
+  z-index: -1;
+  top: -3px;
+  left: 50%;
+  width: 76px;
+  height: 9px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, transparent, rgba(99, 254, 19, .26), transparent);
+  filter: blur(4px);
+  content: "";
+  transform: translateX(-50%);
+}
+
+.library-shelf-action {
+  position: relative;
+  display: grid;
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: linear-gradient(180deg, rgba(24, 27, 25, .99), rgba(8, 10, 9, .99));
+  box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 8px 14px rgba(0, 0, 0, .34);
+  cursor: pointer;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 200ms var(--motion-easing);
+}
+
+.library-shelf-action img { width: 14px; height: 14px; pointer-events: none; transition: filter 160ms ease, opacity 160ms ease; }
+.library-shelf-enter { border-color: rgba(99, 254, 19, .38); }
 .library-shelf-enter img { filter: brightness(0) saturate(100%) invert(87%) sepia(100%) saturate(2148%) hue-rotate(40deg) brightness(104%) contrast(104%); }
-.library-shelf-card--center:hover .library-shelf-action { opacity: 1; }
-.library-shelf-action:hover { transform: scale(1.08); }
-.library-shelf-delete:hover { color: var(--danger); }
+.library-shelf-delete { border-color: rgba(232, 93, 93, .28); }
+.library-shelf-delete img { filter: brightness(0) invert(1); opacity: .62; }
+.library-shelf-card--center:hover .library-shelf-actions,
+.library-shelf-card--center:focus-within .library-shelf-actions { opacity: 1; pointer-events: auto; transform: translate3d(-50%, 0, -12px) scale(1); }
+.library-shelf-enter:hover { border-color: rgba(99, 254, 19, .82); box-shadow: inset 0 -1px rgba(255, 255, 255, .12), 0 9px 18px rgba(99, 254, 19, .2); }
+.library-shelf-delete:hover { border-color: rgba(232, 93, 93, .76); box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 9px 18px rgba(232, 93, 93, .18); }
+.library-shelf-delete:hover img { filter: brightness(0) saturate(100%) invert(52%) sepia(59%) saturate(1065%) hue-rotate(315deg) brightness(103%) contrast(82%); opacity: 1; }
 
 .library-shelf-card:hover { border-color: rgba(99, 254, 19, .34); box-shadow: inset 0 1px rgba(255, 255, 255, .09), 0 19px 32px rgba(15, 17, 16, .38); }
+.library-shelf-card:hover::before { border-color: rgba(99, 254, 19, .34); }
 .library-shelf-card--center:hover { border-color: rgba(99, 254, 19, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .11), inset 0 0 0 1px rgba(99, 254, 19, .12), 0 0 28px rgba(99, 254, 19, .18), 0 22px 38px rgba(15, 17, 16, .46); }
+.library-shelf-card--center:hover::before { border-color: rgba(99, 254, 19, .8); }
 
 .application-empty {
   position: relative;
