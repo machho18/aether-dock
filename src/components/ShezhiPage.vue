@@ -31,21 +31,48 @@
       </div>
     </section>
 
-    <section class="settings-group settings-group--directory" aria-labelledby="directory-title">
-      <div class="settings-group-title">
-        <span id="directory-title">资料库目录</span>
-        <small>网络归档与本地索引的统一入口</small>
-      </div>
-      <div class="library-directory-display">
-        <span>{{ rootdir || '尚未设置资料库目录' }}</span>
-        <button type="button" @click.stop="emit('select-rootdir')">{{ rootdir ? '更换目录' : '选择目录' }}</button>
-      </div>
-    </section>
+    <div class="settings-bottom-grid">
+      <section class="settings-group settings-group--directory" aria-labelledby="directory-title">
+        <div class="settings-group-title">
+          <span id="directory-title">资料库目录</span>
+          <small>LOCAL ARCHIVE</small>
+        </div>
+        <div class="library-directory-display">
+          <span>{{ rootdir || '尚未设置资料库目录' }}</span>
+          <button type="button" @click.stop="emit('select-rootdir')">{{ rootdir ? '更换目录' : '选择目录' }}</button>
+        </div>
+      </section>
+
+      <section class="settings-group settings-group--system" aria-labelledby="system-title">
+        <div class="settings-group-title">
+          <span id="system-title">系统启动</span>
+          <small>V{{ appVersion }}</small>
+        </div>
+        <div class="system-startup-display">
+          <span>
+            <strong>开机自启</strong>
+            <small>{{ autoLaunchDescription }}</small>
+          </span>
+          <button
+            class="startup-switch"
+            :class="{ 'startup-switch--active': autoLaunchEnabled }"
+            type="button"
+            role="switch"
+            :aria-checked="autoLaunchEnabled"
+            :aria-label="autoLaunchEnabled ? '关闭开机自启' : '开启开机自启'"
+            :disabled="!autoLaunchSupported || isAutoLaunchUpdating"
+            @click.stop="qiehuanAutoLaunch"
+          >
+            <i aria-hidden="true"></i>
+          </button>
+        </div>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, shallowRef } from 'vue'
 import lottie from 'lottie-web/build/player/lottie_light'
 import { donghuaList, jiazaiDonghuaData } from '@/constants/donghua'
 
@@ -56,8 +83,40 @@ defineProps({
 
 const emit = defineEmits(['back', 'select-animation', 'select-rootdir'])
 const previewHolders = new Map()
+const appVersion = shallowRef('0.0.0')
+const autoLaunchSupported = shallowRef(false)
+const autoLaunchEnabled = shallowRef(false)
+const autoLaunchUnavailableReason = shallowRef('')
+const isAutoLaunchUpdating = shallowRef(false)
 let previewPlayers = []
 let isPreviewActive = false
+
+const autoLaunchDescription = computed(() => {
+  if (autoLaunchSupported.value) return autoLaunchEnabled.value ? '已跟随系统启动' : '保持手动启动'
+  return autoLaunchUnavailableReason.value === 'development' ? '仅安装版可设置' : '当前系统不支持'
+})
+
+async function jiazaiAppInfo() {
+  try {
+    const info = await window.aetherDock?.getAppInfo()
+    if (!info) return
+    appVersion.value = info.version || '0.0.0'
+    autoLaunchSupported.value = Boolean(info.autoLaunchSupported)
+    autoLaunchEnabled.value = Boolean(info.autoLaunchEnabled)
+    autoLaunchUnavailableReason.value = info.autoLaunchUnavailableReason || ''
+  } catch {}
+}
+
+async function qiehuanAutoLaunch() {
+  if (!autoLaunchSupported.value || isAutoLaunchUpdating.value) return
+  isAutoLaunchUpdating.value = true
+  try {
+    const result = await window.aetherDock?.setAutoLaunch(!autoLaunchEnabled.value)
+    if (result) autoLaunchEnabled.value = Boolean(result.autoLaunchEnabled)
+  } finally {
+    isAutoLaunchUpdating.value = false
+  }
+}
 
 function jiluPreviewHolder(animationId, element) {
   if (element) previewHolders.set(animationId, element)
@@ -90,6 +149,7 @@ async function chushihuaPreviews() {
 onMounted(() => {
   isPreviewActive = true
   chushihuaPreviews()
+  jiazaiAppInfo()
 })
 onUnmounted(() => {
   isPreviewActive = false
@@ -147,7 +207,8 @@ onUnmounted(() => {
 
 .settings-back:hover { border-color: rgba(99, 254, 19, .56); background: var(--accent-tint); }
 .settings-group { margin-top: 18px; }
-.settings-group--directory { margin-top: 24px; }
+.settings-bottom-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 12px; margin-top: 18px; }
+.settings-bottom-grid .settings-group { min-width: 0; margin-top: 0; }
 
 .settings-group-title {
   display: flex;
@@ -220,7 +281,51 @@ onUnmounted(() => {
   font: 600 11px var(--font-body);
 }
 
-.library-directory-display button:hover { border-color: var(--accent-deep); background: var(--accent); color: var(--ink-deep); }
+.library-directory-display button:hover { border-color: rgba(38, 38, 38, .72); background: #3d423f; color: #fff; box-shadow: 0 5px 12px rgba(38, 38, 38, .16); }
+
+.system-startup-display {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 13px;
+  border: 1px solid rgba(38, 38, 38, .12);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .52), rgba(239, 241, 236, .5));
+}
+
+.system-startup-display > span { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.system-startup-display strong { color: var(--ink); font: 600 11px var(--font-body); letter-spacing: .04em; }
+.system-startup-display small { overflow: hidden; color: var(--ink-faint); font: 600 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+
+.startup-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid rgba(38, 38, 38, .22);
+  border-radius: 999px;
+  background: rgba(38, 38, 38, .1);
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.startup-switch i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(38, 38, 38, .22);
+  transition: transform 220ms var(--motion-easing);
+}
+
+.startup-switch--active { border-color: rgba(71, 190, 17, .58); background: var(--accent); box-shadow: 0 0 0 3px rgba(99, 254, 19, .09); }
+.startup-switch--active i { transform: translateX(16px); }
+.startup-switch:disabled { cursor: wait; opacity: .5; }
 
 .glass-switch-enter-active .settings-title,
 .glass-switch-enter-active .settings-group {

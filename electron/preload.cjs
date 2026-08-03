@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 // 沙箱预加载脚本不能引入本地模块，通道表需在隔离层内直接声明。
 const ipcTongdao = Object.freeze({
   getSystemStatus: 'system:read-status',
+  getAppInfo: 'app:read-info',
+  setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   completeStartup: 'island:startup-complete',
   setHeavyTasksPaused: 'island:set-heavy-tasks-paused',
@@ -47,6 +49,8 @@ window.addEventListener('drop', (event) => {
 // 向渲染进程暴露受控接口
 contextBridge.exposeInMainWorld('aetherDock', {
   getSystemStatus: () => ipcRenderer.invoke(ipcTongdao.getSystemStatus),
+  getAppInfo: () => ipcRenderer.invoke(ipcTongdao.getAppInfo),
+  setAutoLaunch: (enabled) => ipcRenderer.invoke(ipcTongdao.setAutoLaunch, enabled),
   setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke(ipcTongdao.setIslandPassthrough, isPassthrough),
   completeStartup: () => ipcRenderer.invoke(ipcTongdao.completeStartup),
   setHeavyTasksPaused: (paused) => ipcRenderer.invoke(ipcTongdao.setHeavyTasksPaused, paused),

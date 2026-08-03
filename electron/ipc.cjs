@@ -1,6 +1,8 @@
 // 主进程与预加载层共享 IPC 通道，避免字符串分散后发生拼写漂移。
 const ipcTongdao = Object.freeze({
   getSystemStatus: 'system:read-status',
+  getAppInfo: 'app:read-info',
+  setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   completeStartup: 'island:startup-complete',
   setHeavyTasksPaused: 'island:set-heavy-tasks-paused',

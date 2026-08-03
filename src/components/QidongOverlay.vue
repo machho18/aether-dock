@@ -18,7 +18,7 @@ let lottiePlayer = null
 let isCompleted = false
 
 // 动画资源异常时由兜底计时器保证开机流程仍能结束。
-const { stop: tingzhiFallback } = useTimeoutFn(wanchengStartup, 2600)
+const { stop: tingzhiFallback } = useTimeoutFn(wanchengStartup, 2400)
 
 function wanchengStartup() {
   if (isCompleted) return
@@ -36,7 +36,7 @@ onMounted(() => {
     animationData: startupAnimation,
     rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
   })
-  lottiePlayer.setSpeed(0.5)
+  lottiePlayer.setSpeed(1)
   lottiePlayer.addEventListener('complete', wanchengStartup)
 })
 
@@ -53,8 +53,8 @@ onUnmounted(() => lottiePlayer?.destroy())
 }
 
 .startup-lottie {
-  width: 230px;
-  height: 230px;
+  width: min(332px, calc(100vw - 28px));
+  aspect-ratio: 16 / 9;
 }
 
 .startup-fade-leave-active {

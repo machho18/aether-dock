@@ -207,6 +207,38 @@ function huoquRemoteReferer(currentUrl, requestContext = {}) {
   }
 }
 
+function huoquLoginItemOptions() {
+  return app.isPackaged
+    ? {}
+    : { path: process.execPath, args: [path.resolve(__dirname, '..')] }
+}
+
+function huoquAppInfo() {
+  const isSupportedPlatform = ['win32', 'darwin'].includes(process.platform)
+  const autoLaunchSupported = isSupportedPlatform && app.isPackaged
+  let autoLaunchEnabled = false
+  if (autoLaunchSupported) {
+    try {
+      const loginItemSettings = app.getLoginItemSettings(huoquLoginItemOptions())
+      autoLaunchEnabled = typeof loginItemSettings.executableWillLaunchAtLogin === 'boolean'
+        ? loginItemSettings.executableWillLaunchAtLogin
+        : loginItemSettings.openAtLogin
+    } catch {}
+  }
+  const autoLaunchUnavailableReason = autoLaunchSupported ? '' : app.isPackaged ? 'platform' : 'development'
+  return { version: app.getVersion(), autoLaunchSupported, autoLaunchEnabled, autoLaunchUnavailableReason }
+}
+
+function shezhiAutoLaunch(enabled) {
+  if (!huoquAppInfo().autoLaunchSupported) return { chenggong: false, ...huoquAppInfo() }
+  try {
+    app.setLoginItemSettings({ ...huoquLoginItemOptions(), openAtLogin: Boolean(enabled) })
+    return { chenggong: true, ...huoquAppInfo() }
+  } catch {
+    return { chenggong: false, ...huoquAppInfo() }
+  }
+}
+
 async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
   let currentTarget = await jiaoyanRemoteUrl(rawUrl, signal)
   for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
@@ -1177,6 +1209,11 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
+  ipcMain.handle(ipcTongdao.getAppInfo, () => huoquAppInfo())
+  ipcMain.handle(ipcTongdao.setAutoLaunch, (_, enabled) => {
+    if (typeof enabled !== 'boolean') return { chenggong: false, ...huoquAppInfo() }
+    return shezhiAutoLaunch(enabled)
+  })
   ipcMain.handle(ipcTongdao.setIslandPassthrough, (_, isPassthrough) => {
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.setIgnoreMouseEvents(Boolean(isPassthrough), { forward: Boolean(isPassthrough) })
