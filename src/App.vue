@@ -34,12 +34,15 @@
       >
         <ZiliaokuPage
           :items="libraryItems"
+          :category-counts="categoryCounts"
           :library-config="libraryConfig"
           :initial-category="currentZiliaokuCategory"
           :is-yingyong-syncing="isYingyongSyncing"
           :is-animation-busy="isExpansionAnimating"
           @open-settings="qiehuanSettings"
           @select-category="xuanzeZiliaokuCategory"
+          @search="sousuoLibrary"
+          @load-more="jiazaiGengduo"
           @open-item="dakaiLibraryItem"
           @locate-item="dingweiLibraryItem"
           @delete-item="qingqiuDeleteItem"
@@ -93,7 +96,6 @@ const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
 const currentPage = shallowRef('library')
-const currentZiliaokuCategory = shallowRef('document')
 const isLibraryContentVisible = shallowRef(false)
 const isExpansionAnimating = shallowRef(false)
 let isPassthrough = true
@@ -111,11 +113,16 @@ const {
 
 const {
   libraryItems,
+  categoryCounts,
+  currentCategory: currentZiliaokuCategory,
   libraryConfig,
   currentCollapsedAnimation,
   isImporting,
   isYingyongSyncing,
   jiazaiLibrary,
+  xuanzeLibraryCategory,
+  sousuoLibrary,
+  jiazaiGengduo,
   xuanzeLibraryRootdir,
   daoruDragContent,
   dakaiLibraryItem,
@@ -149,6 +156,7 @@ function qiehuanIslandState(expanded) {
   window.clearTimeout(expansionAnimationTimer)
   isExpanded.value = expanded
   if (!expanded) {
+    window.aetherDock?.setHeavyTasksPaused(false)
     isLibraryContentVisible.value = false
     isExpansionAnimating.value = false
     currentPage.value = 'library'
@@ -156,12 +164,14 @@ function qiehuanIslandState(expanded) {
   }
 
   isExpansionAnimating.value = true
+  window.aetherDock?.setHeavyTasksPaused(true)
   // 外壳展开约六成后再显示内容，避免初始化与关键动画帧抢占主线程。
   libraryContentTimer = window.setTimeout(() => {
     if (isExpanded.value && currentPage.value === 'library') isLibraryContentVisible.value = true
   }, 280)
   expansionAnimationTimer = window.setTimeout(() => {
     isExpansionAnimating.value = false
+    window.aetherDock?.setHeavyTasksPaused(false)
   }, 460)
 }
 
@@ -216,14 +226,14 @@ async function chuliDrop(event) {
   const addedItems = await daoruDragContent(event.dataTransfer)
   if (!addedItems.length) return
 
-  currentZiliaokuCategory.value = addedItems[0].type ?? 'document'
+  await xuanzeLibraryCategory(addedItems[0].type ?? 'document')
   currentPage.value = 'library'
   isExpanded.value = false
 }
 
 // 记录用户选择的资料库 Tab，供下次展开时恢复。
 function xuanzeZiliaokuCategory(category) {
-  currentZiliaokuCategory.value = category
+  xuanzeLibraryCategory(category)
 }
 
 function qingliDragState() {

@@ -7,6 +7,9 @@ const path = require('node:path')
 const imageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
 const documentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
 const availableAnimations = new Set(['kulian', 'daxiao', 'aixin'])
+const itemTypes = ['document', 'image', 'url', 'application']
+const itemTypeSet = new Set(itemTypes)
+const itemSummaryColumns = 'id, type, storageMode, title, sourcePath, sourceUrl, status, iconCacheKey, iconStatus, thumbnailCacheKey, thumbnailStatus, createdAt, updatedAt'
 
 // 创建资料库持久层，所有数据库读写仅在主进程执行
 function createLibrary(dbPath) {
@@ -37,6 +40,10 @@ function createLibrary(dbPath) {
       launchArgs TEXT,
       workingDirectory TEXT,
       shortcutFingerprint TEXT,
+      iconCacheKey TEXT,
+      iconStatus TEXT,
+      thumbnailCacheKey TEXT,
+      thumbnailStatus TEXT,
       sourceScope TEXT,
       lastSeenAt INTEGER,
       lastCheckedAt INTEGER,
@@ -74,6 +81,17 @@ function createLibrary(dbPath) {
     db.exec(itemsBiaoSchema)
   }
 
+  const itemsZiduan = new Set(db.prepare('PRAGMA table_info(items)').all().map(({ name }) => name))
+  if (!itemsZiduan.has('iconCacheKey')) db.exec('ALTER TABLE items ADD COLUMN iconCacheKey TEXT')
+  if (!itemsZiduan.has('iconStatus')) db.exec('ALTER TABLE items ADD COLUMN iconStatus TEXT')
+  if (!itemsZiduan.has('thumbnailCacheKey')) db.exec('ALTER TABLE items ADD COLUMN thumbnailCacheKey TEXT')
+  if (!itemsZiduan.has('thumbnailStatus')) db.exec('ALTER TABLE items ADD COLUMN thumbnailStatus TEXT')
+  db.exec(`
+    UPDATE items
+    SET iconCacheKey = shortcutFingerprint, iconStatus = 'pending'
+    WHERE type = 'application' AND shortcutFingerprint IS NOT NULL AND iconCacheKey IS NULL
+  `)
+
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_reference_source_path
       ON items(sourcePath)
@@ -84,6 +102,8 @@ function createLibrary(dbPath) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_shortcut_source_path
       ON items(sourcePath COLLATE NOCASE)
       WHERE storageMode = 'shortcut' AND sourcePath IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_type_created
+      ON items(type, createdAt DESC, id);
   `)
 
   const readSettingStmt = db.prepare('SELECT value FROM settings WHERE key = ?')
@@ -104,14 +124,16 @@ function createLibrary(dbPath) {
   const insertShortcutStmt = db.prepare(`
     INSERT INTO items (
       id, type, storageMode, title, sourcePath, mimeType, targetPath, launchArgs,
-      workingDirectory, shortcutFingerprint, sourceScope, lastSeenAt, lastCheckedAt,
+      workingDirectory, shortcutFingerprint, iconCacheKey, iconStatus, sourceScope, lastSeenAt, lastCheckedAt,
       missingReason, status, createdAt, updatedAt
-    ) VALUES (?, 'application', 'shortcut', ?, ?, 'application/x-ms-shortcut', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, 'application', 'shortcut', ?, ?, 'application/x-ms-shortcut', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
   `)
   const updateShortcutStmt = db.prepare(`
     UPDATE items SET
       title = ?, sourcePath = ?, targetPath = ?, launchArgs = ?, workingDirectory = ?,
-      shortcutFingerprint = ?, sourceScope = ?, lastSeenAt = ?, lastCheckedAt = ?,
+      shortcutFingerprint = ?, iconCacheKey = ?,
+      iconStatus = CASE WHEN iconCacheKey = ? AND iconStatus = 'ready' THEN 'ready' ELSE 'pending' END,
+      sourceScope = ?, lastSeenAt = ?, lastCheckedAt = ?,
       missingReason = ?, status = ?, updatedAt = ?
     WHERE id = ?
   `)
@@ -119,7 +141,17 @@ function createLibrary(dbPath) {
     UPDATE items SET status = 'shortcut_missing', missingReason = 'shortcut_missing', lastCheckedAt = ?, updatedAt = ?
     WHERE storageMode = 'shortcut' AND sourceScope = ? AND (lastSeenAt IS NULL OR lastSeenAt < ?) AND status != 'shortcut_missing'
   `)
-  const readItemsStmt = db.prepare('SELECT * FROM items ORDER BY createdAt DESC')
+  const readItemCountsStmt = db.prepare('SELECT type, COUNT(*) AS count FROM items GROUP BY type')
+  const readLatestUpdateStmt = db.prepare('SELECT MAX(updatedAt) AS updatedAt FROM items')
+  const readApplicationCacheItemsStmt = db.prepare("SELECT id, type, iconCacheKey, iconStatus FROM items WHERE type = 'application'")
+  const updateApplicationIconStmt = db.prepare(`
+    UPDATE items SET iconCacheKey = ?, iconStatus = ?
+    WHERE id = ? AND type = 'application'
+  `)
+  const updateImageThumbnailStmt = db.prepare(`
+    UPDATE items SET thumbnailCacheKey = ?, thumbnailStatus = ?
+    WHERE id = ? AND type = 'image'
+  `)
   const readItemStmt = db.prepare('SELECT * FROM items WHERE id = ?')
   const deleteItemStmt = db.prepare('DELETE FROM items WHERE id = ?')
 
@@ -354,7 +386,7 @@ function createLibrary(dbPath) {
           const id = randomUUID()
           insertShortcutStmt.run(
             id, shortcut.title, shortcut.sourcePath, shortcut.targetPath, shortcut.launchArgs,
-            shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.sourceScope,
+            shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.shortcutFingerprint, shortcut.sourceScope,
             scannedAt, scannedAt, missingReason, status, scannedAt, scannedAt,
           )
           result.added += 1
@@ -367,6 +399,7 @@ function createLibrary(dbPath) {
           || existing.targetPath !== shortcut.targetPath
           || existing.launchArgs !== shortcut.launchArgs
           || existing.workingDirectory !== shortcut.workingDirectory
+          || existing.shortcutFingerprint !== shortcut.shortcutFingerprint
           || existing.status !== status
         if (existing.status !== 'ready' && status === 'ready') result.recovered += 1
         else if (changed) result.updated += 1
@@ -374,7 +407,8 @@ function createLibrary(dbPath) {
         if (status === 'unreadable') result.unreadable += 1
         updateShortcutStmt.run(
           shortcut.title, shortcut.sourcePath, shortcut.targetPath, shortcut.launchArgs,
-          shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.sourceScope,
+          shortcut.workingDirectory, shortcut.shortcutFingerprint, shortcut.shortcutFingerprint,
+          shortcut.shortcutFingerprint, shortcut.sourceScope,
           scannedAt, scannedAt, missingReason, status, scannedAt, existing.id,
         )
       }
@@ -387,9 +421,87 @@ function createLibrary(dbPath) {
     return result
   }
 
-  // 列表读取只返回数据库索引，避免首次展开对每个条目执行同步磁盘探测。
-  function getItemList() {
-    return readItemsStmt.all()
+  function normalizePageOptions(options = {}) {
+    const type = itemTypeSet.has(options.type) ? options.type : 'document'
+    const direction = options.direction === 'previous' ? 'previous' : 'next'
+    const limit = Math.max(1, Math.min(Number(options.limit) || 30, 50))
+    const createdAt = Number(options.cursor?.createdAt)
+    const cursor = Number.isFinite(createdAt) && typeof options.cursor?.id === 'string'
+      ? { createdAt, id: options.cursor.id }
+      : null
+    return { type, direction, limit, cursor }
+  }
+
+  // 以 createdAt + id 作为稳定游标，避免大数据量下 OFFSET 随页码线性退化。
+  function queryItemPage(options = {}, keyword = '') {
+    const { type, direction, limit, cursor } = normalizePageOptions(options)
+    const params = [type]
+    const conditions = ['type = ?']
+    if (keyword) {
+      conditions.push("(title LIKE ? ESCAPE '\\' OR sourcePath LIKE ? ESCAPE '\\' OR sourceUrl LIKE ? ESCAPE '\\')")
+      const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`
+      params.push(pattern, pattern, pattern)
+    }
+    if (cursor) {
+      const operator = direction === 'previous' ? '>' : '<'
+      const idOperator = direction === 'previous' ? '<' : '>'
+      conditions.push(`(createdAt ${operator} ? OR (createdAt = ? AND id ${idOperator} ?))`)
+      params.push(cursor.createdAt, cursor.createdAt, cursor.id)
+    }
+
+    const order = direction === 'previous' ? 'createdAt ASC, id DESC' : 'createdAt DESC, id ASC'
+    const rows = db.prepare(`
+      SELECT ${itemSummaryColumns} FROM items
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY ${order}
+      LIMIT ?
+    `).all(...params, limit + 1)
+    const hasMore = rows.length > limit
+    if (hasMore) rows.pop()
+    if (direction === 'previous') rows.reverse()
+
+    return {
+      items: rows,
+      previousCursor: rows.length ? { createdAt: rows[0].createdAt, id: rows[0].id } : null,
+      nextCursor: rows.length ? { createdAt: rows.at(-1).createdAt, id: rows.at(-1).id } : null,
+      hasPrevious: direction === 'previous' ? hasMore : Boolean(cursor),
+      hasNext: direction === 'next' ? hasMore : Boolean(cursor),
+    }
+  }
+
+  function getLibrarySummary() {
+    const counts = Object.fromEntries(itemTypes.map((type) => [type, 0]))
+    for (const row of readItemCountsStmt.all()) counts[row.type] = Number(row.count)
+    return {
+      counts,
+      updatedAt: Number(readLatestUpdateStmt.get()?.updatedAt ?? 0),
+      defaultType: 'document',
+      defaultPage: queryItemPage({ type: 'document', limit: 30 }),
+    }
+  }
+
+  function getLibraryPage(options) {
+    return queryItemPage(options)
+  }
+
+  function searchLibrary(options = {}) {
+    const keyword = typeof options.keyword === 'string' ? options.keyword.trim().slice(0, 200) : ''
+    if (!keyword) return queryItemPage(options)
+    return queryItemPage(options, keyword)
+  }
+
+  function getApplicationCacheItems() {
+    return readApplicationCacheItemsStmt.all()
+  }
+
+  function setApplicationIconCache(id, cacheKey, status) {
+    if (!['pending', 'ready', 'failed'].includes(status)) throw new Error('不支持的图标缓存状态')
+    updateApplicationIconStmt.run(cacheKey, status, id)
+  }
+
+  function setImageThumbnailCache(id, cacheKey, status) {
+    if (!['pending', 'ready', 'failed'].includes(status)) throw new Error('不支持的缩略图缓存状态')
+    updateImageThumbnailStmt.run(cacheKey, status, id)
   }
 
   // 主进程按条目 ID 读取来源，避免信任渲染层提交的任意路径
@@ -420,7 +532,24 @@ function createLibrary(dbPath) {
     db.close()
   }
 
-  return { getConfig, getCollapsedAnimation, setCollapsedAnimation, setRootdir, importContent, tongbuDesktopShortcuts, getItemList, getItemDetail, getItemLocalPath, deleteItem, close }
+  return {
+    getConfig,
+    getCollapsedAnimation,
+    setCollapsedAnimation,
+    setRootdir,
+    importContent,
+    tongbuDesktopShortcuts,
+    getLibrarySummary,
+    getLibraryPage,
+    searchLibrary,
+    getApplicationCacheItems,
+    setApplicationIconCache,
+    setImageThumbnailCache,
+    getItemDetail,
+    getItemLocalPath,
+    deleteItem,
+    close,
+  }
 }
 
 module.exports = { createLibrary }

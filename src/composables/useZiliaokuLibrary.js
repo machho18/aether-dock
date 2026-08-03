@@ -1,38 +1,212 @@
-import { shallowRef } from 'vue'
+import { computed, shallowRef } from 'vue'
 
-// 封装渲染层的资料库桥接调用，让页面组件只负责展示与派发意图。
+const categoryIds = ['document', 'image', 'url', 'application']
+const pageSize = 30
+const maxWindowSize = 90
+
+function createPageState() {
+  return {
+    items: [],
+    previousCursor: null,
+    nextCursor: null,
+    hasPrevious: false,
+    hasNext: false,
+    loaded: false,
+    loading: false,
+  }
+}
+
+function createCategoryWindows() {
+  return Object.fromEntries(categoryIds.map((type) => [type, createPageState()]))
+}
+
+// 渲染层仅保留当前分类附近的数据窗口，全量分类与搜索均交给 SQLite。
 export function useZiliaokuLibrary(xianshiToast) {
-  const libraryItems = shallowRef([])
+  const categoryWindows = shallowRef(createCategoryWindows())
+  const categoryCounts = shallowRef(Object.fromEntries(categoryIds.map((type) => [type, 0])))
+  const currentCategory = shallowRef('document')
+  const searchKeyword = shallowRef('')
+  const searchState = shallowRef(createPageState())
   const libraryConfig = shallowRef({ rootdir: '', libraryId: '' })
   const currentCollapsedAnimation = shallowRef('kulian')
   const isImporting = shallowRef(false)
   const isYingyongSyncing = shallowRef(false)
+  let searchRequestId = 0
+
+  const libraryItems = computed(() => (
+    searchKeyword.value ? searchState.value.items : categoryWindows.value[currentCategory.value].items
+  ))
 
   function huoquBridge() {
     return window.aetherDock
   }
 
+  function gengxinCategoryState(type, patch) {
+    categoryWindows.value = {
+      ...categoryWindows.value,
+      [type]: { ...categoryWindows.value[type], ...patch },
+    }
+  }
+
+  function shezhiPage(type, page) {
+    gengxinCategoryState(type, {
+      items: page?.items ?? [],
+      previousCursor: page?.previousCursor ?? null,
+      nextCursor: page?.nextCursor ?? null,
+      hasPrevious: Boolean(page?.hasPrevious),
+      hasNext: Boolean(page?.hasNext),
+      loaded: true,
+      loading: false,
+    })
+  }
+
   async function jiazaiLibrary() {
     try {
       const bridge = huoquBridge()
-      const [config, items, animation] = await Promise.all([
+      const [config, summary, animation] = await Promise.all([
         bridge?.getLibraryConfig(),
-        bridge?.getLibraryItems(),
+        bridge?.getLibrarySummary(),
         bridge?.getCollapsedAnimation(),
       ])
       if (config) libraryConfig.value = config
-      if (items) libraryItems.value = items
+      if (summary) {
+        categoryCounts.value = summary.counts
+        categoryWindows.value = createCategoryWindows()
+        shezhiPage(summary.defaultType, summary.defaultPage)
+      }
       if (animation) currentCollapsedAnimation.value = animation
     } catch {
       xianshiToast('资料库暂时不可用', 'error')
     }
   }
 
+  async function jiazaiCategory(type = currentCategory.value) {
+    if (!categoryIds.includes(type)) return
+    const state = categoryWindows.value[type]
+    if (state.loaded || state.loading) return
+    gengxinCategoryState(type, { loading: true })
+    try {
+      const page = await huoquBridge()?.getLibraryPage({ type, limit: pageSize })
+      shezhiPage(type, page)
+    } catch {
+      gengxinCategoryState(type, { loading: false })
+      xianshiToast('分类加载失败', 'error')
+    }
+  }
+
+  async function xuanzeLibraryCategory(type) {
+    if (!categoryIds.includes(type)) return
+    currentCategory.value = type
+    if (searchKeyword.value) {
+      await sousuoLibrary(searchKeyword.value)
+      return
+    }
+    await jiazaiCategory(type)
+  }
+
+  async function sousuoLibrary(rawKeyword) {
+    const keyword = String(rawKeyword ?? '').trim()
+    searchKeyword.value = keyword
+    const requestId = ++searchRequestId
+    if (!keyword) {
+      searchState.value = createPageState()
+      await jiazaiCategory()
+      return
+    }
+
+    searchState.value = { ...createPageState(), loading: true }
+    try {
+      const page = await huoquBridge()?.searchLibrary({
+        keyword,
+        type: currentCategory.value,
+        limit: pageSize,
+      })
+      if (requestId !== searchRequestId) return
+      searchState.value = {
+        items: page?.items ?? [],
+        previousCursor: page?.previousCursor ?? null,
+        nextCursor: page?.nextCursor ?? null,
+        hasPrevious: Boolean(page?.hasPrevious),
+        hasNext: Boolean(page?.hasNext),
+        loaded: true,
+        loading: false,
+      }
+    } catch {
+      if (requestId === searchRequestId) searchState.value = createPageState()
+      xianshiToast('搜索失败，请稍后重试', 'error')
+    }
+  }
+
+  async function jiazaiGengduo(direction = 'next') {
+    const loadDirection = direction === 'previous' ? 'previous' : 'next'
+    const isSearch = Boolean(searchKeyword.value)
+    const requestType = currentCategory.value
+    const requestKeyword = searchKeyword.value
+    const state = isSearch ? searchState.value : categoryWindows.value[requestType]
+    const hasMore = loadDirection === 'previous' ? state.hasPrevious : state.hasNext
+    const cursor = loadDirection === 'previous' ? state.previousCursor : state.nextCursor
+    if (!hasMore || state.loading || !cursor) return
+
+    if (isSearch) searchState.value = { ...state, loading: true }
+    else gengxinCategoryState(currentCategory.value, { loading: true })
+    try {
+      const options = {
+        type: requestType,
+        cursor,
+        direction: loadDirection,
+        limit: pageSize,
+      }
+      const page = isSearch
+        ? await huoquBridge()?.searchLibrary({ ...options, keyword: requestKeyword })
+        : await huoquBridge()?.getLibraryPage(options)
+      if (requestType !== currentCategory.value || requestKeyword !== searchKeyword.value) {
+        if (!isSearch) gengxinCategoryState(requestType, { loading: false })
+        return
+      }
+      const knownIds = new Set(state.items.map(({ id }) => id))
+      const loadedItems = (page?.items ?? []).filter(({ id }) => !knownIds.has(id))
+      const combinedItems = loadDirection === 'previous'
+        ? [...loadedItems, ...state.items]
+        : [...state.items, ...loadedItems]
+      const didTrim = combinedItems.length > maxWindowSize
+      const nextItems = loadDirection === 'previous'
+        ? combinedItems.slice(0, maxWindowSize)
+        : combinedItems.slice(-maxWindowSize)
+      const nextState = {
+        items: nextItems,
+        previousCursor: nextItems.length ? { createdAt: nextItems[0].createdAt, id: nextItems[0].id } : null,
+        nextCursor: nextItems.length ? { createdAt: nextItems.at(-1).createdAt, id: nextItems.at(-1).id } : null,
+        hasPrevious: loadDirection === 'previous' ? Boolean(page?.hasPrevious) : state.hasPrevious || didTrim,
+        hasNext: loadDirection === 'next' ? Boolean(page?.hasNext) : state.hasNext || didTrim,
+        loaded: true,
+        loading: false,
+      }
+      if (isSearch) searchState.value = nextState
+      else gengxinCategoryState(requestType, nextState)
+    } catch {
+      if (isSearch) {
+        if (requestType === currentCategory.value && requestKeyword === searchKeyword.value) {
+          searchState.value = { ...state, loading: false }
+        }
+      } else {
+        gengxinCategoryState(requestType, { loading: false })
+      }
+    }
+  }
+
+  async function shuaxinLibraryIndex() {
+    const summary = await huoquBridge()?.getLibrarySummary()
+    if (!summary) return
+    categoryCounts.value = summary.counts
+    categoryWindows.value = createCategoryWindows()
+    shezhiPage(summary.defaultType, summary.defaultPage)
+    if (searchKeyword.value) await sousuoLibrary(searchKeyword.value)
+    else await jiazaiCategory(currentCategory.value)
+  }
+
   async function xuanzeLibraryRootdir() {
     const result = await huoquBridge()?.selectLibraryRootdir()
-    if (result?.quxiao) return false
-    if (!result?.config) return false
-
+    if (result?.quxiao || !result?.config) return false
     libraryConfig.value = result.config
     xianshiToast('资料库目录已设置', 'success')
     return true
@@ -44,7 +218,6 @@ export function useZiliaokuLibrary(xianshiToast) {
 
   async function daoruDragContent(dataTransfer) {
     if (isImporting.value || !(await quebaoLibrary())) return []
-
     isImporting.value = true
     try {
       const result = await huoquBridge()?.importDragContent({
@@ -56,8 +229,8 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast('未发现可导入的新内容', 'info')
         return []
       }
+      await shuaxinLibraryIndex()
       xianshiToast(`已添加 ${addedItems.length} 项`, 'success')
-      await jiazaiLibrary()
       return addedItems
     } catch {
       xianshiToast('导入失败，请稍后重试', 'error')
@@ -94,7 +267,15 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast(result?.xiaoxi || '删除失败', 'error')
         return false
       }
-      libraryItems.value = libraryItems.value.filter((currentItem) => currentItem.id !== item.id)
+      categoryWindows.value = Object.fromEntries(categoryIds.map((type) => [
+        type,
+        { ...categoryWindows.value[type], items: categoryWindows.value[type].items.filter(({ id }) => id !== item.id) },
+      ]))
+      searchState.value = { ...searchState.value, items: searchState.value.items.filter(({ id }) => id !== item.id) }
+      categoryCounts.value = {
+        ...categoryCounts.value,
+        [item.type]: Math.max(0, categoryCounts.value[item.type] - 1),
+      }
       xianshiToast('已删除', 'success')
       return true
     } catch {
@@ -103,7 +284,6 @@ export function useZiliaokuLibrary(xianshiToast) {
     }
   }
 
-  // 扫描由主进程限定的桌面目录，同步结果直接替换当前列表以避免二次读取。
   async function tongbuDesktopApplications() {
     if (isYingyongSyncing.value) return false
     isYingyongSyncing.value = true
@@ -113,9 +293,7 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast(result?.xiaoxi || '桌面程序扫描失败', 'error')
         return false
       }
-      if (Array.isArray(result.items)) libraryItems.value = result.items
-      else await jiazaiLibrary()
-
+      await shuaxinLibraryIndex()
       const changeCount = result.added + result.updated + result.recovered + result.missing
       if (!result.scanned && !changeCount) {
         xianshiToast('桌面未发现程序快捷方式', 'info')
@@ -148,11 +326,16 @@ export function useZiliaokuLibrary(xianshiToast) {
 
   return {
     libraryItems,
+    categoryCounts,
+    currentCategory,
     libraryConfig,
     currentCollapsedAnimation,
     isImporting,
     isYingyongSyncing,
     jiazaiLibrary,
+    xuanzeLibraryCategory,
+    sousuoLibrary,
+    jiazaiGengduo,
     xuanzeLibraryRootdir,
     daoruDragContent,
     dakaiLibraryItem,

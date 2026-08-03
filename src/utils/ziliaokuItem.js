@@ -4,7 +4,6 @@ import xlsIcon from '@/assets/icons/xls.svg'
 import fileIcon from '@/assets/icons/wendang.svg'
 import imageIcon from '@/assets/icons/tupian.svg'
 import urlIcon from '@/assets/icons/wangzhi-link.svg'
-import yingyongIcon from '@/assets/icons/yingyongchengxu.svg'
 
 const fileIconRules = [
   { extensions: ['.pdf'], type: 'PDF', icon: pdfIcon },
@@ -15,11 +14,25 @@ const fileIconRules = [
 // 根据资料类型生成卡片预览信息，图片加载失败时自动回退到通用图标。
 export function huoquCardInfo(item, previewFailed) {
   if (item.type === 'image') {
-    const canPreview = item.status !== 'missing' && !previewFailed.has(item.id)
-    return { type: 'IMG', icon: canPreview ? '' : imageIcon, preview: canPreview ? `aetherdock-img://${item.id}` : '' }
+    const thumbnailKey = item.thumbnailKey || (item.thumbnailStatus === 'ready' ? item.thumbnailCacheKey : '')
+    const canPreview = item.status !== 'missing' && thumbnailKey && !previewFailed.has(item.id)
+    return {
+      type: 'IMG',
+      icon: canPreview ? '' : imageIcon,
+      preview: canPreview ? `aetherdock-thumb://${thumbnailKey}/320` : '',
+      previewSrcset: canPreview
+        ? `aetherdock-thumb://${thumbnailKey}/320 1x, aetherdock-thumb://${thumbnailKey}/640 2x`
+        : '',
+    }
   }
   if (item.type === 'url') return { type: 'URL', icon: urlIcon, preview: '' }
-  if (item.type === 'application') return { type: 'APP', icon: item.yingyongIcon || yingyongIcon, preview: '' }
+  if (item.type === 'application') {
+    const cachedIcon = item.iconStatus === 'ready' && item.iconCacheKey
+      ? `aetherdock-icon://${item.iconCacheKey}`
+      : ''
+    const icon = item.yingyongIcon || cachedIcon
+    return { type: 'APP', icon, iconPending: !icon, preview: '' }
+  }
 
   const lowerTitle = (item.title || item.sourcePath || '').toLowerCase()
   const matchRule = fileIconRules.find((rule) => rule.extensions.some((extension) => lowerTitle.endsWith(extension)))

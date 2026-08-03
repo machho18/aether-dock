@@ -26,14 +26,14 @@
         <img :src="category.icon" alt="" aria-hidden="true" draggable="false">
         <span>
           <strong>{{ category.name }}</strong>
-          <small>{{ fenleiCounts[category.id] }} 项</small>
+          <small>{{ categoryCounts[category.id] }} 项</small>
         </span>
         <i>{{ category.caption }}</i>
       </button>
     </nav>
 
     <button
-      v-if="currentCategory === 'application' && fenleiCounts.application"
+      v-if="currentCategory === 'application' && categoryCounts.application"
       class="application-sync"
       type="button"
       :disabled="isYingyongSyncing"
@@ -71,22 +71,25 @@
             :style="huoquCardStyle(offset)"
           >
             <button class="library-shelf-main" type="button" @click.stop="offset === 0 ? emit('open-item', item) : tiaozhuanCarousel(index)">
-              <div class="library-shelf-view" aria-hidden="true">
+              <div class="library-shelf-view" :class="{ 'library-shelf-view--pending': cardInfo.iconPending }" aria-hidden="true">
                 <img
                   v-if="cardInfo.preview"
                   class="library-shelf-preview"
                   :src="cardInfo.preview"
+                  :srcset="cardInfo.previewSrcset"
+                  :fetchpriority="offset === 0 ? 'high' : 'auto'"
                   alt=""
                   draggable="false"
                   @error="biaojiPreviewFailed(item.id)"
                 >
                 <img
-                  v-else
+                  v-else-if="cardInfo.icon"
                   class="library-shelf-icon"
                   :src="cardInfo.icon"
                   alt=""
                   draggable="false"
                 >
+                <span v-else class="library-shelf-icon-skeleton"></span>
               </div>
               <span class="library-shelf-cover">
                 <strong>{{ huoquCardName(item) }}</strong>
@@ -109,7 +112,7 @@
             </button>
           </article>
         </div>
-        <div v-else-if="currentCategory === 'application' && !fenleiCounts.application" key="application-empty" class="application-empty">
+        <div v-else-if="currentCategory === 'application' && !categoryCounts.application" key="application-empty" class="application-empty">
           <img :src="yingyongIcon" alt="" aria-hidden="true" draggable="false">
           <strong class="kongzhuangtai-zifu-line">
             <span
@@ -147,7 +150,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, shallowRef, watch } from 'vue'
 import { onKeyStroke } from '@vueuse/core'
 import searchLensIcon from '@/assets/icons/sousuo-lens.svg'
 import settingsIcon from '@/assets/icons/shezhi-orbit.svg'
@@ -161,19 +164,26 @@ import { geshiCardTime, huoquApplicationStatus, huoquCardInfo, huoquCardName } f
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
+  categoryCounts: {
+    type: Object,
+    default: () => ({ document: 0, image: 0, url: 0, application: 0 }),
+  },
   libraryConfig: { type: Object, default: () => ({ rootdir: '' }) },
   initialCategory: { type: String, default: 'document' },
   isYingyongSyncing: { type: Boolean, default: false },
   isAnimationBusy: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'select-category', 'open-item', 'locate-item', 'delete-item', 'sync-applications'])
+const emit = defineEmits(['open-settings', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'delete-item', 'sync-applications'])
 const searchKeyword = shallowRef('')
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
 const yulanFailedIds = reactive(new Set())
 const yingyongIconMap = shallowRef({})
+const yingyongIconRequestKeyMap = shallowRef({})
+const tupianThumbnailMap = shallowRef({})
+const tupianThumbnailRequestKeyMap = shallowRef({})
 let yingyongIconRenwu = 0
 
 const fenleiList = [
@@ -198,25 +208,7 @@ const kongzhuangtaiWenAn = computed(() => {
   return kongzhuangtaiMap[currentCategory.value] ?? `暂无${fenleiName}`
 })
 
-// 一次遍历建立分类索引，避免每次展开分别扫描四次完整资料库。
-const fenleiItems = computed(() => props.items.reduce((result, item) => {
-  if (result[item.type]) result[item.type].push(item)
-  return result
-}, { document: [], image: [], url: [], application: [] }))
-
-const fenleiCounts = computed(() => Object.fromEntries(
-  fenleiList.map(({ id }) => [id, fenleiItems.value[id].length]),
-))
-
-const currentItems = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
-  return fenleiItems.value[currentCategory.value].filter((item) => {
-    if (!keyword) return true
-    return [item.title, item.sourcePath, item.sourceUrl]
-      .filter(Boolean)
-      .some((text) => text.toLowerCase().includes(keyword))
-  })
-})
+const currentItems = computed(() => props.items)
 
 const keshikapianRange = 4
 
@@ -228,37 +220,117 @@ const carouselCards = computed(() => {
   return currentItems.value.slice(startIndex, endIndex).map((item, visibleIndex) => {
     const index = startIndex + visibleIndex
     const offset = index - carouselIndex.value
-    return { item, index, offset, cardInfo: huoquCardInfo({ ...item, yingyongIcon: yingyongIconMap.value[item.id] }, yulanFailedIds) }
+    const mappedIcon = yingyongIconMap.value[item.id]
+    const validMappedIcon = mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey)) ? mappedIcon : ''
+    const mappedThumbnail = tupianThumbnailMap.value[item.id]
+    const validMappedThumbnail = mappedThumbnail && (!item.thumbnailCacheKey || mappedThumbnail === item.thumbnailCacheKey)
+      ? mappedThumbnail
+      : ''
+    return {
+      item,
+      index,
+      offset,
+      cardInfo: huoquCardInfo({ ...item, yingyongIcon: validMappedIcon, thumbnailKey: validMappedThumbnail }, yulanFailedIds),
+    }
   })
 })
 
-watch(currentItems, () => { carouselIndex.value = 0 }, { flush: 'post' })
+// 分页窗口裁剪后按条目 ID 恢复中心卡，避免续载时轮播跳回开头。
+watch(currentItems, (items, previousItems) => {
+  const currentId = previousItems[carouselIndex.value]?.id
+  const preservedIndex = currentId ? items.findIndex(({ id }) => id === currentId) : -1
+  carouselIndex.value = preservedIndex >= 0 ? preservedIndex : Math.min(carouselIndex.value, Math.max(items.length - 1, 0))
+}, { flush: 'post' })
+
+watch([carouselIndex, () => currentItems.value.length], ([index, length]) => {
+  if (!length) return
+  if (index <= 6) emit('load-more', 'previous')
+  if (length - index <= 7) emit('load-more', 'next')
+}, { flush: 'post' })
+
+let searchTimer = 0
+watch(searchKeyword, (keyword) => {
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => emit('search', keyword), 180)
+})
+onBeforeUnmount(() => window.clearTimeout(searchTimer))
 
 watch(() => props.initialCategory, (category) => {
-  if (fenleiList.some(({ id }) => id === category)) currentCategory.value = category
+  if (fenleiList.some(({ id }) => id === category)) {
+    currentCategory.value = category
+    carouselIndex.value = 0
+  }
 })
 
 // 应用图标仅在空闲期读取，展开动画期间延后任务，避免影响关键动画帧。
 watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) => {
   if (currentCategory.value !== 'application') return
   if (isAnimationBusy) return
-  const missingIds = cards
-    .map(({ item }) => item.id)
-    .filter((itemId) => !(itemId in yingyongIconMap.value))
-  if (!missingIds.length) return
+  const missingItems = [...cards]
+    .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
+    .map(({ item }) => item)
+    .filter((item) => {
+      if (item.iconStatus === 'ready' && item.iconCacheKey) return false
+      const mappedIcon = yingyongIconMap.value[item.id]
+      if (mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))) return false
+      return yingyongIconRequestKeyMap.value[item.id] !== (item.iconCacheKey || item.id)
+    })
+  if (!missingItems.length) return
 
   const renwuId = ++yingyongIconRenwu
   const duquIcons = async () => {
     if (renwuId !== yingyongIconRenwu || props.isAnimationBusy) return
-    const iconMap = await window.aetherDock?.getApplicationIcons(missingIds)
-    if (iconMap && renwuId === yingyongIconRenwu) {
+    let iconMap
+    try {
+      iconMap = await window.aetherDock?.getApplicationIcons(missingItems.map(({ id }) => id))
+    } catch {
+      return
+    }
+    if (iconMap) {
       yingyongIconMap.value = { ...yingyongIconMap.value, ...iconMap }
+      yingyongIconRequestKeyMap.value = {
+        ...yingyongIconRequestKeyMap.value,
+        ...Object.fromEntries(missingItems.map((item) => [item.id, item.iconCacheKey || item.id])),
+      }
     }
   }
   if ('requestIdleCallback' in window) {
     window.requestIdleCallback(duquIcons, { timeout: 1000 })
   } else {
     window.setTimeout(duquIcons, 120)
+  }
+}, { immediate: true })
+
+// 缩略图仅在空闲期生成，中心卡及相邻卡优先于窗口边缘卡。
+watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) => {
+  if (currentCategory.value !== 'image' || isAnimationBusy) return
+  const missingItems = [...cards]
+    .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
+    .map(({ item }) => item)
+    .filter((item) => {
+      if (item.thumbnailStatus === 'ready' && item.thumbnailCacheKey) return false
+      const mappedThumbnail = tupianThumbnailMap.value[item.id]
+      if (mappedThumbnail && (!item.thumbnailCacheKey || mappedThumbnail === item.thumbnailCacheKey)) return false
+      return tupianThumbnailRequestKeyMap.value[item.id] !== (item.thumbnailCacheKey || item.id)
+    })
+  if (!missingItems.length) return
+
+  const requestKeys = Object.fromEntries(missingItems.map((item) => [item.id, item.thumbnailCacheKey || item.id]))
+  const duquThumbnails = async () => {
+    if (props.isAnimationBusy) return
+    tupianThumbnailRequestKeyMap.value = { ...tupianThumbnailRequestKeyMap.value, ...requestKeys }
+    let thumbnailMap
+    try {
+      thumbnailMap = await window.aetherDock?.getImageThumbnails(missingItems.map(({ id }) => id))
+    } catch {
+      return
+    }
+    if (thumbnailMap) tupianThumbnailMap.value = { ...tupianThumbnailMap.value, ...thumbnailMap }
+  }
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(duquThumbnails, { timeout: 1000 })
+  } else {
+    window.setTimeout(duquThumbnails, 120)
   }
 }, { immediate: true })
 
@@ -577,7 +649,9 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 /* 预览图与卡片边缘保持一致的 10px 留白。 */
 .library-shelf-view { position: relative; display: flex; width: 100%; height: 78px; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
 .library-shelf-icon { position: relative; z-index: 2; width: 56px; height: 56px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
+.library-shelf-card--application .library-shelf-icon { animation: application-icon-in 120ms ease both; }
 .library-shelf-card--application .library-shelf-icon { border-radius: 12px; }
+.library-shelf-icon-skeleton { width: 52px; height: 52px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 13px; background: linear-gradient(110deg, rgba(255, 255, 255, .07) 20%, rgba(255, 255, 255, .16) 42%, rgba(255, 255, 255, .07) 64%); background-size: 220% 100%; box-shadow: inset 0 1px rgba(255, 255, 255, .08); animation: application-icon-pending 1.4s ease-in-out infinite; }
 .library-shelf-preview { position: relative; z-index: 2; width: 100%; height: 78px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
 .library-shelf-cover { display: flex; width: 100%; flex: none; flex-direction: column; align-items: center; justify-content: flex-start; gap: 7px; margin: 0; padding: 10px 2px 0; border: 0; background: transparent; text-align: center; }
 .library-shelf-cover strong { overflow: hidden; width: 100%; color: var(--text-on-ink); font: 600 13px/1.35 var(--font-body); letter-spacing: .02em; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); white-space: nowrap; }
@@ -655,8 +729,20 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
+@keyframes application-icon-in {
+  from { opacity: 0; transform: translateZ(6px) scale(.92); }
+  to { opacity: 1; transform: translateZ(6px) scale(1); }
+}
+
+@keyframes application-icon-pending {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .kongzhuangtai-zifu { animation: none; }
+  .kongzhuangtai-zifu,
+  .library-shelf-icon,
+  .library-shelf-icon-skeleton { animation: none; }
 }
 .data-switch-enter-active,
 .data-switch-leave-active {

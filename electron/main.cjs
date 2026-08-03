@@ -9,22 +9,23 @@ const { promisify } = require('node:util')
 const { createLibrary } = require('./ziliaoku.cjs')
 const { ipcTongdao } = require('./ipc.cjs')
 
-// 图片扩展名到 MIME 的映射，用于无 mimeType 时的回退推断
-const imageMime = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
-  '.svg': 'image/svg+xml', '.avif': 'image/avif',
-}
-
 // 持有主窗口引用，避免被垃圾回收后自动关闭
 let mainWindow = null
 let startupWindow = null
 let lastCpuStat = null
 let library = null
 let yingyongSyncPromise = null
-const yingyongIconCache = new Map()
+let yingyongIconCacheDir = ''
+const yingyongIconPromiseMap = new Map()
 const yingyongIconRenwuQueue = []
 let yingyongIconHuodongRenwu = 0
+let yingyongIconRenwuXuhao = 0
+let tupianThumbnailCacheDir = ''
+const tupianThumbnailPromiseMap = new Map()
+const tupianThumbnailRenwuQueue = []
+let tupianThumbnailHuodongRenwu = 0
+let tupianThumbnailRenwuXuhao = 0
+let isHeavyTasksPaused = false
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
@@ -101,7 +102,7 @@ function getSystemStatus() {
 }
 
 function chuangjianShortcutFingerprint(details, shortcutPath) {
-  const parts = [details.target, details.args, details.cwd, details.appUserModelId]
+  const parts = [details.target, details.args, details.cwd, details.appUserModelId, details.icon]
     .map((value) => String(value ?? '').trim().toLowerCase())
   const content = parts.some(Boolean) ? parts.join('\0') : `unreadable\0${shortcutPath.toLowerCase()}`
   return createHash('sha256').update(content).digest('hex')
@@ -213,9 +214,10 @@ function panduanMaybeGenericIcon(nativeIcon, iconData) {
 }
 
 // 图标读取可能触发原生接口或 PowerShell，固定并发数避免占满主进程资源。
-function xianxingZhixingYingyongIconRenwu(action) {
+function xianxingZhixingYingyongIconRenwu(action, priority = 2) {
   return new Promise((resolve, reject) => {
-    yingyongIconRenwuQueue.push({ action, resolve, reject })
+    yingyongIconRenwuQueue.push({ action, priority, sequence: yingyongIconRenwuXuhao++, resolve, reject })
+    yingyongIconRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
     zhixingNextYingyongIconRenwu()
   })
 }
@@ -234,14 +236,14 @@ function zhixingNextYingyongIconRenwu() {
 }
 
 function huoquYingyongIconCacheKey(item) {
-  return `${item.id}:${item.updatedAt}:${item.status}`
+  const existingKey = item.iconCacheKey || item.shortcutFingerprint
+  if (/^[a-f\d]{64}$/i.test(existingKey || '')) return existingKey.toLowerCase()
+  return createHash('sha256')
+    .update([item.targetPath, item.sourcePath, item.id].map((value) => String(value ?? '').toLowerCase()).join('\0'))
+    .digest('hex')
 }
 
-async function huoquApplicationIconData(item) {
-  if (item.type !== 'application') return ''
-  const cacheKey = huoquYingyongIconCacheKey(item)
-  if (yingyongIconCache.has(cacheKey)) return yingyongIconCache.get(cacheKey)
-
+async function tiquApplicationNativeIcon(item) {
   const iconSources = []
   if (item.sourcePath && fs.existsSync(item.sourcePath)) {
     try {
@@ -266,40 +268,204 @@ async function huoquApplicationIconData(item) {
       const windowsIconData = panduanMaybeGenericIcon(nativeIcon, iconData)
         ? await huoquWindowsShellIconData(iconSource)
         : ''
-      const resolvedIconData = windowsIconData || iconData
-      yingyongIconCache.set(cacheKey, resolvedIconData)
-      return resolvedIconData
+      const resolvedIcon = windowsIconData ? nativeImage.createFromDataURL(windowsIconData) : nativeIcon
+      if (!resolvedIcon.isEmpty()) return resolvedIcon
     } catch {}
   }
-  yingyongIconCache.set(cacheKey, '')
-  return ''
+  return null
 }
 
-function huoquLibraryItems() {
-  return library.getItemList()
+function chuangjianYingyongIconUrl(cacheKey) {
+  return `aetherdock-icon://${cacheKey}`
 }
 
-// 仅在应用卡进入可视范围后提取图标，避免列表读取因大量系统图标阻塞首帧。
+async function shengchengYingyongIconCache(item, cacheKey) {
+  const nativeIcon = await tiquApplicationNativeIcon(item)
+  if (!nativeIcon) return false
+
+  const outputPaths = [64, 128].map((size) => ({
+    size,
+    finalPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`),
+    tempPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.${process.pid}.${Date.now()}.tmp`),
+  }))
+  try {
+    await Promise.all(outputPaths.map(({ size, tempPath }) => {
+      const png = nativeIcon.resize({ width: size, height: size, quality: 'best' }).toPNG()
+      if (!png.length) throw new Error('图标编码失败')
+      return fsp.writeFile(tempPath, png)
+    }))
+    await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    return true
+  } catch {
+    await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
+    return false
+  }
+}
+
+async function huoquApplicationIconUrl(item, priority) {
+  if (item.type !== 'application') return ''
+  const cacheKey = huoquYingyongIconCacheKey(item)
+  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
+  if (fs.existsSync(iconPath)) {
+    if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') {
+      library.setApplicationIconCache(item.id, cacheKey, 'ready')
+    }
+    return chuangjianYingyongIconUrl(cacheKey)
+  }
+
+  library.setApplicationIconCache(item.id, cacheKey, 'pending')
+  let cachePromise = yingyongIconPromiseMap.get(cacheKey)
+  if (!cachePromise) {
+    cachePromise = xianxingZhixingYingyongIconRenwu(
+      () => shengchengYingyongIconCache(item, cacheKey),
+      priority,
+    ).finally(() => yingyongIconPromiseMap.delete(cacheKey))
+    yingyongIconPromiseMap.set(cacheKey, cachePromise)
+  }
+  const generated = await cachePromise
+  library.setApplicationIconCache(item.id, cacheKey, generated ? 'ready' : 'failed')
+  return generated ? chuangjianYingyongIconUrl(cacheKey) : ''
+}
+
+// 可见卡按中心向外排序进入 P0/P1 队列，IPC 仅返回轻量协议地址。
 async function huoquYingyongIconMap(itemIds) {
   const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
     .filter((itemId) => typeof itemId === 'string')
     .slice(0, 12)
-  const iconEntries = await Promise.all(validIds.map((itemId) => xianxingZhixingYingyongIconRenwu(async () => {
+  const iconEntries = await Promise.all(validIds.map(async (itemId, index) => {
     const item = library.getItemDetail(itemId)
     if (item?.type !== 'application') return [itemId, '']
-    return [itemId, await huoquApplicationIconData(item)]
-  })))
+    return [itemId, await huoquApplicationIconUrl(item, index < 5 ? 0 : 1)]
+  }))
   return Object.fromEntries(iconEntries)
 }
 
-// 同步后仅清理失效图标，未变更快捷方式继续复用既有内存缓存。
-function qingliYingyongIconCache(items) {
-  const validKeys = new Set(items
-    .filter((item) => item.type === 'application')
-    .map(huoquYingyongIconCacheKey))
-  for (const cacheKey of yingyongIconCache.keys()) {
-    if (!validKeys.has(cacheKey)) yingyongIconCache.delete(cacheKey)
+// 同步仅删除已无数据库记录引用的指纹文件，未变化程序永久复用原缓存。
+async function qingliYingyongIconCache(items) {
+  const validKeys = new Set(items.map(({ iconCacheKey }) => iconCacheKey).filter(Boolean))
+  let filenames = []
+  try { filenames = await fsp.readdir(yingyongIconCacheDir) } catch { return }
+  await Promise.all(filenames.map(async (filename) => {
+    const match = /^([a-f\d]{64})-(?:64|128)\.png$/i.exec(filename)
+    if (match && !validKeys.has(match[1].toLowerCase())) {
+      await fsp.rm(path.join(yingyongIconCacheDir, filename), { force: true })
+    }
+  }))
+}
+
+function xianxingZhixingThumbnailRenwu(action, priority = 2) {
+  return new Promise((resolve, reject) => {
+    tupianThumbnailRenwuQueue.push({ action, priority, sequence: tupianThumbnailRenwuXuhao++, resolve, reject })
+    tupianThumbnailRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+    zhixingNextThumbnailRenwu()
+  })
+}
+
+function zhixingNextThumbnailRenwu() {
+  if (isHeavyTasksPaused || tupianThumbnailHuodongRenwu || !tupianThumbnailRenwuQueue.length) return
+  const task = tupianThumbnailRenwuQueue.shift()
+  tupianThumbnailHuodongRenwu = 1
+  Promise.resolve(task.action())
+    .then(task.resolve, task.reject)
+    .finally(() => {
+      tupianThumbnailHuodongRenwu = 0
+      zhixingNextThumbnailRenwu()
+    })
+}
+
+function huoquThumbnailCacheKey(item) {
+  const existingKey = item.thumbnailCacheKey
+  if (/^[a-f\d]{64}$/i.test(existingKey || '')) return existingKey.toLowerCase()
+  return createHash('sha256')
+    .update([item.id, item.byteSize, item.updatedAt, item.relativePath].map((value) => String(value ?? '')).join('\0'))
+    .digest('hex')
+}
+
+function chuangjianCoverThumbnail(sourceImage, width, height) {
+  const sourceSize = sourceImage.getSize()
+  if (!sourceSize.width || !sourceSize.height) return null
+  const scale = Math.max(width / sourceSize.width, height / sourceSize.height)
+  const resizedWidth = Math.max(width, Math.ceil(sourceSize.width * scale))
+  const resizedHeight = Math.max(height, Math.ceil(sourceSize.height * scale))
+  const resizedImage = sourceImage.resize({ width: resizedWidth, height: resizedHeight, quality: 'best' })
+  return resizedImage.crop({
+    x: Math.floor((resizedWidth - width) / 2),
+    y: Math.floor((resizedHeight - height) / 2),
+    width,
+    height,
+  })
+}
+
+async function shengchengThumbnailCache(item, cacheKey) {
+  const localPath = library.getItemLocalPath(item)
+  if (!localPath) return false
+  const sourceImage = nativeImage.createFromPath(localPath)
+  if (sourceImage.isEmpty()) return false
+
+  const outputPaths = [320, 640].map((width) => ({
+    width,
+    height: width / 2,
+    finalPath: path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`),
+    tempPath: path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.${process.pid}.${Date.now()}.tmp`),
+  }))
+  try {
+    await Promise.all(outputPaths.map(({ width, height, tempPath }) => {
+      const thumbnail = chuangjianCoverThumbnail(sourceImage, width, height)
+      const png = thumbnail?.toPNG() ?? Buffer.alloc(0)
+      if (!png.length) throw new Error('缩略图编码失败')
+      return fsp.writeFile(tempPath, png)
+    }))
+    await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    return true
+  } catch {
+    await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
+    return false
   }
+}
+
+async function huoquImageThumbnailKey(item, priority) {
+  if (item.type !== 'image') return ''
+  const cacheKey = huoquThumbnailCacheKey(item)
+  const hasCache = [320, 640].every((width) => fs.existsSync(path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`)))
+  if (hasCache) {
+    if (item.thumbnailCacheKey !== cacheKey || item.thumbnailStatus !== 'ready') {
+      library.setImageThumbnailCache(item.id, cacheKey, 'ready')
+    }
+    return cacheKey
+  }
+
+  library.setImageThumbnailCache(item.id, cacheKey, 'pending')
+  let cachePromise = tupianThumbnailPromiseMap.get(cacheKey)
+  if (!cachePromise) {
+    cachePromise = xianxingZhixingThumbnailRenwu(
+      () => shengchengThumbnailCache(item, cacheKey),
+      priority,
+    ).finally(() => tupianThumbnailPromiseMap.delete(cacheKey))
+    tupianThumbnailPromiseMap.set(cacheKey, cachePromise)
+  }
+  const generated = await cachePromise
+  library.setImageThumbnailCache(item.id, cacheKey, generated ? 'ready' : 'failed')
+  return generated ? cacheKey : ''
+}
+
+async function huoquImageThumbnailMap(itemIds, priority = 0) {
+  const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
+    .filter((itemId) => typeof itemId === 'string')
+    .slice(0, 12)
+  const entries = await Promise.all(validIds.map(async (itemId, index) => {
+    const item = library.getItemDetail(itemId)
+    if (item?.type !== 'image') return [itemId, '']
+    return [itemId, await huoquImageThumbnailKey(item, Math.min(3, priority + (index < 5 ? 0 : 1)))]
+  }))
+  return Object.fromEntries(entries)
+}
+
+async function shanchuThumbnailCache(cacheKey) {
+  if (!/^[a-f\d]{64}$/i.test(cacheKey || '')) return
+  await tupianThumbnailPromiseMap.get(cacheKey.toLowerCase())?.catch(() => {})
+  await Promise.all([320, 640].map((width) => (
+    fsp.rm(path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`), { force: true })
+  )))
 }
 
 // 创建应用主窗口
@@ -344,23 +510,43 @@ function createStartupWindow() {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   library = createLibrary(path.join(app.getPath('userData'), 'aether-dock.db'))
-  // 以条目 ID 为键安全返回图片字节，路径仍由资料库层校验，不开放任意文件访问
-  protocol.handle('aetherdock-img', async (request) => {
+  yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
+  tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
+  await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
+  await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
+  protocol.handle('aetherdock-icon', async (request) => {
     try {
-      const id = new URL(request.url).hostname
-      if (!id) return new Response('missing id', { status: 400 })
-      const item = library.getItemDetail(id)
-      if (!item || item.type !== 'image') return new Response('not found', { status: 404 })
-      const localPath = library.getItemLocalPath(item)
-      if (!localPath) return new Response('not found', { status: 404 })
-      const buffer = await fsp.readFile(localPath)
-      const mime = item.mimeType || imageMime[path.extname(localPath).toLowerCase()] || 'image/png'
-      return new Response(buffer, { headers: { 'Content-Type': mime, 'Cache-Control': 'no-store' } })
-    } catch {
-      return new Response('error', { status: 500 })
+      const cacheKey = new URL(request.url).hostname.toLowerCase()
+      if (!/^[a-f\d]{64}$/.test(cacheKey)) return new Response('invalid key', { status: 400 })
+      const buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.png`))
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    } catch (error) {
+      return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
+    }
+  })
+  protocol.handle('aetherdock-thumb', async (request) => {
+    try {
+      const url = new URL(request.url)
+      const cacheKey = url.hostname.toLowerCase()
+      const width = url.pathname === '/320' ? 320 : url.pathname === '/640' ? 640 : 0
+      if (!/^[a-f\d]{64}$/.test(cacheKey) || !width) return new Response('invalid thumbnail', { status: 400 })
+      const buffer = await fsp.readFile(path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`))
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    } catch (error) {
+      return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
     }
   })
   ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
@@ -388,7 +574,23 @@ app.whenReady().then(() => {
   ipcMain.handle(ipcTongdao.getLibraryConfig, () => library.getConfig())
   ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
   ipcMain.handle(ipcTongdao.setCollapsedAnimation, (_, animation) => library.setCollapsedAnimation(animation))
-  ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => library.importContent(payload))
+  ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => {
+    const result = await library.importContent(payload)
+    const imageIds = result.added.filter(({ type }) => type === 'image').map(({ id }) => id)
+    if (imageIds.length) {
+      setTimeout(() => {
+        for (const itemId of imageIds) {
+          const item = library.getItemDetail(itemId)
+          if (item) void huoquImageThumbnailKey(item, 2).catch(() => {})
+        }
+      }, 500)
+    }
+    return result
+  })
+  ipcMain.handle(ipcTongdao.setHeavyTasksPaused, (_, paused) => {
+    isHeavyTasksPaused = Boolean(paused)
+    if (!isHeavyTasksPaused) zhixingNextThumbnailRenwu()
+  })
   ipcMain.handle(ipcTongdao.tongbuDesktopApplications, async () => {
     if (!yingyongSyncPromise) {
       yingyongSyncPromise = (async () => {
@@ -400,20 +602,22 @@ app.whenReady().then(() => {
           scannedScopes: saomiaoResult.scannedScopes,
           scannedAt: Date.now(),
         })
-        const items = huoquLibraryItems()
-        qingliYingyongIconCache(items)
+        const items = library.getApplicationCacheItems()
+        await qingliYingyongIconCache(items)
         return {
           chenggong: true,
           ...tongbuResult,
           scanned: saomiaoResult.shortcuts.length,
-          items,
         }
       })().finally(() => { yingyongSyncPromise = null })
     }
     return yingyongSyncPromise
   })
-  ipcMain.handle(ipcTongdao.getLibraryItems, () => huoquLibraryItems())
+  ipcMain.handle(ipcTongdao.getLibrarySummary, () => library.getLibrarySummary())
+  ipcMain.handle(ipcTongdao.getLibraryPage, (_, options) => library.getLibraryPage(options))
+  ipcMain.handle(ipcTongdao.searchLibrary, (_, options) => library.searchLibrary(options))
   ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
+  ipcMain.handle(ipcTongdao.getImageThumbnails, (_, itemIds) => huoquImageThumbnailMap(itemIds))
   ipcMain.handle(ipcTongdao.openLibraryItem, async (_, itemId) => {
     try {
       const item = library.getItemDetail(itemId)
@@ -440,7 +644,11 @@ app.whenReady().then(() => {
   ipcMain.handle(ipcTongdao.deleteLibraryItem, async (_, itemId) => {
     // 删除确认由渲染层自定义弹窗完成，主进程仅负责执行删除与文件清理
     try {
-      return await library.deleteItem(itemId)
+      const item = library.getItemDetail(itemId)
+      const thumbnailCacheKey = item?.type === 'image' ? huoquThumbnailCacheKey(item) : ''
+      const result = await library.deleteItem(itemId)
+      if (result.chenggong && thumbnailCacheKey) await shanchuThumbnailCache(thumbnailCacheKey)
+      return result
     } catch {
       return { chenggong: false, xiaoxi: '删除失败' }
     }
