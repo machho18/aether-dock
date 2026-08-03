@@ -15,7 +15,7 @@ const fileIconRules = [
 export function huoquCardInfo(item, previewFailed) {
   if (item.type === 'image') {
     const thumbnailKey = item.thumbnailKey || (item.thumbnailStatus === 'ready' ? item.thumbnailCacheKey : '')
-    const canPreview = item.status !== 'missing' && thumbnailKey && !previewFailed.has(item.id)
+    const canPreview = item.status !== 'missing' && thumbnailKey && previewFailed.get(item.id) !== thumbnailKey
     return {
       type: 'IMG',
       icon: canPreview ? '' : imageIcon,

@@ -62,6 +62,7 @@
             :items="libraryItems"
             :category-counts="categoryCounts"
             :library-config="libraryConfig"
+            :library-available="libraryAvailable"
             :initial-category="currentZiliaokuCategory"
             :is-yingyong-syncing="isYingyongSyncing"
             :is-animation-busy="isExpansionAnimating"
@@ -152,6 +153,7 @@ const {
   categoryCounts,
   currentCategory: currentZiliaokuCategory,
   libraryConfig,
+  libraryAvailable,
   currentCollapsedAnimation,
   isImporting,
   isYingyongSyncing,
@@ -159,6 +161,7 @@ const {
   xuanzeLibraryCategory,
   sousuoLibrary,
   jiazaiGengduo,
+  shuaxinLibraryIndex,
   xuanzeLibraryRootdir,
   daoruDragContent,
   dakaiLibraryItem,
@@ -189,8 +192,10 @@ function wanchengStartup() {
 
 function qiehuanIslandState(expanded) {
   if (isDragging.value || (!expanded && confirmState.value.visible)) return
+  const shouldRefresh = expanded && !isExpanded.value
   isExpanded.value = expanded
   isLibraryContentVisible.value = expanded
+  if (shouldRefresh) void shuaxinLibraryIndex()
   if (!expanded) {
     currentPage.value = 'library'
   }

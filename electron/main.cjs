@@ -19,6 +19,9 @@ let startupWindow = null
 let lastCpuStat = null
 let library = null
 let yingyongSyncPromise = null
+let managedReconcilePromise = null
+let managedReconcileKey = ''
+let managedReconcileTimer = null
 let yingyongIconCacheDir = ''
 const yingyongIconPromiseMap = new Map()
 const yingyongIconRenwuQueue = []
@@ -950,10 +953,8 @@ function zhixingNextThumbnailRenwu() {
 }
 
 function huoquThumbnailCacheKey(item) {
-  const existingKey = item.thumbnailCacheKey
-  if (/^[a-f\d]{64}$/i.test(existingKey || '')) return existingKey.toLowerCase()
   return createHash('sha256')
-    .update([item.id, item.byteSize, item.updatedAt, item.relativePath].map((value) => String(value ?? '')).join('\0'))
+    .update([item.libraryId, item.id, item.byteSize, item.updatedAt, item.relativePath].map((value) => String(value ?? '')).join('\0'))
     .digest('hex')
 }
 
@@ -973,7 +974,7 @@ function chuangjianCoverThumbnail(sourceImage, width, height) {
 }
 
 async function shengchengThumbnailCache(item, cacheKey) {
-  const localPath = library.getItemLocalPath(item)
+  const localPath = await library.getValidatedItemLocalPath(item)
   if (!localPath) return false
   const sourceImage = nativeImage.createFromPath(localPath)
   if (sourceImage.isEmpty()) return false
@@ -1002,15 +1003,19 @@ async function shengchengThumbnailCache(item, cacheKey) {
 async function huoquImageThumbnailKey(item, priority) {
   if (item.type !== 'image') return ''
   const cacheKey = huoquThumbnailCacheKey(item)
-  const hasCache = [320, 640].every((width) => fs.existsSync(path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`)))
+  const cachePaths = [320, 640].map((width) => path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`))
+  const hasCache = cachePaths.every((cachePath) => (
+    fs.existsSync(cachePath) && !nativeImage.createFromPath(cachePath).isEmpty()
+  ))
   if (hasCache) {
     if (item.thumbnailCacheKey !== cacheKey || item.thumbnailStatus !== 'ready') {
-      library.setImageThumbnailCache(item.id, cacheKey, 'ready')
+      if (!library.setImageThumbnailCache(item, cacheKey, 'ready')) return ''
     }
     return cacheKey
   }
+  await Promise.all(cachePaths.map((cachePath) => fsp.rm(cachePath, { force: true }).catch(() => {})))
 
-  library.setImageThumbnailCache(item.id, cacheKey, 'pending')
+  if (!library.setImageThumbnailCache(item, cacheKey, 'pending')) return ''
   let cachePromise = tupianThumbnailPromiseMap.get(cacheKey)
   if (!cachePromise) {
     cachePromise = xianxingZhixingThumbnailRenwu(
@@ -1020,7 +1025,15 @@ async function huoquImageThumbnailKey(item, priority) {
     tupianThumbnailPromiseMap.set(cacheKey, cachePromise)
   }
   const generated = await cachePromise
-  library.setImageThumbnailCache(item.id, cacheKey, generated ? 'ready' : 'failed')
+  const currentItem = library.getItemDetail(item.id)
+  if (currentItem?.status !== 'ready' || huoquThumbnailCacheKey(currentItem) !== cacheKey) {
+    if (generated) await shanchuThumbnailCache(cacheKey)
+    return ''
+  }
+  if (!library.setImageThumbnailCache(item, cacheKey, generated ? 'ready' : 'failed')) {
+    if (generated) await shanchuThumbnailCache(cacheKey)
+    return ''
+  }
   return generated ? cacheKey : ''
 }
 
@@ -1042,6 +1055,40 @@ async function shanchuThumbnailCache(cacheKey) {
   await Promise.all([320, 640].map((width) => (
     fsp.rm(path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`), { force: true })
   )))
+}
+
+async function tongbuManagedLibraryFiles() {
+  const config = library.getConfig()
+  const requestedKey = `${config.libraryId}\0${config.rootdir}`
+  if (managedReconcilePromise) {
+    const awaitedKey = managedReconcileKey
+    const result = await managedReconcilePromise
+    const currentConfig = library.getConfig()
+    const currentKey = `${currentConfig.libraryId}\0${currentConfig.rootdir}`
+    if (awaitedKey !== currentKey || result.pending) return tongbuManagedLibraryFiles()
+    return result
+  }
+  managedReconcileKey = requestedKey
+  const currentPromise = (async () => {
+    const result = await library.reconcileManagedFiles()
+    await Promise.all([...new Set(result.staleThumbnailKeys)].map(shanchuThumbnailCache))
+    return result
+  })().finally(() => {
+    if (managedReconcilePromise === currentPromise) managedReconcilePromise = null
+  })
+  managedReconcilePromise = currentPromise
+  const result = await currentPromise
+  const currentConfig = library.getConfig()
+  const currentKey = `${currentConfig.libraryId}\0${currentConfig.rootdir}`
+  return currentKey === requestedKey && !result.pending ? result : tongbuManagedLibraryFiles()
+}
+
+async function tongbuManagedFilesAndNotify() {
+  const result = await tongbuManagedLibraryFiles()
+  if ((result.missing || result.recovered) && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(ipcTongdao.libraryChanged)
+  }
+  return result
 }
 
 // 创建应用主窗口
@@ -1089,6 +1136,9 @@ function createStartupWindow() {
 app.whenReady().then(async () => {
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   library = createLibrary(path.join(app.getPath('userData'), 'aether-dock.db'))
+  library.onManagedFilesDirty(() => {
+    void tongbuManagedFilesAndNotify().catch(() => {})
+  })
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
@@ -1231,7 +1281,10 @@ app.whenReady().then(async () => {
     }
     return yingyongSyncPromise
   })
-  ipcMain.handle(ipcTongdao.getLibrarySummary, () => library.getLibrarySummary())
+  ipcMain.handle(ipcTongdao.getLibrarySummary, async () => {
+    const reconciliation = await tongbuManagedLibraryFiles()
+    return { ...library.getLibrarySummary(), libraryAvailable: reconciliation.available }
+  })
   ipcMain.handle(ipcTongdao.getLibraryPage, (_, options) => library.getLibraryPage(options))
   ipcMain.handle(ipcTongdao.searchLibrary, (_, options) => library.searchLibrary(options))
   ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
@@ -1245,7 +1298,7 @@ app.whenReady().then(async () => {
         await shell.openExternal(item.sourceUrl)
         return { chenggong: true }
       }
-      const localPath = library.getItemLocalPath(item)
+      const localPath = await library.getValidatedItemLocalPath(item)
       if (localPath) {
         const error = await shell.openPath(localPath)
         return error ? { chenggong: false, xiaoxi: error } : { chenggong: true }
@@ -1255,9 +1308,9 @@ app.whenReady().then(async () => {
       return { chenggong: false, xiaoxi: '系统未能打开该条目' }
     }
   })
-  ipcMain.handle(ipcTongdao.locateLibraryItem, (_, itemId) => {
+  ipcMain.handle(ipcTongdao.locateLibraryItem, async (_, itemId) => {
     const item = library.getItemDetail(itemId)
-    const localPath = library.getItemLocalPath(item)
+    const localPath = await library.getValidatedItemLocalPath(item)
     if (localPath) shell.showItemInFolder(localPath)
   })
   ipcMain.handle(ipcTongdao.renameLibraryItem, async (_, itemId, title) => {
@@ -1279,6 +1332,10 @@ app.whenReady().then(async () => {
       return { chenggong: false, xiaoxi: '删除失败' }
     }
   })
+  managedReconcileTimer = setInterval(() => {
+    void tongbuManagedFilesAndNotify().catch(() => {})
+  }, 5 * 60 * 1000)
+  managedReconcileTimer.unref()
   createMainWindow()
   createStartupWindow()
 
@@ -1291,6 +1348,12 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  library?.close()
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.once('will-quit', () => {
+  if (managedReconcileTimer) clearInterval(managedReconcileTimer)
+  managedReconcileTimer = null
+  library?.close()
+  library = null
 })

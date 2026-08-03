@@ -1,4 +1,4 @@
-import { computed, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, shallowRef } from 'vue'
 
 const categoryIds = ['document', 'image', 'url', 'application']
 const pageSize = 30
@@ -28,10 +28,14 @@ export function useZiliaokuLibrary(xianshiToast) {
   const searchKeyword = shallowRef('')
   const searchState = shallowRef(createPageState())
   const libraryConfig = shallowRef({ rootdir: '', libraryId: '' })
+  const libraryAvailable = shallowRef(false)
   const currentCollapsedAnimation = shallowRef('kulian')
   const isImporting = shallowRef(false)
   const isYingyongSyncing = shallowRef(false)
   let searchRequestId = 0
+  let libraryRefreshPromise = null
+  let forcedRefreshVersion = 0
+  let libraryStateGeneration = 0
 
   const libraryItems = computed(() => (
     searchKeyword.value ? searchState.value.items : categoryWindows.value[currentCategory.value].items
@@ -61,23 +65,39 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function jiazaiLibrary() {
-    try {
-      const bridge = huoquBridge()
-      const [config, summary, animation] = await Promise.all([
-        bridge?.getLibraryConfig(),
-        bridge?.getLibrarySummary(),
-        bridge?.getCollapsedAnimation(),
-      ])
-      if (config) libraryConfig.value = config
-      if (summary) {
-        categoryCounts.value = summary.counts
-        categoryWindows.value = createCategoryWindows()
-        shezhiPage(summary.defaultType, summary.defaultPage)
-      }
-      if (animation) currentCollapsedAnimation.value = animation
-    } catch {
-      xianshiToast('资料库暂时不可用', 'error')
-    }
+    if (libraryRefreshPromise) return libraryRefreshPromise
+    libraryRefreshPromise = (async () => {
+      let success = false
+      let completedVersion
+      do {
+        completedVersion = forcedRefreshVersion
+        const requestGeneration = libraryStateGeneration
+        try {
+          const bridge = huoquBridge()
+          const [config, summary, animation] = await Promise.all([
+            bridge?.getLibraryConfig(),
+            bridge?.getLibrarySummary(),
+            bridge?.getCollapsedAnimation(),
+          ])
+          if (requestGeneration === libraryStateGeneration) {
+            if (config) libraryConfig.value = config
+            if (summary) {
+              libraryAvailable.value = Boolean(summary.libraryAvailable)
+              categoryCounts.value = summary.counts
+              categoryWindows.value = createCategoryWindows()
+              shezhiPage(summary.defaultType, summary.defaultPage)
+            }
+          }
+          if (animation) currentCollapsedAnimation.value = animation
+          success = true
+        } catch {
+          success = false
+        }
+      } while (completedVersion !== forcedRefreshVersion)
+      if (!success) xianshiToast('资料库暂时不可用', 'error')
+      return success
+    })().finally(() => { libraryRefreshPromise = null })
+    return libraryRefreshPromise
   }
 
   async function jiazaiCategory(type = currentCategory.value) {
@@ -194,20 +214,40 @@ export function useZiliaokuLibrary(xianshiToast) {
     }
   }
 
-  async function shuaxinLibraryIndex() {
-    const summary = await huoquBridge()?.getLibrarySummary()
-    if (!summary) return
-    categoryCounts.value = summary.counts
-    categoryWindows.value = createCategoryWindows()
-    shezhiPage(summary.defaultType, summary.defaultPage)
-    if (searchKeyword.value) await sousuoLibrary(searchKeyword.value)
-    else await jiazaiCategory(currentCategory.value)
+  async function shuaxinLibraryIndex(force = false) {
+    if (force) forcedRefreshVersion += 1
+    if (libraryRefreshPromise) return libraryRefreshPromise
+    libraryRefreshPromise = (async () => {
+      let success = false
+      let completedVersion
+      do {
+        completedVersion = forcedRefreshVersion
+        const requestGeneration = libraryStateGeneration
+        try {
+          const summary = await huoquBridge()?.getLibrarySummary()
+          if (!summary || requestGeneration !== libraryStateGeneration) continue
+          libraryAvailable.value = Boolean(summary.libraryAvailable)
+          categoryCounts.value = summary.counts
+          categoryWindows.value = createCategoryWindows()
+          shezhiPage(summary.defaultType, summary.defaultPage)
+          if (searchKeyword.value) await sousuoLibrary(searchKeyword.value)
+          else await jiazaiCategory(currentCategory.value)
+          success = true
+        } catch {
+          success = false
+        }
+      } while (completedVersion !== forcedRefreshVersion)
+      return success
+    })().finally(() => { libraryRefreshPromise = null })
+    return libraryRefreshPromise
   }
 
   async function xuanzeLibraryRootdir() {
     const result = await huoquBridge()?.selectLibraryRootdir()
     if (result?.quxiao || !result?.config) return false
+    libraryStateGeneration += 1
     libraryConfig.value = result.config
+    await shuaxinLibraryIndex(true)
     xianshiToast('资料库目录已设置', 'success')
     return true
   }
@@ -232,7 +272,8 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast('未发现可导入的新内容', 'info')
         return []
       }
-      await shuaxinLibraryIndex()
+      libraryStateGeneration += 1
+      await shuaxinLibraryIndex(true)
       xianshiToast(`归档完成 · ${addedItems.length} 项`, 'success')
       return addedItems
     } catch {
@@ -270,6 +311,7 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast(result?.xiaoxi || '重命名失败', 'error')
         return false
       }
+      libraryStateGeneration += 1
       const updateTitle = (currentItem) => currentItem.id === item.id
         ? { ...currentItem, title: result.title }
         : currentItem
@@ -293,6 +335,7 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast(result?.xiaoxi || '删除失败', 'error')
         return false
       }
+      libraryStateGeneration += 1
       categoryWindows.value = Object.fromEntries(categoryIds.map((type) => [
         type,
         { ...categoryWindows.value[type], items: categoryWindows.value[type].items.filter(({ id }) => id !== item.id) },
@@ -319,7 +362,8 @@ export function useZiliaokuLibrary(xianshiToast) {
         xianshiToast(result?.xiaoxi || '桌面程序扫描失败', 'error')
         return false
       }
-      await shuaxinLibraryIndex()
+      libraryStateGeneration += 1
+      await shuaxinLibraryIndex(true)
       const changeCount = result.added + result.updated + result.recovered + result.missing
       if (!result.scanned && !changeCount) {
         xianshiToast('桌面未发现程序快捷方式', 'info')
@@ -350,11 +394,17 @@ export function useZiliaokuLibrary(xianshiToast) {
     }
   }
 
+  const stopLibraryChangedListener = huoquBridge()?.onLibraryChanged?.(() => {
+    void shuaxinLibraryIndex(true)
+  })
+  onBeforeUnmount(() => stopLibraryChangedListener?.())
+
   return {
     libraryItems,
     categoryCounts,
     currentCategory,
     libraryConfig,
+    libraryAvailable,
     currentCollapsedAnimation,
     isImporting,
     isYingyongSyncing,
@@ -362,6 +412,7 @@ export function useZiliaokuLibrary(xianshiToast) {
     xuanzeLibraryCategory,
     sousuoLibrary,
     jiazaiGengduo,
+    shuaxinLibraryIndex,
     xuanzeLibraryRootdir,
     daoruDragContent,
     dakaiLibraryItem,

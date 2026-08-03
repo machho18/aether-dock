@@ -1,7 +1,10 @@
 <template>
   <section class="library-page" aria-label="资料库">
     <div class="library-status">
-      <span class="library-connection library-connection--normal">资料库已连接</span>
+      <span
+        class="library-connection"
+        :class="libraryAvailable ? 'library-connection--normal' : 'library-connection--abnormal'"
+      >{{ libraryAvailable ? '资料库已连接' : '资料库暂不可用' }}</span>
     </div>
 
     <section class="expanded-top" aria-label="窗口工具栏">
@@ -80,7 +83,7 @@
                   :fetchpriority="offset === 0 ? 'high' : 'auto'"
                   alt=""
                   draggable="false"
-                  @error="biaojiPreviewFailed(item.id)"
+                  @error="biaojiPreviewFailed(item)"
                 >
                 <img
                   v-else-if="cardInfo.icon"
@@ -205,6 +208,7 @@ const props = defineProps({
     default: () => ({ document: 0, image: 0, url: 0, application: 0 }),
   },
   libraryConfig: { type: Object, default: () => ({ rootdir: '' }) },
+  libraryAvailable: { type: Boolean, default: false },
   initialCategory: { type: String, default: 'document' },
   isYingyongSyncing: { type: Boolean, default: false },
   isAnimationBusy: { type: Boolean, default: false },
@@ -215,7 +219,8 @@ const searchKeyword = shallowRef('')
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
-const yulanFailedIds = reactive(new Set())
+const yulanFailedKeys = reactive(new Map())
+const yulanRecoveryIds = new Set()
 const yingyongIconMap = shallowRef({})
 const yingyongIconRequestKeyMap = shallowRef({})
 const wangzhiIconMap = shallowRef({})
@@ -257,6 +262,10 @@ const currentItems = computed(() => props.items)
 
 const keshikapianRange = 4
 
+function huoquThumbnailRequestKey(item) {
+  return [item.libraryId, item.id, item.updatedAt, item.relativePath].join('\0')
+}
+
 // 两端保留透明缓冲卡，让可见卡淡出后再卸载，避免轮播边缘突现或突消。
 const carouselCards = computed(() => {
   const startIndex = Math.max(carouselIndex.value - keshikapianRange, 0)
@@ -271,7 +280,8 @@ const carouselCards = computed(() => {
     const websiteIconFailed = wangzhiIconFailedIds.has(item.id)
     const validMappedWebsiteIcon = !websiteIconFailed && mappedWebsiteIcon && (!item.iconCacheKey || mappedWebsiteIcon.includes(item.iconCacheKey)) ? mappedWebsiteIcon : ''
     const mappedThumbnail = tupianThumbnailMap.value[item.id]
-    const validMappedThumbnail = mappedThumbnail && (!item.thumbnailCacheKey || mappedThumbnail === item.thumbnailCacheKey)
+    const validMappedThumbnail = mappedThumbnail
+      && tupianThumbnailRequestKeyMap.value[item.id] === huoquThumbnailRequestKey(item)
       ? mappedThumbnail
       : ''
     return {
@@ -284,13 +294,35 @@ const carouselCards = computed(() => {
         yingyongIcon: validMappedIcon,
         wangzhiIcon: validMappedWebsiteIcon,
         thumbnailKey: validMappedThumbnail,
-      }, yulanFailedIds),
+      }, yulanFailedKeys),
     }
   })
 })
 
 // 分页窗口裁剪后按条目 ID 恢复中心卡，避免续载时轮播跳回开头。
 watch(currentItems, (items, previousItems) => {
+  const previousById = new Map(previousItems.map((item) => [item.id, item]))
+  const nextThumbnailMap = { ...tupianThumbnailMap.value }
+  const nextRequestKeyMap = { ...tupianThumbnailRequestKeyMap.value }
+  let didResetThumbnail = false
+  for (const item of items) {
+    const previousItem = previousById.get(item.id)
+    if (!previousItem) continue
+    const sourceChanged = previousItem.libraryId !== item.libraryId
+      || previousItem.updatedAt !== item.updatedAt
+      || previousItem.status !== item.status
+      || previousItem.thumbnailCacheKey !== item.thumbnailCacheKey
+    if (!sourceChanged) continue
+    delete nextThumbnailMap[item.id]
+    delete nextRequestKeyMap[item.id]
+    yulanFailedKeys.delete(item.id)
+    yulanRecoveryIds.delete(item.id)
+    didResetThumbnail = true
+  }
+  if (didResetThumbnail) {
+    tupianThumbnailMap.value = nextThumbnailMap
+    tupianThumbnailRequestKeyMap.value = nextRequestKeyMap
+  }
   const currentId = previousItems[carouselIndex.value]?.id
   const preservedIndex = currentId ? items.findIndex(({ id }) => id === currentId) : -1
   carouselIndex.value = preservedIndex >= 0 ? preservedIndex : Math.min(carouselIndex.value, Math.max(items.length - 1, 0))
@@ -419,14 +451,15 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
     .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
     .map(({ item }) => item)
     .filter((item) => {
-      if (item.thumbnailStatus === 'ready' && item.thumbnailCacheKey) return false
       const mappedThumbnail = tupianThumbnailMap.value[item.id]
-      if (mappedThumbnail && (!item.thumbnailCacheKey || mappedThumbnail === item.thumbnailCacheKey)) return false
-      return tupianThumbnailRequestKeyMap.value[item.id] !== (item.thumbnailCacheKey || item.id)
+      const requestKey = huoquThumbnailRequestKey(item)
+      const hasCurrentMappedThumbnail = mappedThumbnail && tupianThumbnailRequestKeyMap.value[item.id] === requestKey
+      if (hasCurrentMappedThumbnail) return false
+      return tupianThumbnailRequestKeyMap.value[item.id] !== requestKey
     })
   if (!missingItems.length) return
 
-  const requestKeys = Object.fromEntries(missingItems.map((item) => [item.id, item.thumbnailCacheKey || item.id]))
+  const requestKeys = Object.fromEntries(missingItems.map((item) => [item.id, huoquThumbnailRequestKey(item)]))
   const duquThumbnails = async () => {
     if (props.isAnimationBusy) return
     tupianThumbnailRequestKeyMap.value = { ...tupianThumbnailRequestKeyMap.value, ...requestKeys }
@@ -501,8 +534,17 @@ function huoquCardStyle(offset) {
   }
 }
 
-function biaojiPreviewFailed(itemId) {
-  yulanFailedIds.add(itemId)
+function biaojiPreviewFailed(item) {
+  const failedKey = tupianThumbnailMap.value[item.id] || item.thumbnailCacheKey || ''
+  yulanFailedKeys.set(item.id, failedKey)
+  if (yulanRecoveryIds.has(item.id)) return
+  yulanRecoveryIds.add(item.id)
+  const nextThumbnailMap = { ...tupianThumbnailMap.value }
+  const nextRequestKeyMap = { ...tupianThumbnailRequestKeyMap.value }
+  delete nextThumbnailMap[item.id]
+  delete nextRequestKeyMap[item.id]
+  tupianThumbnailMap.value = nextThumbnailMap
+  tupianThumbnailRequestKeyMap.value = nextRequestKeyMap
 }
 
 function biaojiWangzhiIconFailed(item) {

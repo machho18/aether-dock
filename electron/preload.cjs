@@ -13,6 +13,7 @@ const ipcTongdao = Object.freeze({
   importLibraryContent: 'library:import',
   tongbuDesktopApplications: 'applications:sync-desktop',
   getLibrarySummary: 'library:read-summary',
+  libraryChanged: 'library:changed',
   getLibraryPage: 'library:read-page',
   searchLibrary: 'library:search',
   getApplicationIcons: 'library:read-application-icons',
@@ -72,6 +73,12 @@ contextBridge.exposeInMainWorld('aetherDock', {
   },
   tongbuDesktopApplications: () => ipcRenderer.invoke(ipcTongdao.tongbuDesktopApplications),
   getLibrarySummary: () => ipcRenderer.invoke(ipcTongdao.getLibrarySummary),
+  onLibraryChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = () => callback()
+    ipcRenderer.on(ipcTongdao.libraryChanged, listener)
+    return () => ipcRenderer.removeListener(ipcTongdao.libraryChanged, listener)
+  },
   getLibraryPage: (options) => ipcRenderer.invoke(ipcTongdao.getLibraryPage, options),
   searchLibrary: (options) => ipcRenderer.invoke(ipcTongdao.searchLibrary, options),
   getApplicationIcons: (itemIds) => ipcRenderer.invoke(ipcTongdao.getApplicationIcons, itemIds),

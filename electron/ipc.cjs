@@ -11,6 +11,7 @@ const ipcTongdao = Object.freeze({
   importLibraryContent: 'library:import',
   tongbuDesktopApplications: 'applications:sync-desktop',
   getLibrarySummary: 'library:read-summary',
+  libraryChanged: 'library:changed',
   getLibraryPage: 'library:read-page',
   searchLibrary: 'library:search',
   getApplicationIcons: 'library:read-application-icons',
