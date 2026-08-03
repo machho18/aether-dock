@@ -25,7 +25,12 @@ export function huoquCardInfo(item, previewFailed) {
         : '',
     }
   }
-  if (item.type === 'url') return { type: 'URL', icon: urlIcon, preview: '' }
+  if (item.type === 'url') {
+    const cachedIcon = item.iconStatus === 'ready' && item.iconCacheKey
+      ? `aetherdock-icon://${item.iconCacheKey}`
+      : ''
+    return { type: 'URL', icon: item.wangzhiIcon || cachedIcon || urlIcon, preview: '' }
+  }
   if (item.type === 'application') {
     const cachedIcon = item.iconStatus === 'ready' && item.iconCacheKey
       ? `aetherdock-icon://${item.iconCacheKey}`

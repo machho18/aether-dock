@@ -156,15 +156,21 @@ function createLibrary(dbPath) {
   const readItemCountsStmt = db.prepare('SELECT type, COUNT(*) AS count FROM items GROUP BY type')
   const readLatestUpdateStmt = db.prepare('SELECT MAX(updatedAt) AS updatedAt FROM items')
   const readApplicationCacheItemsStmt = db.prepare("SELECT id, type, iconCacheKey, iconStatus FROM items WHERE type = 'application'")
+  const readIconCacheItemsStmt = db.prepare("SELECT id, type, iconCacheKey, iconStatus FROM items WHERE type IN ('application', 'url')")
   const updateApplicationIconStmt = db.prepare(`
     UPDATE items SET iconCacheKey = ?, iconStatus = ?
     WHERE id = ? AND type = 'application'
+  `)
+  const updateWebsiteIconStmt = db.prepare(`
+    UPDATE items SET iconCacheKey = ?, iconStatus = ?
+    WHERE id = ? AND type = 'url'
   `)
   const updateImageThumbnailStmt = db.prepare(`
     UPDATE items SET thumbnailCacheKey = ?, thumbnailStatus = ?
     WHERE id = ? AND type = 'image'
   `)
   const readItemStmt = db.prepare('SELECT * FROM items WHERE id = ?')
+  const renameItemStmt = db.prepare("UPDATE items SET title = ?, relativePath = ?, updatedAt = ? WHERE id = ? AND type != 'application'")
   const deleteItemStmt = db.prepare('DELETE FROM items WHERE id = ?')
 
   // 数据库写入统一使用事务包装，保证异常时始终回滚。
@@ -594,6 +600,10 @@ function createLibrary(dbPath) {
     return readApplicationCacheItemsStmt.all()
   }
 
+  function getIconCacheItems() {
+    return readIconCacheItemsStmt.all()
+  }
+
   function getItemByUrl(rawUrl) {
     try {
       const normalizedUrl = normalizeUrl(rawUrl)
@@ -606,6 +616,11 @@ function createLibrary(dbPath) {
   function setApplicationIconCache(id, cacheKey, status) {
     if (!['pending', 'ready', 'failed'].includes(status)) throw new Error('不支持的图标缓存状态')
     updateApplicationIconStmt.run(cacheKey, status, id)
+  }
+
+  function setWebsiteIconCache(id, cacheKey, status) {
+    if (!['pending', 'ready', 'failed'].includes(status)) throw new Error('不支持的图标缓存状态')
+    updateWebsiteIconStmt.run(cacheKey, status, id)
   }
 
   function setImageThumbnailCache(id, cacheKey, status) {
@@ -622,6 +637,74 @@ function createLibrary(dbPath) {
     if (item?.storageMode === 'managed') return resolveManagedPath(item)
     if (item?.storageMode === 'shortcut') return item.sourcePath || ''
     return item?.storageMode === 'reference' ? item.sourcePath : ''
+  }
+
+  function generateRenamedFilename(rawTitle, originalExtension, directory, currentPath) {
+    let title = path.basename(rawTitle)
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[. ]+$/g, '')
+      .trim()
+    if (!title) throw new Error('名称不能为空')
+    if (originalExtension) {
+      const requestedExtension = path.extname(title)
+      title = `${path.basename(title, requestedExtension)}${originalExtension}`
+    }
+    const extension = path.extname(title)
+    let basename = path.basename(title, extension).slice(0, 80).replace(/[. ]+$/g, '') || 'untitled'
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(basename)) basename = `_${basename}`
+    let filename = `${basename}${extension.toLowerCase()}`
+    for (let suffix = 2; fs.existsSync(path.join(directory, filename)) && path.join(directory, filename).toLowerCase() !== currentPath.toLowerCase(); suffix += 1) {
+      filename = `${basename} (${suffix})${extension.toLowerCase()}`
+    }
+    return filename
+  }
+
+  async function renameItem(id, rawTitle) {
+    const item = readItemStmt.get(id)
+    if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+    if (item.type === 'application') return { chenggong: false, xiaoxi: '应用程序不支持重命名' }
+    let title = String(rawTitle ?? '').replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+    if (!title) return { chenggong: false, xiaoxi: '名称不能为空' }
+
+    let nextRelativePath = item.relativePath
+    let currentPath = ''
+    let nextPath = ''
+    let didRenameFile = false
+    if (item.storageMode === 'managed' && ['document', 'image'].includes(item.type)) {
+      currentPath = resolveManagedPath(item)
+      if (!currentPath || !fs.existsSync(currentPath)) return { chenggong: false, xiaoxi: '资料库文件不存在' }
+      const directory = path.dirname(currentPath)
+      const originalExtension = path.extname(currentPath)
+      title = generateRenamedFilename(title, originalExtension, directory, currentPath)
+      nextRelativePath = path.join(path.dirname(item.relativePath), title)
+      nextPath = path.join(directory, title)
+      if (nextPath !== currentPath) {
+        if (nextPath.toLowerCase() === currentPath.toLowerCase()) {
+          const temporaryPath = path.join(directory, `.aetherdock-rename-${item.id}.tmp`)
+          await fsp.rename(currentPath, temporaryPath)
+          try {
+            await fsp.rename(temporaryPath, nextPath)
+          } catch (error) {
+            await fsp.rename(temporaryPath, currentPath).catch(() => {})
+            throw error
+          }
+        } else {
+          await fsp.rename(currentPath, nextPath)
+        }
+        didRenameFile = true
+      }
+    }
+
+    try {
+      renameItemStmt.run(title, nextRelativePath, Date.now(), id)
+      return { chenggong: true, title }
+    } catch (error) {
+      if (didRenameFile) {
+        await fsp.rename(nextPath, currentPath).catch(() => {})
+      }
+      throw error
+    }
   }
 
   // 删除条目：先删除数据库记录，成功后再清理本地受管副本，避免删了文件却入库失败
@@ -653,11 +736,14 @@ function createLibrary(dbPath) {
     getLibraryPage,
     searchLibrary,
     getApplicationCacheItems,
+    getIconCacheItems,
     getItemByUrl,
     setApplicationIconCache,
+    setWebsiteIconCache,
     setImageThumbnailCache,
     getItemDetail,
     getItemLocalPath,
+    renameItem,
     deleteItem,
     close,
   }

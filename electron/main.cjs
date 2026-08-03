@@ -36,6 +36,7 @@ const startupWindowSize = { width: 360, height: 360 }
 const maxRemoteFileBytes = 100 * 1024 * 1024
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
+const websiteIconMimeTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon', 'application/octet-stream'])
 const remoteMimeExtensions = new Map([
   ['image/avif', '.avif'], ['image/bmp', '.bmp'], ['image/gif', '.gif'],
   ['image/heic', '.heic'], ['image/jpeg', '.jpg'], ['image/png', '.png'],
@@ -148,20 +149,66 @@ function panduanPrivateIp(address) {
     || normalized.startsWith('2002:')
 }
 
-async function jiaoyanRemoteUrl(rawUrl) {
+async function jiaoyanRemoteUrl(rawUrl, signal) {
   const url = new URL(rawUrl)
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('不支持的网络地址')
   const hostname = url.hostname.toLowerCase()
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('不允许访问本地地址')
-  const addresses = await dns.lookup(hostname, { all: true, verbatim: true })
+  if (signal?.aborted) throw new Error('网络请求已取消')
+  let abortHandler
+  const abortPromise = new Promise((resolve, reject) => {
+    abortHandler = () => reject(new Error('网络请求已取消'))
+    signal?.addEventListener('abort', abortHandler, { once: true })
+  })
+  let addresses
+  try {
+    addresses = await Promise.race([dns.lookup(hostname, { all: true, verbatim: true }), abortPromise])
+  } finally {
+    signal?.removeEventListener('abort', abortHandler)
+  }
   if (!addresses.length || addresses.some(({ address }) => panduanPrivateIp(address))) throw new Error('不允许访问内网地址')
   return { url, addresses }
 }
 
-async function qingqiuRemoteResource(rawUrl, signal) {
-  let currentTarget = await jiaoyanRemoteUrl(rawUrl)
+function huoquRemoteReferer(currentUrl, requestContext = {}) {
+  if (currentUrl.protocol !== 'https:') return ''
+  const hostname = currentUrl.hostname.toLowerCase()
+  const refererRules = [
+    { suffix: 'sinaimg.cn', referer: 'https://weibo.com/' },
+    { suffix: 'douyinpic.com', referer: 'https://www.douyin.com/' },
+    { suffix: 'xhscdn.com', referer: 'https://www.xiaohongshu.com/' },
+    { suffix: 'zhimg.com', referer: 'https://www.zhihu.com/' },
+  ]
+  const matchedRule = refererRules.find(({ suffix }) => hostname === suffix || hostname.endsWith(`.${suffix}`))
+  if (matchedRule) return matchedRule.referer
+  try {
+    const refererUrl = new URL(requestContext.referer || requestContext.sourceUrl || '')
+    const refererHostname = refererUrl.hostname.toLowerCase()
+    const trustedSiteGroups = [
+      ['baidu.com', 'bdstatic.com', 'bcebos.com'],
+      ['github.com', 'githubusercontent.com'],
+      ['taobao.com', 'tmall.com', 'alicdn.com'],
+    ]
+    const belongsToDomain = (hostnameValue, domain) => hostnameValue === domain || hostnameValue.endsWith(`.${domain}`)
+    const isTrustedSibling = trustedSiteGroups.some((domains) => (
+      domains.some((domain) => belongsToDomain(hostname, domain))
+      && domains.some((domain) => belongsToDomain(refererHostname, domain))
+    ))
+    const isSameSite = hostname === refererHostname
+      || hostname.endsWith(`.${refererHostname}`)
+      || refererHostname.endsWith(`.${hostname}`)
+      || isTrustedSibling
+    return refererUrl.protocol === 'https:' && isSameSite ? `${refererUrl.origin}/` : ''
+  } catch {
+    return ''
+  }
+}
+
+async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
+  let currentTarget = await jiaoyanRemoteUrl(rawUrl, signal)
   for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
     const { url: currentUrl, addresses } = currentTarget
+    const referer = huoquRemoteReferer(currentUrl, requestContext)
     const response = await new Promise((resolve, reject) => {
       const request = (currentUrl.protocol === 'https:' ? https : http).request(currentUrl, {
         method: 'GET',
@@ -171,6 +218,7 @@ async function qingqiuRemoteResource(rawUrl, signal) {
           'Accept-Encoding': 'identity',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
           'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/${process.versions.chrome} Safari/537.36`,
+          ...(referer ? { Referer: referer } : {}),
         },
         lookup: (hostname, options, callback) => {
           if (options.all) {
@@ -195,7 +243,7 @@ async function qingqiuRemoteResource(rawUrl, signal) {
     const location = response.header('location')
     response.destroy()
     if (!location || redirectCount === 5) throw new Error('网络资源重定向过多')
-    currentTarget = await jiaoyanRemoteUrl(new URL(location, currentUrl).toString())
+    currentTarget = await jiaoyanRemoteUrl(new URL(location, currentUrl).toString(), signal)
   }
   throw new Error('网络资源重定向失败')
 }
@@ -232,7 +280,116 @@ function panduanRemoteResource(filename, mimeType) {
   return remoteImageExts.has(extension) || remoteDocumentExts.has(extension)
 }
 
-async function changshiDownloadRemoteResource(rawUrl, batchSignal) {
+function normalizeRemoteResource(rawResource) {
+  const isHttpUrl = (value) => typeof value === 'string' && /^https?:\/\//i.test(value)
+  const rawCandidates = Array.isArray(rawResource?.candidates) ? rawResource.candidates : []
+  const candidates = [...new Set(rawCandidates.filter(isHttpUrl))].slice(0, 8)
+  const sourceUrl = isHttpUrl(rawResource?.sourceUrl) ? rawResource.sourceUrl : candidates[0] || ''
+  const referer = isHttpUrl(rawResource?.referer) ? rawResource.referer : ''
+  return { sourceUrl, referer, candidates }
+}
+
+function decodeUrlRepeatedly(value) {
+  let decoded = String(value ?? '')
+  for (let count = 0; count < 2 && /^https?%3a/i.test(decoded); count += 1) {
+    try {
+      const nextValue = decodeURIComponent(decoded)
+      if (nextValue === decoded) break
+      decoded = nextValue
+    } catch {
+      break
+    }
+  }
+  return decoded
+}
+
+function panduanBaiduImageDetail(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    return url.hostname === 'image.baidu.com' && url.pathname === '/search/detail'
+  } catch {
+    return false
+  }
+}
+
+async function duquRemoteText(response, maxBytes = 2 * 1024 * 1024) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of response) {
+    size += chunk.length
+    if (size > maxBytes) {
+      response.destroy()
+      throw new Error('远程页面过大')
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function tiquBaiduMetadataCandidates(html) {
+  const jsonText = /<script[^>]*id=["']image-detail-data["'][^>]*>([\s\S]*?)<\/script>/i.exec(html)?.[1]?.trim()
+  if (!jsonText) return []
+  try {
+    const payload = JSON.parse(jsonText)
+    const data = payload.data ?? payload
+    const selectedImage = data.images?.[Number(data.csIndex) || 0]
+    if (!selectedImage) return []
+    const readUrl = (target, names) => names.map((name) => target?.[name]).find((value) => typeof value === 'string')
+    const replaceUrls = Array.isArray(selectedImage.replaceUrl) ? selectedImage.replaceUrl : []
+    const setList = Array.isArray(selectedImage.setList) ? selectedImage.setList : []
+    return [
+      readUrl(selectedImage, ['objurl', 'objURL', 'ObjURL']),
+      ...replaceUrls.map((item) => readUrl(item, ['objurl', 'objURL', 'ObjURL'])),
+      readUrl(selectedImage, ['thumburl', 'thumbURL', 'thumbUrl']),
+      ...setList.map((item) => readUrl(item, ['thumburl', 'thumbURL', 'thumbUrl'])),
+    ].filter((url) => typeof url === 'string')
+  } catch {
+    return []
+  }
+}
+
+async function jiexiBaiduImageResource(resource, detailUrl, batchSignal) {
+  const metadataCandidates = []
+  try {
+    const encodedObjurl = new URL(detailUrl).searchParams.get('objurl')
+    const objurl = decodeUrlRepeatedly(encodedObjurl)
+    if (/^https?:\/\//i.test(objurl)) metadataCandidates.push(objurl)
+  } catch {}
+
+  const controller = new AbortController()
+  const abortFromBatch = () => controller.abort()
+  if (batchSignal?.aborted) controller.abort()
+  else batchSignal?.addEventListener('abort', abortFromBatch, { once: true })
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const { response } = await qingqiuRemoteResource(detailUrl, controller.signal, { sourceUrl: detailUrl })
+    if (response.ok && response.header('content-type').includes('text/html')) {
+      metadataCandidates.push(...tiquBaiduMetadataCandidates(await duquRemoteText(response)))
+    } else {
+      response.destroy()
+    }
+  } catch {
+    // 页面元数据读取失败时仍继续尝试 URL 参数和拖放候选地址。
+  } finally {
+    clearTimeout(timeout)
+    batchSignal?.removeEventListener('abort', abortFromBatch)
+  }
+
+  const nonDetailCandidates = resource.candidates.filter((candidate) => !panduanBaiduImageDetail(candidate))
+  return [...new Set([...metadataCandidates, ...nonDetailCandidates])].filter((url) => /^https?:\/\//i.test(url))
+}
+
+async function jiexiRemoteResource(rawResource, batchSignal) {
+  const resource = normalizeRemoteResource(rawResource)
+  if (batchSignal?.aborted) return { ...resource, candidates: [] }
+  const detailUrl = [resource.sourceUrl, ...resource.candidates].find(panduanBaiduImageDetail)
+  const candidates = detailUrl
+    ? await jiexiBaiduImageResource(resource, detailUrl, batchSignal)
+    : resource.candidates
+  return { ...resource, candidates: candidates.slice(0, 12) }
+}
+
+async function changshiDownloadRemoteCandidate(rawUrl, requestContext, batchSignal) {
   const existing = library.getItemByUrl(rawUrl)
   if (existing) return { added: [], duplicates: [existing.id], bookmark: false }
 
@@ -242,7 +399,7 @@ async function changshiDownloadRemoteResource(rawUrl, batchSignal) {
   else batchSignal?.addEventListener('abort', abortFromBatch, { once: true })
   const timeout = setTimeout(() => controller.abort(), 30000)
   try {
-    const { response, finalUrl } = await qingqiuRemoteResource(rawUrl, controller.signal)
+    const { response, finalUrl } = await qingqiuRemoteResource(rawUrl, controller.signal, requestContext)
     if (!response.ok || !response.body) {
       response.destroy()
       return { added: [], duplicates: [], bookmark: true }
@@ -274,6 +431,16 @@ async function changshiDownloadRemoteResource(rawUrl, batchSignal) {
     clearTimeout(timeout)
     batchSignal?.removeEventListener('abort', abortFromBatch)
   }
+}
+
+async function changshiDownloadRemoteResource(rawResource, batchSignal) {
+  const resource = await jiexiRemoteResource(rawResource, batchSignal)
+  for (const candidate of resource.candidates) {
+    if (batchSignal?.aborted) break
+    const result = await changshiDownloadRemoteCandidate(candidate, resource, batchSignal)
+    if (!result.bookmark) return result
+  }
+  return { added: [], duplicates: [], bookmark: true, sourceUrl: resource.sourceUrl }
 }
 
 function chuangjianShortcutFingerprint(details, shortcutPath) {
@@ -454,10 +621,28 @@ function chuangjianYingyongIconUrl(cacheKey) {
   return `aetherdock-icon://${cacheKey}`
 }
 
+function huoquReadyIconCacheUrl(cacheKey) {
+  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
+  if (!fs.existsSync(iconPath)) return ''
+  try {
+    if (nativeImage.createFromPath(iconPath).isEmpty()) {
+      fs.rmSync(iconPath, { force: true })
+      return ''
+    }
+    return `${chuangjianYingyongIconUrl(cacheKey)}?v=${fs.statSync(iconPath).mtimeMs}`
+  } catch {
+    return ''
+  }
+}
+
 async function shengchengYingyongIconCache(item, cacheKey) {
   const nativeIcon = await tiquApplicationNativeIcon(item)
   if (!nativeIcon) return false
 
+  return baocunNativeIconCache(nativeIcon, cacheKey)
+}
+
+async function baocunNativeIconCache(nativeIcon, cacheKey) {
   const outputPaths = [64, 128].map((size) => ({
     size,
     finalPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`),
@@ -477,15 +662,231 @@ async function shengchengYingyongIconCache(item, cacheKey) {
   }
 }
 
+function huoquWebsiteIconCacheKey(item) {
+  try {
+    return createHash('sha256').update(new URL(item.sourceUrl).origin.toLowerCase()).digest('hex')
+  } catch {
+    return ''
+  }
+}
+
+function jiemaHtmlAttribute(value) {
+  return String(value ?? '').replace(/&(?:#(\d+)|#x([a-f\d]+)|(amp|quot|apos|lt|gt));/gi, (match, decimal, hex, name) => {
+    const codePoint = decimal ? Number(decimal) : hex ? Number.parseInt(hex, 16) : 0
+    if ((decimal || hex) && codePoint >= 0 && codePoint <= 0x10ffff) return String.fromCodePoint(codePoint)
+    return { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' }[name?.toLowerCase()] || match
+  })
+}
+
+function duquHtmlAttribute(tag, name) {
+  const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag)
+  return jiemaHtmlAttribute(match?.[1] ?? match?.[2] ?? match?.[3] ?? '')
+}
+
+function tiquWebsiteIconCandidates(html, pageUrl) {
+  const candidates = []
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = duquHtmlAttribute(tag, 'rel').toLowerCase().split(/\s+/)
+    if (!rel.some((value) => value === 'icon' || value === 'shortcut' || value === 'apple-touch-icon')) continue
+    const href = duquHtmlAttribute(tag, 'href')
+    try {
+      const iconUrl = new URL(href, pageUrl)
+      if (['http:', 'https:'].includes(iconUrl.protocol)) candidates.push(iconUrl.toString())
+    } catch {}
+  }
+  try { candidates.push(new URL('/favicon.ico', pageUrl).toString()) } catch {}
+  return [...new Set(candidates)].slice(0, 8)
+}
+
+async function duquRemoteBuffer(response, maxBytes) {
+  const contentLength = Number(response.header('content-length')) || 0
+  if (contentLength > maxBytes) {
+    response.destroy()
+    throw new Error('远程图标过大')
+  }
+  const chunks = []
+  let size = 0
+  for await (const chunk of response) {
+    size += chunk.length
+    if (size > maxBytes) {
+      response.destroy()
+      throw new Error('远程图标过大')
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+function huoquRasterImageSize(buffer) {
+  if (buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+  }
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null
+  const startOfFrameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf])
+  let offset = 2
+  while (offset + 8 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = buffer[offset + 1]
+    if (marker === 0xff || marker === 0x00) {
+      offset += 1
+      continue
+    }
+    if (startOfFrameMarkers.has(marker)) {
+      return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) }
+    }
+    if (marker === 0xd8 || marker === 0xd9) {
+      offset += 2
+      continue
+    }
+    const segmentLength = buffer.readUInt16BE(offset + 2)
+    if (segmentLength < 2) return null
+    offset += segmentLength + 2
+  }
+  return null
+}
+
+function panduanSafeImageSize({ width, height }, maxEdge = 2048, maxPixels = 4 * 1024 * 1024) {
+  return width > 0 && height > 0 && width <= maxEdge && height <= maxEdge && width * height <= maxPixels
+}
+
+function panduanSafeIco(buffer) {
+  if (buffer.length < 22 || buffer.readUInt16LE(0) !== 0 || buffer.readUInt16LE(2) !== 1) return false
+  const imageCount = buffer.readUInt16LE(4)
+  if (!imageCount || imageCount > 20 || buffer.length < 6 + imageCount * 16) return false
+  for (let index = 0; index < imageCount; index += 1) {
+    const entryOffset = 6 + index * 16
+    const width = buffer[entryOffset] || 256
+    const height = buffer[entryOffset + 1] || 256
+    const byteLength = buffer.readUInt32LE(entryOffset + 8)
+    const dataOffset = buffer.readUInt32LE(entryOffset + 12)
+    if (!panduanSafeImageSize({ width, height }, 512, 512 * 512) || !byteLength || dataOffset + byteLength > buffer.length) return false
+    const imageData = buffer.subarray(dataOffset, dataOffset + byteLength)
+    const rasterSize = huoquRasterImageSize(imageData)
+    if (rasterSize && !panduanSafeImageSize(rasterSize, 512, 512 * 512)) return false
+    if (!rasterSize) {
+      if (imageData.length < 12) return false
+      const dibSize = {
+        width: Math.abs(imageData.readInt32LE(4)),
+        height: Math.ceil(Math.abs(imageData.readInt32LE(8)) / 2),
+      }
+      if (!panduanSafeImageSize(dibSize, 512, 512 * 512)) return false
+    }
+  }
+  return true
+}
+
+async function chuangjianSafeWebsiteIcon(iconBuffer, cacheKey) {
+  const rasterSize = huoquRasterImageSize(iconBuffer)
+  if (rasterSize) {
+    if (!panduanSafeImageSize(rasterSize)) return null
+    const image = nativeImage.createFromBuffer(iconBuffer)
+    return image.isEmpty() ? null : image
+  }
+  if (process.platform !== 'win32' || !panduanSafeIco(iconBuffer)) return null
+  const tempPath = path.join(yingyongIconCacheDir, `${cacheKey}.${process.pid}.${Date.now()}.ico`)
+  try {
+    await fsp.writeFile(tempPath, iconBuffer, { flag: 'wx' })
+    const image = nativeImage.createFromPath(tempPath)
+    return image.isEmpty() ? null : image
+  } finally {
+    await fsp.rm(tempPath, { force: true }).catch(() => {})
+  }
+}
+
+async function tiquWebsiteNativeIcon(item) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 20000)
+  let pageUrl
+  let candidates = []
+  try {
+    const pageResult = await qingqiuRemoteResource(item.sourceUrl, controller.signal, { sourceUrl: item.sourceUrl })
+    pageUrl = pageResult.finalUrl
+    const contentType = pageResult.response.header('content-type').split(';')[0].trim().toLowerCase()
+    if (pageResult.response.ok && ['text/html', 'application/xhtml+xml'].includes(contentType)) {
+      const html = (await duquRemoteBuffer(pageResult.response, 2 * 1024 * 1024)).toString('utf8')
+      candidates = tiquWebsiteIconCandidates(html, pageUrl)
+    } else {
+      pageResult.response.destroy()
+    }
+  } catch {
+    try {
+      pageUrl = new URL(item.sourceUrl)
+      candidates = [new URL('/favicon.ico', pageUrl).toString()]
+    } catch {}
+  }
+
+  try {
+    for (const candidate of candidates) {
+      try {
+        const { response } = await qingqiuRemoteResource(candidate, controller.signal, {
+          sourceUrl: pageUrl?.toString() || item.sourceUrl,
+          referer: pageUrl?.toString() || item.sourceUrl,
+        })
+        const contentType = response.header('content-type').split(';')[0].trim().toLowerCase()
+        if (!response.ok || !websiteIconMimeTypes.has(contentType)) {
+          response.destroy()
+          continue
+        }
+        const iconBuffer = await duquRemoteBuffer(response, 1024 * 1024)
+        const cacheKey = huoquWebsiteIconCacheKey(item)
+        const icon = cacheKey ? await chuangjianSafeWebsiteIcon(iconBuffer, cacheKey) : null
+        if (icon) return icon
+      } catch {}
+    }
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function huoquWebsiteIconUrl(item, priority) {
+  if (item.type !== 'url') return ''
+  const cacheKey = huoquWebsiteIconCacheKey(item)
+  if (!cacheKey) return ''
+  const cachedIconUrl = huoquReadyIconCacheUrl(cacheKey)
+  if (cachedIconUrl) {
+    if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') library.setWebsiteIconCache(item.id, cacheKey, 'ready')
+    return cachedIconUrl
+  }
+
+  library.setWebsiteIconCache(item.id, cacheKey, 'pending')
+  let cachePromise = yingyongIconPromiseMap.get(cacheKey)
+  if (!cachePromise) {
+    cachePromise = xianxingZhixingYingyongIconRenwu(async () => {
+      const nativeIcon = await tiquWebsiteNativeIcon(item)
+      return nativeIcon ? baocunNativeIconCache(nativeIcon, cacheKey) : false
+    }, priority).finally(() => yingyongIconPromiseMap.delete(cacheKey))
+    yingyongIconPromiseMap.set(cacheKey, cachePromise)
+  }
+  const generated = await cachePromise
+  library.setWebsiteIconCache(item.id, cacheKey, generated ? 'ready' : 'failed')
+  return generated ? huoquReadyIconCacheUrl(cacheKey) : ''
+}
+
+async function huoquWebsiteIconMap(itemIds) {
+  const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
+    .filter((itemId) => typeof itemId === 'string')
+    .slice(0, 12)
+  const iconEntries = await Promise.all(validIds.map(async (itemId, index) => {
+    const item = library.getItemDetail(itemId)
+    if (item?.type !== 'url') return [itemId, '']
+    return [itemId, await huoquWebsiteIconUrl(item, index < 5 ? 0 : 1)]
+  }))
+  return Object.fromEntries(iconEntries)
+}
+
 async function huoquApplicationIconUrl(item, priority) {
   if (item.type !== 'application') return ''
   const cacheKey = huoquYingyongIconCacheKey(item)
-  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
-  if (fs.existsSync(iconPath)) {
+  const cachedIconUrl = huoquReadyIconCacheUrl(cacheKey)
+  if (cachedIconUrl) {
     if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') {
       library.setApplicationIconCache(item.id, cacheKey, 'ready')
     }
-    return chuangjianYingyongIconUrl(cacheKey)
+    return cachedIconUrl
   }
 
   library.setApplicationIconCache(item.id, cacheKey, 'pending')
@@ -499,7 +900,7 @@ async function huoquApplicationIconUrl(item, priority) {
   }
   const generated = await cachePromise
   library.setApplicationIconCache(item.id, cacheKey, generated ? 'ready' : 'failed')
-  return generated ? chuangjianYingyongIconUrl(cacheKey) : ''
+  return generated ? huoquReadyIconCacheUrl(cacheKey) : ''
 }
 
 // 可见卡按中心向外排序进入 P0/P1 队列，IPC 仅返回轻量协议地址。
@@ -516,8 +917,8 @@ async function huoquYingyongIconMap(itemIds) {
 }
 
 // 同步仅删除已无数据库记录引用的指纹文件，未变化程序永久复用原缓存。
-async function qingliYingyongIconCache(items) {
-  const validKeys = new Set(items.map(({ iconCacheKey }) => iconCacheKey).filter(Boolean))
+async function qingliYingyongIconCache() {
+  const validKeys = new Set(library.getIconCacheItems().map(({ iconCacheKey }) => iconCacheKey).filter(Boolean))
   let filenames = []
   try { filenames = await fsp.readdir(yingyongIconCacheDir) } catch { return }
   await Promise.all(filenames.map(async (filename) => {
@@ -692,6 +1093,7 @@ app.whenReady().then(async () => {
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
   await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
+  await qingliYingyongIconCache()
   protocol.handle('aetherdock-icon', async (request) => {
     try {
       const cacheKey = new URL(request.url).hostname.toLowerCase()
@@ -754,21 +1156,31 @@ app.whenReady().then(async () => {
     const remoteAdded = []
     const remoteDuplicates = []
     const bookmarkUrls = []
-    const remoteUrls = [...new Set(Array.isArray(payload?.url) ? payload.url : [])].slice(0, 20)
-    const remoteResults = new Array(remoteUrls.length)
+    const seenRemoteResources = new Set()
+    const remoteResources = (Array.isArray(payload?.url) ? payload.url : [])
+      .map(normalizeRemoteResource)
+      .filter(({ candidates }) => candidates.length)
+      .filter((resource) => {
+        const key = `${resource.sourceUrl}\0${resource.candidates.join('\0')}`
+        if (seenRemoteResources.has(key)) return false
+        seenRemoteResources.add(key)
+        return true
+      })
+      .slice(0, 20)
+    const remoteResults = new Array(remoteResources.length)
     const batchController = new AbortController()
     const batchTimeout = setTimeout(() => batchController.abort(), 45000)
     let nextRemoteIndex = 0
     const downloadWorker = async () => {
-      while (nextRemoteIndex < remoteUrls.length) {
+      while (nextRemoteIndex < remoteResources.length) {
         if (batchController.signal.aborted) return
         const index = nextRemoteIndex
         nextRemoteIndex += 1
-        remoteResults[index] = await changshiDownloadRemoteResource(remoteUrls[index], batchController.signal)
+        remoteResults[index] = await changshiDownloadRemoteResource(remoteResources[index], batchController.signal)
       }
     }
     try {
-      await Promise.all(Array.from({ length: Math.min(3, remoteUrls.length) }, downloadWorker))
+      await Promise.all(Array.from({ length: Math.min(3, remoteResources.length) }, downloadWorker))
     } finally {
       clearTimeout(batchTimeout)
     }
@@ -776,7 +1188,7 @@ app.whenReady().then(async () => {
       const remoteResult = remoteResults[index] ?? { added: [], duplicates: [], bookmark: true }
       remoteAdded.push(...remoteResult.added)
       remoteDuplicates.push(...remoteResult.duplicates)
-      if (remoteResult.bookmark) bookmarkUrls.push(remoteUrls[index])
+      if (remoteResult.bookmark) bookmarkUrls.push(remoteResult.sourceUrl || remoteResources[index].sourceUrl)
     }
     const bookmarkResult = await library.importContent({ file: [], url: bookmarkUrls })
     const result = {
@@ -810,8 +1222,6 @@ app.whenReady().then(async () => {
           scannedScopes: saomiaoResult.scannedScopes,
           scannedAt: Date.now(),
         })
-        const items = library.getApplicationCacheItems()
-        await qingliYingyongIconCache(items)
         return {
           chenggong: true,
           ...tongbuResult,
@@ -825,6 +1235,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(ipcTongdao.getLibraryPage, (_, options) => library.getLibraryPage(options))
   ipcMain.handle(ipcTongdao.searchLibrary, (_, options) => library.searchLibrary(options))
   ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
+  ipcMain.handle(ipcTongdao.getWebsiteIcons, (_, itemIds) => huoquWebsiteIconMap(itemIds))
   ipcMain.handle(ipcTongdao.getImageThumbnails, (_, itemIds) => huoquImageThumbnailMap(itemIds))
   ipcMain.handle(ipcTongdao.openLibraryItem, async (_, itemId) => {
     try {
@@ -848,6 +1259,13 @@ app.whenReady().then(async () => {
     const item = library.getItemDetail(itemId)
     const localPath = library.getItemLocalPath(item)
     if (localPath) shell.showItemInFolder(localPath)
+  })
+  ipcMain.handle(ipcTongdao.renameLibraryItem, async (_, itemId, title) => {
+    try {
+      return await library.renameItem(itemId, title)
+    } catch {
+      return { chenggong: false, xiaoxi: '重命名失败' }
+    }
   })
   ipcMain.handle(ipcTongdao.deleteLibraryItem, async (_, itemId) => {
     // 删除确认由渲染层自定义弹窗完成，主进程仅负责执行删除与文件清理

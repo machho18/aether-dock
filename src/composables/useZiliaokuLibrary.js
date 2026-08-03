@@ -219,7 +219,7 @@ export function useZiliaokuLibrary(xianshiToast) {
   async function daoruDragContent(dataTransfer) {
     if (isImporting.value) return []
     // DataTransfer 仅在 drop 事件周期内可靠，先同步提取网络地址再打开目录选择器。
-    const draggedUrls = tiquDraggedUrls(dataTransfer)
+    const draggedUrls = tiquDraggedResources(dataTransfer)
     if (!(await quebaoLibrary())) return []
     isImporting.value = true
     try {
@@ -233,8 +233,7 @@ export function useZiliaokuLibrary(xianshiToast) {
         return []
       }
       await shuaxinLibraryIndex()
-      const downloadText = result.downloaded ? `，其中下载 ${result.downloaded} 项` : ''
-      xianshiToast(`已添加 ${addedItems.length} 项${downloadText}`, 'success')
+      xianshiToast(`归档完成 · ${addedItems.length} 项`, 'success')
       return addedItems
     } catch {
       xianshiToast('导入失败，请稍后重试', 'error')
@@ -262,6 +261,29 @@ export function useZiliaokuLibrary(xianshiToast) {
 
   function dingweiLibraryItem(item) {
     huoquBridge()?.locateLibraryItem(item.id)
+  }
+
+  async function chongmingmingLibraryItem(item, title) {
+    try {
+      const result = await huoquBridge()?.renameLibraryItem(item.id, title)
+      if (!result?.chenggong) {
+        xianshiToast(result?.xiaoxi || '重命名失败', 'error')
+        return false
+      }
+      const updateTitle = (currentItem) => currentItem.id === item.id
+        ? { ...currentItem, title: result.title }
+        : currentItem
+      categoryWindows.value = Object.fromEntries(categoryIds.map((type) => [
+        type,
+        { ...categoryWindows.value[type], items: categoryWindows.value[type].items.map(updateTitle) },
+      ]))
+      searchState.value = { ...searchState.value, items: searchState.value.items.map(updateTitle) }
+      xianshiToast('已重命名', 'success')
+      return true
+    } catch {
+      xianshiToast('重命名失败', 'error')
+      return false
+    }
   }
 
   async function shanchuLibraryItem(item) {
@@ -344,6 +366,7 @@ export function useZiliaokuLibrary(xianshiToast) {
     daoruDragContent,
     dakaiLibraryItem,
     dingweiLibraryItem,
+    chongmingmingLibraryItem,
     shanchuLibraryItem,
     tongbuDesktopApplications,
     shezhiCollapsedAnimation,
@@ -351,20 +374,37 @@ export function useZiliaokuLibrary(xianshiToast) {
 }
 
 // 浏览器拖拽图片时优先使用 HTML 中的图片源，避免误收藏包裹图片的网页链接。
-function tiquDraggedUrls(dataTransfer) {
-  const html = dataTransfer?.getData('text/html') || ''
-  if (html) {
-    const htmlDocument = new DOMParser().parseFromString(html, 'text/html')
-    const imageUrls = [...htmlDocument.querySelectorAll('img[src]')]
-      .map((image) => image.getAttribute('src')?.trim())
-      .filter((url) => /^https?:\/\//i.test(url || ''))
-    if (imageUrls.length) return [...new Set(imageUrls)].slice(0, 20)
-  }
-
+function tiquDraggedResources(dataTransfer) {
   const rawText = dataTransfer?.getData('text/uri-list') || dataTransfer?.getData('text/plain') || ''
-  return [...new Set(rawText
+  const transferUrls = [...new Set(rawText
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#') && /^https?:\/\//i.test(line)))]
+  const html = dataTransfer?.getData('text/html') || ''
+  if (html) {
+    const htmlDocument = new DOMParser().parseFromString(html, 'text/html')
+    const images = [...htmlDocument.querySelectorAll('img')]
+    const resources = images.flatMap((image, imageIndex) => {
+      const associatedTransferUrls = images.length === 1
+        ? transferUrls
+        : transferUrls[imageIndex] ? [transferUrls[imageIndex]] : []
+      const attributeCandidates = ['data-objurl', 'data-original', 'data-imgurl', 'data-src', 'src', 'data-thumburl']
+        .map((attribute) => image.getAttribute(attribute)?.trim())
+      const srcsetCandidates = (image.getAttribute('srcset') || '')
+        .split(',')
+        .map((source) => source.trim().split(/\s+/)[0])
+        .reverse()
+      const candidates = [...new Set([...attributeCandidates.slice(0, 4), ...srcsetCandidates, ...attributeCandidates.slice(4), ...associatedTransferUrls]
+        .filter((url) => /^https?:\/\//i.test(url || '')))]
+      if (!candidates.length) return []
+      const anchorUrl = image.closest('a[href]')?.getAttribute('href')?.trim()
+      const referer = /^https?:\/\//i.test(anchorUrl || '') ? anchorUrl : ''
+      return [{ sourceUrl: associatedTransferUrls[0] || referer || candidates[0], referer: referer || associatedTransferUrls[0] || '', candidates: candidates.slice(0, 8) }]
+    })
+    if (resources.length) return resources.slice(0, 20)
+  }
+
+  return transferUrls
+    .map((url) => ({ sourceUrl: url, referer: '', candidates: [url] }))
     .slice(0, 20)
 }

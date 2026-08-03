@@ -4,88 +4,113 @@
 
     <section
       v-if="!isStartupWindow"
-      ref="islandHolder"
       class="lingdongchuangkou"
       :class="{
         'lingdongchuangkou--expanded': isExpanded,
         'lingdongchuangkou--drop': isDragging || isDropping,
         'lingdongchuangkou--dropping': isDropping,
       }"
-      aria-label="黑色玻璃灵动窗口"
-      tabindex="0"
-      @mouseenter="chuliIslandEnter"
-      @mouseleave="chuliIslandLeave"
-      @dragenter="chuliDragEnter"
-      @dragover="chuliDragOver"
-      @dragleave="chuliDragLeave"
-      @dragend="qingliDragState"
-      @drop="chuliDrop"
-      @focus="chuliIslandEnter"
-      @blur="qiehuanIslandState(false)"
     >
-      <div class="inner-glow"></div>
-      <ShouqiStatus :animation-id="currentCollapsedAnimation" :hidden="isExpanded" :dragging="isDragging || isDropping" />
-
-      <div class="drop-hint" aria-hidden="true">
-        <span class="drop-paste-stage">
-          <i class="drop-paste-target"></i>
-          <span class="drop-token">
-            <i></i>
-            <i></i>
-            <i></i>
-          </span>
-          <i class="drop-paste-ripple"></i>
-        </span>
-        <span class="drop-label">{{ isDropping ? '贴入归档' : isImporting ? '正在归档' : '松手贴入' }}</span>
-      </div>
-
-      <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
+      <div class="island-frame island-frame--collapsed" aria-hidden="true"></div>
+      <div class="island-frame island-frame--expanded" aria-hidden="true"></div>
+      <div class="island-frame island-frame--drop" aria-hidden="true"></div>
       <div
-        class="library-stage"
-        :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && currentPage === 'library' }"
+        ref="islandShell"
+        class="island-shell"
+        aria-label="黑色玻璃灵动窗口"
+        tabindex="0"
+        @mouseenter="chuliIslandEnter"
+        @mouseleave="chuliIslandLeave"
+        @dragenter="chuliDragEnter"
+        @dragover="chuliDragOver"
+        @dragleave="chuliDragLeave"
+        @dragend="qingliDragState"
+        @drop="chuliDrop"
+        @focus="chuliIslandEnter"
+        @blur="chuliIslandBlur"
+        @transitionrun="chuliShellTransitionRun"
+        @transitionend="chuliShellTransitionEnd"
       >
-        <ZiliaokuPage
-          :items="libraryItems"
-          :category-counts="categoryCounts"
-          :library-config="libraryConfig"
-          :initial-category="currentZiliaokuCategory"
-          :is-yingyong-syncing="isYingyongSyncing"
-          :is-animation-busy="isExpansionAnimating"
-          @open-settings="qiehuanSettings"
-          @select-category="xuanzeZiliaokuCategory"
-          @search="sousuoLibrary"
-          @load-more="jiazaiGengduo"
-          @open-item="dakaiLibraryItem"
-          @locate-item="dingweiLibraryItem"
-          @delete-item="qingqiuDeleteItem"
-          @sync-applications="tongbuDesktopApplications"
+        <div class="inner-glow"></div>
+        <div class="collapsed-stage">
+          <ShouqiStatus
+            :animation-id="currentCollapsedAnimation"
+            :hidden="isExpanded || (toastState.visible && !isDragging && !isDropping)"
+            :dragging="isDragging || isDropping"
+          />
+        </div>
+
+        <div class="drop-hint" aria-hidden="true">
+          <span class="drop-paste-stage">
+            <i class="drop-paste-target"></i>
+            <span class="drop-token">
+              <i></i>
+              <i></i>
+              <i></i>
+            </span>
+            <i class="drop-paste-ripple"></i>
+          </span>
+          <span class="drop-label">{{ isDropping ? '贴入归档' : isImporting ? '正在归档' : '松手贴入' }}</span>
+        </div>
+
+        <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
+        <div
+          class="library-stage"
+          :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && currentPage === 'library' }"
+        >
+          <ZiliaokuPage
+            :items="libraryItems"
+            :category-counts="categoryCounts"
+            :library-config="libraryConfig"
+            :initial-category="currentZiliaokuCategory"
+            :is-yingyong-syncing="isYingyongSyncing"
+            :is-animation-busy="isExpansionAnimating"
+            @open-settings="qiehuanSettings"
+            @select-category="xuanzeZiliaokuCategory"
+            @search="sousuoLibrary"
+            @load-more="jiazaiGengduo"
+            @open-item="dakaiLibraryItem"
+            @locate-item="dingweiLibraryItem"
+            @rename-item="chongmingmingLibraryItem"
+            @delete-item="qingqiuDeleteItem"
+            @sync-applications="tongbuDesktopApplications"
+          />
+        </div>
+
+        <Transition name="glass-switch" mode="out-in">
+          <ShezhiPage
+            v-if="isExpanded && !isDragging && !isDropping && currentPage === 'settings'"
+            key="settings"
+            :animation-id="currentCollapsedAnimation"
+            :rootdir="libraryConfig.rootdir"
+            @back="fanhuiLibrary"
+            @select-animation="shezhiCollapsedAnimation"
+            @select-rootdir="xuanzeLibraryRootdir"
+          />
+        </Transition>
+
+        <ConfirmDialog
+          :visible="confirmState.visible"
+          :title="confirmState.title"
+          :message="confirmState.message"
+          :detail="confirmState.detail"
+          :confirm-text="confirmState.confirmText"
+          :cancel-text="confirmState.cancelText"
+          :tone="confirmState.tone"
+          @confirm="querenAction"
+          @cancel="guanbiConfirm"
         />
       </div>
-
-      <Transition name="glass-switch" mode="out-in">
-        <ShezhiPage
-          v-if="isExpanded && !isDragging && !isDropping && currentPage === 'settings'"
-          key="settings"
-          :animation-id="currentCollapsedAnimation"
-          :rootdir="libraryConfig.rootdir"
-          @back="currentPage = 'library'"
-          @select-animation="shezhiCollapsedAnimation"
-          @select-rootdir="xuanzeLibraryRootdir"
+      <div class="toast-layer">
+        <ToastMessage
+          :visible="toastState.visible && !isDragging && !isDropping"
+          :text="toastState.text"
+          :type="toastState.type"
+          :compact="!isExpanded || toastState.text === '已删除'"
+          :corner="isExpanded && toastState.text === '已删除'"
+          :embedded="!isExpanded"
         />
-      </Transition>
-
-      <ConfirmDialog
-        :visible="confirmState.visible"
-        :title="confirmState.title"
-        :message="confirmState.message"
-        :detail="confirmState.detail"
-        :confirm-text="confirmState.confirmText"
-        :cancel-text="confirmState.cancelText"
-        :tone="confirmState.tone"
-        @confirm="querenAction"
-        @cancel="guanbiConfirm"
-      />
-      <ToastMessage :visible="toastState.visible" :text="toastState.text" :type="toastState.type" />
+      </div>
     </section>
   </main>
 </template>
@@ -103,7 +128,7 @@ import { useFankuiFeedback } from '@/composables/useFankuiFeedback'
 import { useZiliaokuLibrary } from '@/composables/useZiliaokuLibrary'
 
 const isStartupWindow = new URLSearchParams(window.location.search).get('startup') === '1'
-const islandHolder = useTemplateRef('islandHolder')
+const islandShell = useTemplateRef('islandShell')
 const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
@@ -112,8 +137,6 @@ const currentPage = shallowRef('library')
 const isLibraryContentVisible = shallowRef(false)
 const isExpansionAnimating = shallowRef(false)
 let isPassthrough = true
-let libraryContentTimer = 0
-let expansionAnimationTimer = 0
 
 const {
   toastState,
@@ -140,6 +163,7 @@ const {
   daoruDragContent,
   dakaiLibraryItem,
   dingweiLibraryItem,
+  chongmingmingLibraryItem,
   shanchuLibraryItem,
   tongbuDesktopApplications,
   shezhiCollapsedAnimation,
@@ -165,33 +189,34 @@ function wanchengStartup() {
 
 function qiehuanIslandState(expanded) {
   if (isDragging.value || (!expanded && confirmState.value.visible)) return
-  window.clearTimeout(libraryContentTimer)
-  window.clearTimeout(expansionAnimationTimer)
   isExpanded.value = expanded
+  isLibraryContentVisible.value = expanded
   if (!expanded) {
-    window.aetherDock?.setHeavyTasksPaused(false)
-    isLibraryContentVisible.value = false
-    isExpansionAnimating.value = false
     currentPage.value = 'library'
-    return
   }
+}
 
+function chuliShellTransitionRun(event) {
+  if (event.target !== islandShell.value || event.propertyName !== 'clip-path') return
   isExpansionAnimating.value = true
   window.aetherDock?.setHeavyTasksPaused(true)
-  // 外壳展开约六成后再显示内容，避免初始化与关键动画帧抢占主线程。
-  libraryContentTimer = window.setTimeout(() => {
-    if (isExpanded.value && currentPage.value === 'library') isLibraryContentVisible.value = true
-  }, 280)
-  expansionAnimationTimer = window.setTimeout(() => {
-    isExpansionAnimating.value = false
-    window.aetherDock?.setHeavyTasksPaused(false)
-  }, 460)
+}
+
+function chuliShellTransitionEnd(event) {
+  if (event.target !== islandShell.value || event.propertyName !== 'clip-path') return
+  isExpansionAnimating.value = false
+  if (!isDragging.value && !isDropping.value) window.aetherDock?.setHeavyTasksPaused(false)
 }
 
 // 切换设置时隐藏资料库内容，但保留其组件状态供返回时复用。
 function qiehuanSettings() {
   isLibraryContentVisible.value = false
   currentPage.value = 'settings'
+}
+
+function fanhuiLibrary() {
+  currentPage.value = 'library'
+  isLibraryContentVisible.value = true
 }
 
 function chuliIslandEnter() {
@@ -215,6 +240,7 @@ function chuliDragEnter(event) {
   event.preventDefault()
   isDragging.value = true
   isExpanded.value = false
+  isLibraryContentVisible.value = false
 }
 
 function chuliDragOver(event) {
@@ -225,11 +251,7 @@ function chuliDragOver(event) {
 
 function chuliDragLeave(event) {
   if (!isDragging.value) return
-  const rect = islandHolder.value?.getBoundingClientRect()
-  const stillInside = rect
-    && event.clientX >= rect.left && event.clientX <= rect.right
-    && event.clientY >= rect.top && event.clientY <= rect.bottom
-  if (!stillInside) qingliDragState()
+  if (!panduanMouseOverIsland(event.clientX, event.clientY)) qingliDragState()
 }
 
 async function chuliDrop(event) {
@@ -251,6 +273,11 @@ async function chuliDrop(event) {
   isExpanded.value = false
 }
 
+function chuliIslandBlur(event) {
+  if (event.relatedTarget && islandShell.value?.contains(event.relatedTarget)) return
+  qiehuanIslandState(false)
+}
+
 // 记录用户选择的资料库 Tab，供下次展开时恢复。
 function xuanzeZiliaokuCategory(category) {
   xuanzeLibraryCategory(category)
@@ -267,19 +294,20 @@ function qingqiuDeleteItem(item) {
     title: isKuaijieShortcut ? '移除程序' : '删除资料',
     message: isKuaijieShortcut ? '确定从程序列表移除？' : '确定删除该资料？',
     detail: isKuaijieShortcut
-      ? `仅移除 AetherDock 记录，不会删除桌面快捷方式或目标程序。\n${item.title || ''}`.trim()
-      : `将同时删除本地文件与资料库记录，此操作不可撤销。\n${item.title || ''}`.trim(),
+      ? '仅移除 AetherDock 记录，不会删除桌面快捷方式或目标程序。'
+      : '将同时删除本地文件与资料库记录，此操作不可撤销。',
     confirmText: isKuaijieShortcut ? '移除' : '删除',
     tone: isKuaijieShortcut ? 'default' : 'danger',
   }, () => shanchuLibraryItem(item))
 }
 
 function gengxinMousePassthrough(event) {
-  const rect = islandHolder.value?.getBoundingClientRect()
-  if (!rect) return
-  const isOverIsland = event.clientX >= rect.left && event.clientX <= rect.right
-    && event.clientY >= rect.top && event.clientY <= rect.bottom
-  shezhiMousePassthrough(!isOverIsland)
+  shezhiMousePassthrough(!panduanMouseOverIsland(event.clientX, event.clientY))
+}
+
+function panduanMouseOverIsland(clientX, clientY) {
+  const hitElement = document.elementFromPoint(clientX, clientY)
+  return Boolean(hitElement && islandShell.value?.contains(hitElement))
 }
 
 function guanbiMousePassthrough() {
@@ -310,39 +338,96 @@ function shezhiMousePassthrough(passthrough) {
 
 .lingdongchuangkou {
   position: relative;
-  width: min(360px, calc(100vw - 52px));
-  height: 60px;
-  overflow: visible;
-  border-radius: 0 0 30px 30px;
-  cursor: default;
-  isolation: isolate;
-  transition: width 460ms var(--motion-easing), height 460ms var(--motion-easing), border-radius 380ms var(--motion-easing);
-}
-
-.lingdongchuangkou::after {
-  position: absolute;
-  z-index: 5;
-  inset: 0;
-  border: 1px solid transparent;
-  border-bottom-color: rgba(255, 255, 255, .28);
-  border-radius: inherit;
-  box-shadow: 0 1px 3px rgba(255, 255, 255, .12);
-  content: "";
-  pointer-events: none;
-  transition: border-color 300ms ease, box-shadow 300ms ease;
-}
-
-.lingdongchuangkou--expanded {
   width: min(680px, calc(100vw - 40px));
   height: 380px;
-  border-radius: 20px;
+  overflow: visible;
+  cursor: default;
+  isolation: isolate;
+  pointer-events: none;
 }
 
-.lingdongchuangkou--expanded::after {
-  display: block;
-  border: 1px solid var(--border-ink);
+.island-frame {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 50%;
+  border: 1px solid transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity 100ms ease;
+}
+
+.island-frame--collapsed {
+  width: min(360px, calc(100vw - 52px));
+  height: 60px;
+  border-bottom-color: rgba(255, 255, 255, .28);
+  border-radius: 0 0 30px 30px;
+  box-shadow: 0 1px 3px rgba(255, 255, 255, .12);
+  opacity: 1;
+  transition-delay: 170ms;
+}
+
+.island-frame--expanded {
+  width: 100%;
+  height: 100%;
+  border-color: var(--border-ink);
   border-radius: 20px;
   box-shadow: inset 0 1px rgba(255, 255, 255, .72), 0 12px 32px rgba(0, 0, 0, .18);
+}
+
+.island-frame--drop {
+  width: min(520px, calc(100vw - 48px));
+  height: 142px;
+  border-color: rgba(99, 254, 19, .72);
+  border-radius: 28px;
+  box-shadow: 0 0 12px rgba(99, 254, 19, .18), inset 0 0 14px rgba(99, 254, 19, .06);
+}
+
+.toast-layer {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 60px;
+  pointer-events: none;
+}
+
+.lingdongchuangkou--expanded .toast-layer { height: 380px; }
+.lingdongchuangkou--drop .toast-layer { height: 142px; }
+
+.lingdongchuangkou--expanded .island-frame--collapsed,
+.lingdongchuangkou--drop .island-frame--collapsed { opacity: 0; transition-delay: 0s; }
+.lingdongchuangkou--expanded .island-frame--expanded { opacity: 1; transition-delay: 260ms; }
+.lingdongchuangkou--drop .island-frame--drop { opacity: 1; transition-delay: 170ms; }
+
+.island-shell {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: visible;
+  clip-path: inset(0 calc((100% - min(360px, calc(100vw - 52px))) / 2) calc(100% - 60px) round 0 0 30px 30px);
+  contain: layout style;
+  pointer-events: auto;
+  transition: clip-path 280ms var(--motion-easing);
+  will-change: clip-path;
+  -webkit-app-region: no-drag;
+}
+
+.lingdongchuangkou--expanded .island-shell {
+  clip-path: inset(0 round 20px);
+  transition-duration: 360ms;
+}
+
+.collapsed-stage {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 50%;
+  width: min(360px, calc(100vw - 52px));
+  height: 60px;
+  transform: translateX(-50%);
 }
 
 .library-stage {
@@ -353,7 +438,7 @@ function shezhiMousePassthrough(passthrough) {
   opacity: 0;
   pointer-events: none;
   transform: translate3d(0, 8px, 0);
-  transition: opacity 180ms ease, transform 220ms var(--motion-easing), visibility 0s linear 220ms;
+  transition: opacity 130ms ease, transform 170ms var(--motion-easing), visibility 0s linear 170ms;
 }
 
 .library-stage--visible {
@@ -361,20 +446,18 @@ function shezhiMousePassthrough(passthrough) {
   opacity: 1;
   pointer-events: auto;
   transform: translate3d(0, 0, 0);
-  transition-delay: 0s;
+  transition: opacity 160ms ease 190ms, transform 210ms var(--motion-easing) 170ms, visibility 0s linear;
 }
 
 .inner-glow {
   position: absolute;
   z-index: 0;
-  inset: 0 0 1px;
-  border-radius: 0 0 29px 29px;
+  inset: 0;
+  border-radius: 20px;
   background: linear-gradient(180deg, rgba(24, 26, 25, .98), rgba(9, 11, 10, .99));
-  transition: inset 380ms var(--motion-easing), border-radius 420ms var(--motion-easing);
 }
 
 .lingdongchuangkou--expanded .inner-glow {
-  display: block;
   inset: 1px;
   border-radius: 18px;
   background: linear-gradient(155deg, rgba(255, 255, 255, .99), rgba(246, 246, 245, .98) 52%, rgba(239, 239, 236, .99));
@@ -383,14 +466,13 @@ function shezhiMousePassthrough(passthrough) {
 
 /* 拖放态保持重构前的宽幅投放尺寸与银白轮廓。 */
 .lingdongchuangkou--drop {
-  width: min(520px, calc(100vw - 48px));
-  height: 142px;
-  border-radius: 28px;
+  pointer-events: none;
 }
 
-.lingdongchuangkou--drop::after {
-  border-color: rgba(99, 254, 19, .72);
-  box-shadow: 0 0 12px rgba(99, 254, 19, .18), inset 0 0 14px rgba(99, 254, 19, .06);
+.lingdongchuangkou--drop .island-shell {
+  clip-path: inset(0 calc((100% - min(520px, calc(100vw - 48px))) / 2) calc(100% - 142px) round 28px);
+  pointer-events: auto;
+  transition-duration: 300ms;
 }
 
 .lingdongchuangkou--drop .inner-glow {
@@ -401,7 +483,7 @@ function shezhiMousePassthrough(passthrough) {
 .drop-hint {
   position: absolute;
   z-index: 2;
-  top: 50%;
+  top: 71px;
   left: 50%;
   display: grid;
   justify-items: center;
@@ -507,7 +589,7 @@ function shezhiMousePassthrough(passthrough) {
   transform: translate(-50%, -50%) scale(1);
 }
 
-.lingdongchuangkou--dropping::after { animation: drop-shell-impact 640ms var(--motion-easing) both; }
+.lingdongchuangkou--dropping .island-frame--drop { animation: drop-shell-impact 640ms var(--motion-easing) both; }
 .lingdongchuangkou--dropping .drop-token { animation: drop-token-paste 640ms cubic-bezier(.16, 1, .3, 1) both; }
 .lingdongchuangkou--dropping .drop-paste-target { animation: drop-target-stick 640ms var(--motion-easing) both; }
 .lingdongchuangkou--dropping .drop-paste-ripple { animation: drop-paste-ripple 640ms ease-out both; }
@@ -556,12 +638,16 @@ function shezhiMousePassthrough(passthrough) {
 .glass-switch-leave-to { opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .lingdongchuangkou,
-  .inner-glow,
+  .island-shell,
   .library-stage,
   .glass-switch-enter-active,
   .glass-switch-leave-active {
     transition-duration: 80ms;
   }
+
+  .library-stage--visible,
+  .lingdongchuangkou--expanded .island-frame--expanded,
+  .lingdongchuangkou--drop .island-frame--drop,
+  .island-frame--collapsed { transition-delay: 0s; }
 }
 </style>

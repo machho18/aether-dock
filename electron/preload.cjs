@@ -16,9 +16,11 @@ const ipcTongdao = Object.freeze({
   getLibraryPage: 'library:read-page',
   searchLibrary: 'library:search',
   getApplicationIcons: 'library:read-application-icons',
+  getWebsiteIcons: 'library:read-website-icons',
   getImageThumbnails: 'library:read-image-thumbnails',
   openLibraryItem: 'library:open-item',
   locateLibraryItem: 'library:locate-item',
+  renameLibraryItem: 'library:rename-item',
   deleteLibraryItem: 'library:delete-item',
 })
 
@@ -56,7 +58,16 @@ contextBridge.exposeInMainWorld('aetherDock', {
     lastDragFiles = []
     return ipcRenderer.invoke(ipcTongdao.importLibraryContent, {
       file,
-      url: Array.from(url ?? []).filter((dangqianWangzhi) => typeof dangqianWangzhi === 'string'),
+      url: Array.from(url ?? []).flatMap((resource) => {
+        if (!resource || typeof resource !== 'object') return []
+        const candidates = Array.from(resource.candidates ?? []).filter((candidate) => typeof candidate === 'string').slice(0, 8)
+        if (!candidates.length) return []
+        return [{
+          sourceUrl: typeof resource.sourceUrl === 'string' ? resource.sourceUrl : candidates[0],
+          referer: typeof resource.referer === 'string' ? resource.referer : '',
+          candidates,
+        }]
+      }).slice(0, 20),
     })
   },
   tongbuDesktopApplications: () => ipcRenderer.invoke(ipcTongdao.tongbuDesktopApplications),
@@ -64,8 +75,10 @@ contextBridge.exposeInMainWorld('aetherDock', {
   getLibraryPage: (options) => ipcRenderer.invoke(ipcTongdao.getLibraryPage, options),
   searchLibrary: (options) => ipcRenderer.invoke(ipcTongdao.searchLibrary, options),
   getApplicationIcons: (itemIds) => ipcRenderer.invoke(ipcTongdao.getApplicationIcons, itemIds),
+  getWebsiteIcons: (itemIds) => ipcRenderer.invoke(ipcTongdao.getWebsiteIcons, itemIds),
   getImageThumbnails: (itemIds) => ipcRenderer.invoke(ipcTongdao.getImageThumbnails, itemIds),
   openLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.openLibraryItem, itemId),
   locateLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.locateLibraryItem, itemId),
+  renameLibraryItem: (itemId, title) => ipcRenderer.invoke(ipcTongdao.renameLibraryItem, itemId, title),
   deleteLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.deleteLibraryItem, itemId),
 })

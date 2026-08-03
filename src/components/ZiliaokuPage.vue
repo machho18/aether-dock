@@ -88,6 +88,7 @@
                   :src="cardInfo.icon"
                   alt=""
                   draggable="false"
+                  @error="item.type === 'url' && biaojiWangzhiIconFailed(item)"
                 >
                 <span v-else class="library-shelf-icon-skeleton"></span>
               </div>
@@ -98,7 +99,12 @@
                 </small>
               </span>
             </button>
-            <div v-if="offset === 0" class="library-shelf-actions" aria-label="卡片操作">
+            <div
+              v-if="offset === 0"
+              class="library-shelf-actions"
+              :class="{ 'library-shelf-actions--triple': item.type !== 'application' && item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing' }"
+              aria-label="卡片操作"
+            >
               <button
                 v-if="item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing'"
                 class="library-shelf-action library-shelf-enter"
@@ -108,10 +114,38 @@
               >
                 <img :src="enterIcon" alt="" aria-hidden="true" draggable="false">
               </button>
+              <button
+                v-if="item.type !== 'application'"
+                class="library-shelf-action library-shelf-rename"
+                type="button"
+                aria-label="重命名"
+                @click.stop="kaishiRename(item)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="m5 16-1 4 4-1L19 8l-3-3L5 16Z" />
+                  <path d="m14.5 6.5 3 3" />
+                </svg>
+              </button>
               <button class="library-shelf-action library-shelf-delete" type="button" aria-label="删除" @click.stop="emit('delete-item', item)">
                 <img :src="deleteIcon" alt="" aria-hidden="true" draggable="false">
               </button>
             </div>
+            <form
+              v-if="renamingItemId === item.id"
+              class="library-rename-editor"
+              @click.stop
+              @submit.prevent="tijiaoRename(item)"
+            >
+              <input
+                v-model="renameValue"
+                class="library-rename-input"
+                maxlength="120"
+                aria-label="新的资料名称"
+                autofocus
+                @blur="quxiaoRename"
+                @keydown.esc.stop.prevent="quxiaoRename"
+              >
+            </form>
           </article>
         </div>
         <div v-else-if="currentCategory === 'application' && !categoryCounts.application" key="application-empty" class="application-empty">
@@ -152,7 +186,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, watch } from 'vue'
 import { onKeyStroke } from '@vueuse/core'
 import searchLensIcon from '@/assets/icons/sousuo-lens.svg'
 import settingsIcon from '@/assets/icons/shezhi-orbit.svg'
@@ -176,7 +210,7 @@ const props = defineProps({
   isAnimationBusy: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'delete-item', 'sync-applications'])
+const emit = defineEmits(['open-settings', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
 const searchKeyword = shallowRef('')
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
@@ -184,9 +218,18 @@ const switchDirection = shallowRef(1)
 const yulanFailedIds = reactive(new Set())
 const yingyongIconMap = shallowRef({})
 const yingyongIconRequestKeyMap = shallowRef({})
+const wangzhiIconMap = shallowRef({})
+const wangzhiIconRequestKeyMap = shallowRef({})
+const wangzhiIconFailedIds = reactive(new Set())
+const wangzhiIconRecoveryIds = new Set()
 const tupianThumbnailMap = shallowRef({})
 const tupianThumbnailRequestKeyMap = shallowRef({})
+const renamingItemId = shallowRef('')
+const renameValue = shallowRef('')
 let yingyongIconRenwu = 0
+let wangzhiIconRenwu = 0
+const wangzhiIconIdleTasks = new Set()
+let isUnmounted = false
 
 const fenleiList = [
   { id: 'document', name: '文档', caption: 'DOC · PDF · TXT', icon: folderIcon },
@@ -224,6 +267,9 @@ const carouselCards = computed(() => {
     const offset = index - carouselIndex.value
     const mappedIcon = yingyongIconMap.value[item.id]
     const validMappedIcon = mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey)) ? mappedIcon : ''
+    const mappedWebsiteIcon = wangzhiIconMap.value[item.id]
+    const websiteIconFailed = wangzhiIconFailedIds.has(item.id)
+    const validMappedWebsiteIcon = !websiteIconFailed && mappedWebsiteIcon && (!item.iconCacheKey || mappedWebsiteIcon.includes(item.iconCacheKey)) ? mappedWebsiteIcon : ''
     const mappedThumbnail = tupianThumbnailMap.value[item.id]
     const validMappedThumbnail = mappedThumbnail && (!item.thumbnailCacheKey || mappedThumbnail === item.thumbnailCacheKey)
       ? mappedThumbnail
@@ -232,7 +278,13 @@ const carouselCards = computed(() => {
       item,
       index,
       offset,
-      cardInfo: huoquCardInfo({ ...item, yingyongIcon: validMappedIcon, thumbnailKey: validMappedThumbnail }, yulanFailedIds),
+      cardInfo: huoquCardInfo({
+        ...item,
+        iconStatus: websiteIconFailed && item.type === 'url' ? 'failed' : item.iconStatus,
+        yingyongIcon: validMappedIcon,
+        wangzhiIcon: validMappedWebsiteIcon,
+        thumbnailKey: validMappedThumbnail,
+      }, yulanFailedIds),
     }
   })
 })
@@ -255,12 +307,23 @@ watch(searchKeyword, (keyword) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => emit('search', keyword), 180)
 })
-onBeforeUnmount(() => window.clearTimeout(searchTimer))
+onBeforeUnmount(() => {
+  isUnmounted = true
+  wangzhiIconRenwu += 1
+  window.clearTimeout(searchTimer)
+  for (const taskId of wangzhiIconIdleTasks) {
+    if ('cancelIdleCallback' in window) window.cancelIdleCallback(taskId)
+    else window.clearTimeout(taskId)
+  }
+  wangzhiIconIdleTasks.clear()
+})
 
 watch(() => props.initialCategory, (category) => {
   if (fenleiList.some(({ id }) => id === category)) {
     currentCategory.value = category
     carouselIndex.value = 0
+    wangzhiIconRenwu += 1
+    quxiaoRename()
   }
 })
 
@@ -301,6 +364,52 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
   } else {
     window.setTimeout(duquIcons, 120)
   }
+}, { immediate: true })
+
+// 网址图标按可见卡片懒加载，历史收藏也会自动补齐本地缓存。
+watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) => {
+  if (currentCategory.value !== 'url' || isAnimationBusy) return
+  const missingItems = [...cards]
+    .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
+    .map(({ item }) => item)
+    .filter((item) => {
+      if (item.iconStatus === 'ready' && item.iconCacheKey && !wangzhiIconFailedIds.has(item.id)) return false
+      const mappedIcon = wangzhiIconMap.value[item.id]
+      if (!wangzhiIconFailedIds.has(item.id) && mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))) return false
+      return wangzhiIconRequestKeyMap.value[item.id] !== (item.iconCacheKey || item.id)
+    })
+  if (!missingItems.length) return
+
+  const requestKeys = Object.fromEntries(missingItems.map((item) => [item.id, item.iconCacheKey || item.id]))
+  wangzhiIconRequestKeyMap.value = { ...wangzhiIconRequestKeyMap.value, ...requestKeys }
+  const renwuId = wangzhiIconRenwu
+  let idleTaskId = 0
+  const duquIcons = async () => {
+    wangzhiIconIdleTasks.delete(idleTaskId)
+    if (isUnmounted || renwuId !== wangzhiIconRenwu || currentCategory.value !== 'url' || props.isAnimationBusy) {
+      const nextRequestKeyMap = { ...wangzhiIconRequestKeyMap.value }
+      for (const [itemId, requestKey] of Object.entries(requestKeys)) {
+        if (nextRequestKeyMap[itemId] === requestKey) delete nextRequestKeyMap[itemId]
+      }
+      wangzhiIconRequestKeyMap.value = nextRequestKeyMap
+      return
+    }
+    try {
+      const iconMap = await window.aetherDock?.getWebsiteIcons(missingItems.map(({ id }) => id))
+      if (iconMap) {
+        wangzhiIconMap.value = { ...wangzhiIconMap.value, ...iconMap }
+        for (const [itemId, icon] of Object.entries(iconMap)) {
+          if (icon) wangzhiIconFailedIds.delete(itemId)
+        }
+      }
+    } catch {}
+  }
+  if ('requestIdleCallback' in window) {
+    idleTaskId = window.requestIdleCallback(duquIcons, { timeout: 1000 })
+  } else {
+    idleTaskId = window.setTimeout(duquIcons, 120)
+  }
+  wangzhiIconIdleTasks.add(idleTaskId)
 }, { immediate: true })
 
 // 缩略图仅在空闲期生成，中心卡及相邻卡优先于窗口边缘卡。
@@ -396,13 +505,59 @@ function biaojiPreviewFailed(itemId) {
   yulanFailedIds.add(itemId)
 }
 
+function biaojiWangzhiIconFailed(item) {
+  wangzhiIconFailedIds.add(item.id)
+  if (wangzhiIconRecoveryIds.has(item.id)) return
+  wangzhiIconRecoveryIds.add(item.id)
+  const nextIconMap = { ...wangzhiIconMap.value }
+  const nextRequestKeyMap = { ...wangzhiIconRequestKeyMap.value }
+  delete nextIconMap[item.id]
+  delete nextRequestKeyMap[item.id]
+  wangzhiIconMap.value = nextIconMap
+  wangzhiIconRequestKeyMap.value = nextRequestKeyMap
+}
+
+function kaishiRename(item) {
+  if (item.type === 'application') return
+  renamingItemId.value = item.id
+  renameValue.value = item.title || ''
+  nextTick(() => {
+    const input = document.querySelector('.library-rename-input')
+    input?.focus()
+    input?.select()
+  })
+}
+
+function quxiaoRename() {
+  renamingItemId.value = ''
+  renameValue.value = ''
+}
+
+function tijiaoRename(item) {
+  const title = renameValue.value.trim()
+  if (!title || title === item.title) {
+    quxiaoRename()
+    return
+  }
+  emit('rename-item', item, title)
+  quxiaoRename()
+}
+
 // 将提示文本拆分为可独立执行动画的字符。
 function huoquZifuList(text) {
   return Array.from(text)
 }
 
-onKeyStroke('ArrowLeft', (event) => { event.preventDefault(); qianyiCard() })
-onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
+onKeyStroke('ArrowLeft', (event) => {
+  if (event.target instanceof HTMLInputElement) return
+  event.preventDefault()
+  qianyiCard()
+})
+onKeyStroke('ArrowRight', (event) => {
+  if (event.target instanceof HTMLInputElement) return
+  event.preventDefault()
+  houyiCard()
+})
 </script>
 
 <style scoped>
@@ -702,6 +857,8 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
   transform: translateX(-50%);
 }
 
+.library-shelf-actions--triple { gap: 10px; }
+
 .library-shelf-action {
   position: relative;
   display: grid;
@@ -719,15 +876,38 @@ onKeyStroke('ArrowRight', (event) => { event.preventDefault(); houyiCard() })
 }
 
 .library-shelf-action img { width: 14px; height: 14px; pointer-events: none; transition: filter 160ms ease, opacity 160ms ease; }
+.library-shelf-action svg { width: 14px; height: 14px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; pointer-events: none; }
 .library-shelf-enter { border-color: rgba(99, 254, 19, .38); }
 .library-shelf-enter img { filter: brightness(0) saturate(100%) invert(87%) sepia(100%) saturate(2148%) hue-rotate(40deg) brightness(104%) contrast(104%); }
+.library-shelf-rename { border-color: rgba(91, 188, 255, .3); color: rgba(177, 222, 255, .76); }
 .library-shelf-delete { border-color: rgba(232, 93, 93, .28); }
 .library-shelf-delete img { filter: brightness(0) invert(1); opacity: .62; }
 .library-shelf-card--center:hover .library-shelf-actions,
 .library-shelf-card--center:focus-within .library-shelf-actions { opacity: 1; pointer-events: auto; transform: translate3d(-50%, 0, -12px) scale(1); }
 .library-shelf-enter:hover { border-color: rgba(99, 254, 19, .82); box-shadow: inset 0 -1px rgba(255, 255, 255, .12), 0 9px 18px rgba(99, 254, 19, .2); }
+.library-shelf-rename:hover { border-color: rgba(91, 188, 255, .78); box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 9px 18px rgba(91, 188, 255, .18); color: #bde5ff; }
 .library-shelf-delete:hover { border-color: rgba(232, 93, 93, .76); box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 9px 18px rgba(232, 93, 93, .18); }
 .library-shelf-delete:hover img { filter: brightness(0) saturate(100%) invert(52%) sepia(59%) saturate(1065%) hue-rotate(315deg) brightness(103%) contrast(82%); opacity: 1; }
+
+.library-rename-editor {
+  position: absolute;
+  z-index: 6;
+  right: 8px;
+  bottom: 14px;
+  left: 8px;
+  display: flex;
+  height: 31px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 3px 3px 9px;
+  border: 1px solid rgba(91, 188, 255, .5);
+  border-radius: 10px;
+  background: rgba(10, 12, 11, .97);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, .42), 0 0 14px rgba(91, 188, 255, .1);
+  transform: translateZ(14px);
+}
+
+.library-rename-input { min-width: 0; height: 100%; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-on-ink); font: 11px var(--font-body); }
 
 .library-shelf-card:hover { border-color: rgba(99, 254, 19, .34); box-shadow: inset 0 1px rgba(255, 255, 255, .09), 0 19px 32px rgba(15, 17, 16, .38); }
 .library-shelf-card:hover::before { border-color: rgba(99, 254, 19, .34); }

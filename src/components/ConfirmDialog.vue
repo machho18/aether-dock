@@ -68,6 +68,7 @@ useEventListener(window, 'keydown', (event) => {
 
 .confirm-card {
   width: min(360px, calc(100% - 48px));
+  min-width: 0;
   padding: 22px 24px 20px;
   border: 1px solid rgba(99, 254, 19, .42);
   border-radius: 22px;
@@ -81,13 +82,13 @@ useEventListener(window, 'keydown', (event) => {
   box-shadow: 0 0 0 1px rgba(24, 12, 13, .9), 0 0 0 4px rgba(232, 93, 93, .12), inset 0 1px rgba(255, 220, 220, .18), inset 0 -16px 26px rgba(0, 0, 0, .38), 0 24px 60px rgba(0, 0, 0, .5);
 }
 
-.confirm-head { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
+.confirm-head { display: flex; min-width: 0; align-items: center; gap: 11px; margin-bottom: 14px; }
 .confirm-icon { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid rgba(99, 254, 19, .34); border-radius: 9px; color: var(--accent); }
 .confirm-card--danger .confirm-icon { border-color: rgba(232, 93, 93, .48); color: var(--danger); }
 .confirm-icon svg { width: 17px; height: 17px; }
-.confirm-title { margin: 0; color: var(--text-on-ink); font: 600 17px var(--font-display); letter-spacing: .04em; }
-.confirm-message { margin: 0 0 6px; color: rgba(245, 245, 245, .9); font: 500 14px/1.55 var(--font-body); }
-.confirm-detail { margin: 0 0 18px; color: var(--text-on-ink-muted); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; }
+.confirm-title { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text-on-ink); font: 600 17px var(--font-display); letter-spacing: .04em; }
+.confirm-message { margin: 0 0 6px; overflow-wrap: anywhere; color: rgba(245, 245, 245, .9); font: 500 14px/1.55 var(--font-body); }
+.confirm-detail { margin: 0 0 18px; overflow-wrap: anywhere; word-break: break-word; color: var(--text-on-ink-muted); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 .confirm-btn {

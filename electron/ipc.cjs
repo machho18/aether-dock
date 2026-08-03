@@ -14,9 +14,11 @@ const ipcTongdao = Object.freeze({
   getLibraryPage: 'library:read-page',
   searchLibrary: 'library:search',
   getApplicationIcons: 'library:read-application-icons',
+  getWebsiteIcons: 'library:read-website-icons',
   getImageThumbnails: 'library:read-image-thumbnails',
   openLibraryItem: 'library:open-item',
   locateLibraryItem: 'library:locate-item',
+  renameLibraryItem: 'library:rename-item',
   deleteLibraryItem: 'library:delete-item',
 })
 
