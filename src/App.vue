@@ -84,9 +84,10 @@
             key="settings"
             :animation-id="currentCollapsedAnimation"
             :rootdir="libraryConfig.rootdir"
+            :is-rootdir-migrating="isLibraryRootMigrating"
             @back="fanhuiLibrary"
             @select-animation="shezhiCollapsedAnimation"
-            @select-rootdir="xuanzeLibraryRootdir"
+            @select-rootdir="qingqiuMigrateLibrary"
           />
         </Transition>
 
@@ -97,6 +98,7 @@
           :detail="confirmState.detail"
           :confirm-text="confirmState.confirmText"
           :cancel-text="confirmState.cancelText"
+          :show-cancel="confirmState.showCancel"
           :tone="confirmState.tone"
           @confirm="querenAction"
           @cancel="guanbiConfirm"
@@ -157,6 +159,7 @@ const {
   currentCollapsedAnimation,
   isImporting,
   isYingyongSyncing,
+  isLibraryRootMigrating,
   jiazaiLibrary,
   xuanzeLibraryCategory,
   sousuoLibrary,
@@ -170,7 +173,24 @@ const {
   shanchuLibraryItem,
   tongbuDesktopApplications,
   shezhiCollapsedAnimation,
-} = useZiliaokuLibrary(xianshiToast)
+} = useZiliaokuLibrary(xianshiToast, xianshiMigrationReport)
+
+function xianshiMigrationReport(report) {
+  const items = Array.isArray(report.items) ? report.items : []
+  const detail = items.map((item, index) => {
+    const name = item.title || item.relativePath || '未知资源'
+    const source = item.relativePath ? `\n   原位置：${item.relativePath}` : ''
+    return `${index + 1}. ${name}\n   原因：${item.reason || report.reason || '迁移失败'}${source}`
+  }).join('\n\n')
+  qingqiuConfirm({
+    title: report.title || '迁移明细',
+    message: report.message || '以下资源未能完成迁移：',
+    detail,
+    confirmText: '知道了',
+    showCancel: false,
+    tone: report.tone || 'default',
+  })
+}
 
 const { start: qidongCompleteTimer } = useTimeoutFn(
   () => window.aetherDock?.completeStartup(),
@@ -304,6 +324,22 @@ function qingqiuDeleteItem(item) {
     confirmText: isKuaijieShortcut ? '移除' : '删除',
     tone: isKuaijieShortcut ? 'default' : 'danger',
   }, () => shanchuLibraryItem(item))
+}
+
+function qingqiuMigrateLibrary() {
+  if (!libraryConfig.value.rootdir) {
+    void xuanzeLibraryRootdir()
+    return
+  }
+  qingqiuConfirm({
+    title: '更换资料库目录',
+    message: '当前资料库中的图片和文档将迁移到新目录。',
+    detail: '系统会先复制并校验全部资源，确认迁移成功后才清理旧目录。\n迁移失败、文件冲突或目标目录不可用时，原资料库和文件不会被删除。\n迁移期间请勿关闭应用或手动修改新旧目录。',
+    confirmText: '选择新目录',
+    cancelText: '取消',
+    showCancel: true,
+    tone: 'default',
+  }, () => xuanzeLibraryRootdir())
 }
 
 function gengxinMousePassthrough(event) {

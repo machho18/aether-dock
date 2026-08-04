@@ -39,7 +39,9 @@
         </div>
         <div class="library-directory-display">
           <span>{{ rootdir || '尚未设置资料库目录' }}</span>
-          <button type="button" @click.stop="emit('select-rootdir')">{{ rootdir ? '更换目录' : '选择目录' }}</button>
+          <button type="button" :disabled="isRootdirMigrating" @click.stop="emit('select-rootdir')">
+            {{ isRootdirMigrating ? '正在迁移…' : rootdir ? '更换目录' : '选择目录' }}
+          </button>
         </div>
       </section>
 
@@ -79,6 +81,7 @@ import { donghuaList, jiazaiDonghuaData } from '@/constants/donghua'
 defineProps({
   animationId: { type: String, default: 'kulian' },
   rootdir: { type: String, default: '' },
+  isRootdirMigrating: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['back', 'select-animation', 'select-rootdir'])
@@ -282,6 +285,7 @@ onUnmounted(() => {
 }
 
 .library-directory-display button:hover { border-color: rgba(38, 38, 38, .72); background: #3d423f; color: #fff; box-shadow: 0 5px 12px rgba(38, 38, 38, .16); }
+.library-directory-display button:disabled { cursor: wait; opacity: .58; }
 
 .system-startup-display {
   display: flex;

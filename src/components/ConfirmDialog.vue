@@ -16,7 +16,7 @@
           <p class="confirm-message">{{ message }}</p>
           <p v-if="detail" class="confirm-detail">{{ detail }}</p>
           <div class="confirm-actions">
-            <button class="confirm-btn confirm-btn--ghost" type="button" @click="emit('cancel')">{{ cancelText }}</button>
+            <button v-if="showCancel" class="confirm-btn confirm-btn--ghost" type="button" @click="emit('cancel')">{{ cancelText }}</button>
             <button class="confirm-btn confirm-btn--solid" :class="`confirm-btn--${tone}`" type="button" @click="emit('confirm')">{{ confirmText }}</button>
           </div>
         </div>
@@ -36,6 +36,7 @@ const props = defineProps({
   detail: { type: String, default: '' },
   confirmText: { type: String, default: '确定' },
   cancelText: { type: String, default: '取消' },
+  showCancel: { type: Boolean, default: true },
   tone: { type: String, default: 'default' },
 })
 
@@ -88,7 +89,7 @@ useEventListener(window, 'keydown', (event) => {
 .confirm-icon svg { width: 17px; height: 17px; }
 .confirm-title { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text-on-ink); font: 600 17px var(--font-display); letter-spacing: .04em; }
 .confirm-message { margin: 0 0 6px; overflow-wrap: anywhere; color: rgba(245, 245, 245, .9); font: 500 14px/1.55 var(--font-body); }
-.confirm-detail { margin: 0 0 18px; overflow-wrap: anywhere; word-break: break-word; color: var(--text-on-ink-muted); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; }
+.confirm-detail { max-height: 156px; margin: 0 0 18px; overflow: auto; overflow-wrap: anywhere; word-break: break-word; color: var(--text-on-ink-muted); font: 12px/1.55 var(--font-mono); scrollbar-width: thin; white-space: pre-wrap; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 .confirm-btn {

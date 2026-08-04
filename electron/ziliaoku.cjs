@@ -1,5 +1,5 @@
 const { DatabaseSync } = require('node:sqlite')
-const { randomUUID } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
@@ -31,6 +31,11 @@ function createLibrary(dbPath) {
   let managedWatchers = []
   let managedDirtyCallback = null
   let managedDirtyTimer = null
+  let managedActiveOperations = 0
+  let managedDrainResolve = null
+  let managedMigrationGate = null
+  let managedMigrationRelease = null
+  let managedOperationTail = Promise.resolve()
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
   // 先确保设置表存在，资料库目录迁移时仍可保留应用侧配置
   db.exec(`
@@ -189,7 +194,8 @@ function createLibrary(dbPath) {
   const visibleItemCondition = "(storageMode != 'managed' OR (libraryId = ? AND status != 'missing'))"
   const readItemCountsStmt = db.prepare(`SELECT type, COUNT(*) AS count FROM items WHERE ${visibleItemCondition} GROUP BY type`)
   const readLatestUpdateStmt = db.prepare(`SELECT MAX(updatedAt) AS updatedAt FROM items WHERE ${visibleItemCondition}`)
-  const readManagedItemsStmt = db.prepare("SELECT id, type, relativePath, status, thumbnailCacheKey FROM items WHERE storageMode = 'managed' AND libraryId = ?")
+  const readManagedItemsStmt = db.prepare("SELECT id, type, title, relativePath, status, thumbnailCacheKey FROM items WHERE storageMode = 'managed' AND libraryId = ?")
+  const countManagedItemsByLibraryStmt = db.prepare("SELECT COUNT(*) AS count FROM items WHERE storageMode = 'managed' AND libraryId = ?")
   const markManagedMissingStmt = db.prepare(`
     UPDATE items SET status = 'missing', missingReason = 'missing', lastCheckedAt = ?, updatedAt = ?,
       thumbnailCacheKey = NULL, thumbnailStatus = CASE WHEN type = 'image' THEN 'missing' ELSE thumbnailStatus END
@@ -261,39 +267,315 @@ function createLibrary(dbPath) {
     return animation
   }
 
-  // 写入用户选定的资料库目录
-  async function setRootdir(rootdir) {
-    const resolvedRootdir = path.resolve(rootdir)
-    const markerPath = path.join(resolvedRootdir, '.aetherdock-library.json')
-    await fsp.mkdir(resolvedRootdir, { recursive: true })
-    await Promise.all([
-      fsp.mkdir(path.join(resolvedRootdir, 'images'), { recursive: true }),
-      fsp.mkdir(path.join(resolvedRootdir, 'documents'), { recursive: true }),
-      fsp.mkdir(path.join(resolvedRootdir, '.staging'), { recursive: true }),
-    ])
+  function createMigrationError(code, message, conflictPath = '') {
+    const error = new Error(message)
+    error.code = code
+    error.conflictPath = conflictPath
+    return error
+  }
 
-    let marker
+  async function isEmptyLibraryTarget(rootdir, libraryId) {
+    if (Number(countManagedItemsByLibraryStmt.get(libraryId)?.count ?? 0)) return false
+    for (const directory of Object.values(managedCategoryDirs)) {
+      try {
+        if ((await fsp.readdir(path.join(rootdir, directory))).length) return false
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+      }
+    }
+    return true
+  }
+
+  async function replaceLibraryMarker(markerPath, markerContent) {
+    const temporaryPath = `${markerPath}.${randomUUID()}.tmp`
+    const backupPath = `${markerPath}.${randomUUID()}.bak`
+    let handle
     try {
-      const markerStat = await fsp.stat(markerPath)
-      if (!markerStat.isFile() || markerStat.size > 64 * 1024) throw new Error('资料库标记无效')
-      marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
-      if (typeof marker.libraryId !== 'string' || !marker.libraryId) throw new Error('资料库标记无效')
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
-      marker = { libraryId: randomUUID(), createdAt: Date.now(), version: 1 }
-      await fsp.writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+      handle = await fsp.open(temporaryPath, 'wx')
+      await handle.writeFile(markerContent, 'utf8')
+      await handle.sync()
+      await handle.close()
+      handle = null
+      await fsp.rename(markerPath, backupPath)
+      try {
+        await fsp.rename(temporaryPath, markerPath)
+      } catch (error) {
+        await fsp.rename(backupPath, markerPath).catch(() => {})
+        throw error
+      }
+      await fsp.rm(backupPath, { force: true }).catch(() => {})
+    } finally {
+      await handle?.close().catch(() => {})
+      await fsp.rm(temporaryPath, { force: true }).catch(() => {})
     }
-    if (!(await validateLibraryConfig({ rootdir: resolvedRootdir, libraryId: marker.libraryId }))) {
-      throw new Error('资料库目录校验失败')
+  }
+
+  async function prepareLibraryTarget(rootdir, expectedLibraryId = '') {
+    const resolvedRootdir = path.resolve(rootdir)
+    await fsp.mkdir(resolvedRootdir, { recursive: true })
+    const rootStat = await fsp.lstat(resolvedRootdir)
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw createMigrationError('invalid_target', '目标目录不可用')
+    const markerPath = path.join(resolvedRootdir, '.aetherdock-library.json')
+    let marker = null
+    let createdMarker = false
+    let replacedMarkerContent = ''
+    try {
+      const markerStat = await fsp.lstat(markerPath)
+      if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.size > 64 * 1024) throw new Error('资料库标记无效')
+      const markerContent = await fsp.readFile(markerPath, 'utf8')
+      marker = JSON.parse(markerContent)
+      if (typeof marker.libraryId !== 'string' || !marker.libraryId) throw new Error('资料库标记无效')
+      if (expectedLibraryId && marker.libraryId !== expectedLibraryId) {
+        if (!(await isEmptyLibraryTarget(resolvedRootdir, marker.libraryId))) {
+          throw createMigrationError('target_library_conflict', '目标目录属于另一个资料库')
+        }
+        replacedMarkerContent = markerContent
+        marker = { ...marker, libraryId: expectedLibraryId, migratedAt: Date.now() }
+        await replaceLibraryMarker(markerPath, `${JSON.stringify(marker, null, 2)}\n`)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        if (error?.code === 'target_library_conflict') throw error
+        throw createMigrationError('invalid_target', '目标资料库标记无效', markerPath)
+      }
     }
 
-    const timestamp = Date.now()
-    runTransaction(() => {
-      writeSettingStmt.run('ziliaoKuGenMulu', resolvedRootdir, timestamp)
-      writeSettingStmt.run('ziliaoKuId', marker.libraryId, timestamp)
-    })
-    startManagedWatchers(getConfig())
-    return getConfig()
+    await Promise.all(Object.values(managedCategoryDirs).concat('.staging').map((directory) => (
+      fsp.mkdir(path.join(resolvedRootdir, directory), { recursive: true })
+    )))
+    if (!marker) {
+      marker = { libraryId: expectedLibraryId || randomUUID(), createdAt: Date.now(), version: 1 }
+      let markerHandle
+      let ownsMarker = false
+      try {
+        markerHandle = await fsp.open(markerPath, 'wx')
+        ownsMarker = true
+        await markerHandle.writeFile(`${JSON.stringify(marker, null, 2)}\n`, 'utf8')
+        await markerHandle.sync()
+        createdMarker = true
+      } catch (error) {
+        await markerHandle?.close().catch(() => {})
+        markerHandle = null
+        if (ownsMarker) await fsp.rm(markerPath, { force: true }).catch(() => {})
+        throw error
+      } finally {
+        await markerHandle?.close().catch(() => {})
+      }
+    }
+    try {
+      const config = { rootdir: resolvedRootdir, libraryId: marker.libraryId }
+      if (!(await validateLibraryConfig(config))) throw createMigrationError('invalid_target', '目标目录校验失败')
+      if (createdMarker) {
+        await syncFile(markerPath)
+        await syncDirectory(resolvedRootdir)
+      }
+      return { config, markerPath, createdMarker, replacedMarkerContent }
+    } catch (error) {
+      if (createdMarker) await fsp.rm(markerPath, { force: true }).catch(() => {})
+      else if (replacedMarkerContent) await replaceLibraryMarker(markerPath, replacedMarkerContent).catch(() => {})
+      throw error
+    }
+  }
+
+  async function hashFile(filePath) {
+    const hash = createHash('sha256')
+    await pipeline(fs.createReadStream(filePath), new Transform({
+      transform(chunk, encoding, callback) {
+        hash.update(chunk)
+        callback()
+      },
+    }))
+    return hash.digest('hex')
+  }
+
+  async function inspectMigrationFile(filePath) {
+    try {
+      const stat = await fsp.lstat(filePath)
+      if (!stat.isFile() || stat.isSymbolicLink()) throw createMigrationError('unsafe_file', '资料库包含不安全的文件', filePath)
+      return { exists: true, size: stat.size, hash: await hashFile(filePath) }
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error?.code)) return { exists: false, size: 0, hash: '' }
+      throw error
+    }
+  }
+
+  function pathsOverlap(firstPath, secondPath) {
+    const relative = path.relative(firstPath, secondPath)
+    return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  }
+
+  async function removeEmptyDirectory(directoryPath) {
+    try {
+      await fsp.rmdir(directoryPath)
+      return true
+    } catch (error) {
+      if (error?.code === 'ENOENT') return true
+      return false
+    }
+  }
+
+  async function setRootdir(rootdir) {
+    await beginManagedMigration()
+    const createdFiles = []
+    let target = null
+    const sourceConfig = getConfig()
+    try {
+      const resolvedTarget = path.resolve(rootdir)
+      if (!sourceConfig.rootdir || !sourceConfig.libraryId) {
+        target = await prepareLibraryTarget(resolvedTarget)
+        const timestamp = Date.now()
+        runTransaction(() => {
+          writeSettingStmt.run('ziliaoKuGenMulu', target.config.rootdir, timestamp)
+          writeSettingStmt.run('ziliaoKuId', target.config.libraryId, timestamp)
+        })
+        startManagedWatchers(target.config)
+        return { config: target.config, migration: { kind: 'initialized', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0 } }
+      }
+
+      if (!(await validateLibraryConfig(sourceConfig))) throw createMigrationError('source_unavailable', '原资料库目录暂时不可用')
+      const [sourceRealPath, targetRealPath] = await Promise.all([
+        fsp.realpath(sourceConfig.rootdir),
+        fsp.mkdir(resolvedTarget, { recursive: true }).then(() => fsp.realpath(resolvedTarget)),
+      ])
+      if (process.platform === 'win32' ? sourceRealPath.toLowerCase() === targetRealPath.toLowerCase() : sourceRealPath === targetRealPath) {
+        return { config: sourceConfig, migration: { kind: 'noop', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0 } }
+      }
+      if (pathsOverlap(sourceRealPath, targetRealPath) || pathsOverlap(targetRealPath, sourceRealPath)) {
+        throw createMigrationError('invalid_target', '新旧资料库目录不能互相嵌套')
+      }
+
+      closeManagedWatchers()
+      managedRootGeneration += 1
+      target = await prepareLibraryTarget(targetRealPath, sourceConfig.libraryId)
+      const items = readManagedItemsStmt.all(sourceConfig.libraryId)
+      const migratedFiles = []
+      let copied = 0
+      let reused = 0
+      let missing = 0
+      const missingItems = []
+
+      for (const item of items) {
+        const relativeKey = managedRelativeKey(item.type, item.relativePath)
+        if (!relativeKey) throw createMigrationError('unsafe_file', '资料库文件路径无效', item.relativePath)
+        const sourcePath = resolveManagedPathForRoot(item, sourceConfig.rootdir)
+        const targetPath = resolveManagedPathForRoot(item, target.config.rootdir)
+        const [sourceFile, targetFile] = await Promise.all([
+          inspectMigrationFile(sourcePath),
+          inspectMigrationFile(targetPath),
+        ])
+        if (!sourceFile.exists && !targetFile.exists) {
+          missing += 1
+          missingItems.push({ id: item.id, title: item.title || path.basename(item.relativePath), relativePath: item.relativePath })
+          continue
+        }
+        if (sourceFile.exists && targetFile.exists) {
+          if (sourceFile.size !== targetFile.size || sourceFile.hash !== targetFile.hash) {
+            throw createMigrationError('file_conflict', '目标目录存在同名但内容不同的文件', targetPath)
+          }
+          reused += 1
+          migratedFiles.push({ sourcePath, targetPath, size: targetFile.size, hash: targetFile.hash })
+          continue
+        }
+        if (targetFile.exists) {
+          throw createMigrationError('file_conflict', '源文件缺失，无法验证目标文件', targetPath)
+        }
+
+        const stagingPath = path.join(target.config.rootdir, '.staging', `${item.id}.${randomUUID()}.migrate`)
+        try {
+          await fsp.copyFile(sourcePath, stagingPath, fs.constants.COPYFILE_EXCL)
+          const stagedFile = await inspectMigrationFile(stagingPath)
+          if (stagedFile.size !== sourceFile.size || stagedFile.hash !== sourceFile.hash) {
+            throw createMigrationError('copy_verification_failed', '资源复制校验失败', sourcePath)
+          }
+          await syncFile(stagingPath)
+          await publishManagedFile(stagingPath, targetPath)
+          createdFiles.push({ path: targetPath, size: sourceFile.size, hash: sourceFile.hash })
+          await syncFile(targetPath)
+          const publishedFile = await inspectMigrationFile(targetPath)
+          if (publishedFile.size !== sourceFile.size || publishedFile.hash !== sourceFile.hash) {
+            throw createMigrationError('copy_verification_failed', '目标资源校验失败', targetPath)
+          }
+        } finally {
+          await fsp.rm(stagingPath, { force: true }).catch(() => {})
+        }
+        migratedFiles.push({ sourcePath, targetPath, size: sourceFile.size, hash: sourceFile.hash })
+        copied += 1
+      }
+
+      if (!(await validateLibraryConfig(sourceConfig)) || !(await validateLibraryConfig(target.config))) {
+        throw createMigrationError('source_changed', '迁移期间资料库状态发生变化')
+      }
+      await Promise.all(migratedFiles.map(({ targetPath }) => syncFile(targetPath)))
+      await Promise.all(Object.values(managedCategoryDirs).map((directory) => (
+        syncDirectory(path.join(target.config.rootdir, directory))
+      )))
+      await syncDirectory(target.config.rootdir)
+      const timestamp = Date.now()
+      runTransaction(() => {
+        writeSettingStmt.run('ziliaoKuGenMulu', target.config.rootdir, timestamp)
+        writeSettingStmt.run('ziliaoKuId', sourceConfig.libraryId, timestamp)
+      })
+      startManagedWatchers(target.config)
+
+      let cleanupWarnings = 0
+      for (const migratedFile of migratedFiles) {
+        try {
+          const [currentSource, currentTarget] = await Promise.all([
+            inspectMigrationFile(migratedFile.sourcePath),
+            inspectMigrationFile(migratedFile.targetPath),
+          ])
+          const sourceMatches = currentSource.exists && currentSource.size === migratedFile.size && currentSource.hash === migratedFile.hash
+          const targetMatches = currentTarget.exists && currentTarget.size === migratedFile.size && currentTarget.hash === migratedFile.hash
+          if (!sourceMatches || !targetMatches) {
+            if (currentSource.exists) cleanupWarnings += 1
+            continue
+          }
+          const quarantinePath = path.join(sourceConfig.rootdir, '.staging', `${randomUUID()}.migrated`)
+          await fsp.rename(migratedFile.sourcePath, quarantinePath)
+          const [quarantinedSource, verifiedTarget] = await Promise.all([
+            inspectMigrationFile(quarantinePath),
+            inspectMigrationFile(migratedFile.targetPath),
+          ])
+          if (quarantinedSource.hash === migratedFile.hash && verifiedTarget.exists
+            && verifiedTarget.size === migratedFile.size && verifiedTarget.hash === migratedFile.hash) {
+            await fsp.rm(quarantinePath)
+          } else {
+            await publishManagedFile(quarantinePath, migratedFile.sourcePath).catch(() => {})
+            cleanupWarnings += 1
+          }
+        } catch {
+          cleanupWarnings += 1
+        }
+      }
+      let canRemoveOldRoot = true
+      await fsp.rm(path.join(sourceConfig.rootdir, '.aetherdock-library.json'), { force: true }).catch(() => {
+        cleanupWarnings += 1
+        canRemoveOldRoot = false
+      })
+      for (const directory of ['.staging', ...Object.values(managedCategoryDirs)]) {
+        if (!(await removeEmptyDirectory(path.join(sourceConfig.rootdir, directory)))) {
+          cleanupWarnings += 1
+          canRemoveOldRoot = false
+        }
+      }
+      const oldRootRemoved = canRemoveOldRoot && await removeEmptyDirectory(sourceConfig.rootdir)
+      return { config: target.config, migration: { kind: 'migrated', copied, reused, missing, missingItems, cleanupWarnings, oldRootRemoved } }
+    } catch (error) {
+      await Promise.all(createdFiles.map(async (createdFile) => {
+        try {
+          const currentFile = await inspectMigrationFile(createdFile.path)
+          if (currentFile.exists && currentFile.size === createdFile.size && currentFile.hash === createdFile.hash) {
+            await fsp.rm(createdFile.path, { force: true })
+          }
+        } catch {}
+      }))
+      if (target?.createdMarker) await fsp.rm(target.markerPath, { force: true }).catch(() => {})
+      else if (target?.replacedMarkerContent) await replaceLibraryMarker(target.markerPath, target.replacedMarkerContent).catch(() => {})
+      if (sourceConfig.rootdir && sourceConfig.libraryId) startManagedWatchers(sourceConfig)
+      throw error
+    } finally {
+      endManagedMigration()
+    }
   }
 
   // 基于扩展名与浏览器 MIME 初步归类本地文件
@@ -316,38 +598,153 @@ function createLibrary(dbPath) {
   }
 
   async function publishManagedFile(stagingPath, finalPath) {
-    await fsp.link(stagingPath, finalPath)
+    try {
+      await fsp.link(stagingPath, finalPath)
+    } catch (error) {
+      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(error?.code)) throw error
+      await fsp.copyFile(stagingPath, finalPath, fs.constants.COPYFILE_EXCL)
+    }
     await fsp.rm(stagingPath, { force: true }).catch(() => {})
   }
 
-  async function renameManagedFileNoReplace(currentPath, nextPath) {
-    await fsp.link(currentPath, nextPath)
+  async function syncFile(filePath) {
+    const handle = await fsp.open(filePath, 'r+')
     try {
-      await fsp.rm(currentPath)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+  }
+
+  async function syncDirectory(directoryPath) {
+    let handle
+    try {
+      handle = await fsp.open(directoryPath, 'r')
+      await handle.sync()
     } catch (error) {
-      await fsp.rm(nextPath, { force: true }).catch(() => {})
+      if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(error?.code)) throw error
+    } finally {
+      await handle?.close().catch(() => {})
+    }
+  }
+
+  function canFallbackFromLink(error) {
+    return ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(error?.code)
+  }
+
+  async function copyManagedFileNoReplace(sourcePath, targetPath) {
+    const sourceFile = await inspectMigrationFile(sourcePath)
+    await fsp.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL)
+    try {
+      await syncFile(targetPath)
+      const targetFile = await inspectMigrationFile(targetPath)
+      if (!sourceFile.exists || targetFile.size !== sourceFile.size || targetFile.hash !== sourceFile.hash) {
+        throw new Error('文件复制校验失败')
+      }
+    } catch (error) {
+      await fsp.rm(targetPath, { force: true }).catch(() => {})
       throw error
     }
   }
 
+  function migrationFileMatches(file, expected) {
+    return file.exists && file.size === expected.size && file.hash === expected.hash
+  }
+
+  async function removeFileIfMatches(filePath, expected) {
+    const file = await inspectMigrationFile(filePath).catch(() => ({ exists: false }))
+    if (migrationFileMatches(file, expected)) await fsp.rm(filePath, { force: true })
+  }
+
+  async function restoreQuarantinedFile(quarantinePath, originalPath) {
+    try {
+      await fsp.link(quarantinePath, originalPath)
+    } catch (error) {
+      if (!canFallbackFromLink(error)) throw error
+      await copyManagedFileNoReplace(quarantinePath, originalPath)
+    }
+    await fsp.rm(quarantinePath, { force: true }).catch(() => {})
+  }
+
+  async function renameManagedFileNoReplace(currentPath, nextPath) {
+    const expected = await inspectMigrationFile(currentPath)
+    try {
+      await fsp.link(currentPath, nextPath)
+    } catch (error) {
+      if (!canFallbackFromLink(error)) throw error
+      await copyManagedFileNoReplace(currentPath, nextPath)
+    }
+    const quarantinePath = path.join(path.dirname(path.dirname(currentPath)), '.staging', `.aetherdock-rename-${randomUUID()}.tmp`)
+    try {
+      await fsp.rename(currentPath, quarantinePath)
+      const [quarantined, published] = await Promise.all([
+        inspectMigrationFile(quarantinePath),
+        inspectMigrationFile(nextPath),
+      ])
+      if (!migrationFileMatches(quarantined, expected) || !migrationFileMatches(published, expected)) {
+        throw new Error('重命名期间文件发生变化')
+      }
+      await fsp.rm(quarantinePath, { force: true })
+    } catch (error) {
+      if (await inspectMigrationFile(quarantinePath).then((file) => file.exists, () => false)) {
+        await restoreQuarantinedFile(quarantinePath, currentPath).catch(() => {})
+      }
+      await removeFileIfMatches(nextPath, expected).catch(() => {})
+      throw error
+    }
+  }
+
+  async function runManagedOperation(action) {
+    const run = async () => {
+      while (managedMigrationGate) await managedMigrationGate
+      managedActiveOperations += 1
+      try {
+        return await action()
+      } finally {
+        managedActiveOperations -= 1
+        if (!managedActiveOperations && managedDrainResolve) {
+          managedDrainResolve()
+          managedDrainResolve = null
+        }
+      }
+    }
+    const result = managedOperationTail.then(run, run)
+    managedOperationTail = result.catch(() => {})
+    return result
+  }
+
+  async function beginManagedMigration() {
+    if (managedMigrationGate) throw new Error('资料库正在迁移')
+    managedMigrationGate = new Promise((resolve) => { managedMigrationRelease = resolve })
+    if (managedActiveOperations) await new Promise((resolve) => { managedDrainResolve = resolve })
+  }
+
+  function endManagedMigration() {
+    const release = managedMigrationRelease
+    managedMigrationGate = null
+    managedMigrationRelease = null
+    release?.()
+  }
+
   async function renameManagedFileCaseOnly(currentPath, nextPath) {
     const temporaryPath = path.join(path.dirname(path.dirname(currentPath)), '.staging', `.aetherdock-rename-${randomUUID()}.tmp`)
-    await fsp.link(currentPath, temporaryPath)
-    const temporaryStat = await fsp.stat(temporaryPath)
+    const expected = await inspectMigrationFile(currentPath)
+    await fsp.rename(currentPath, temporaryPath)
     try {
-      await fsp.rm(currentPath)
-      await fsp.link(temporaryPath, nextPath)
+      const quarantined = await inspectMigrationFile(temporaryPath)
+      if (!migrationFileMatches(quarantined, expected)) throw new Error('重命名期间文件发生变化')
+      try {
+        await fsp.link(temporaryPath, nextPath)
+      } catch (error) {
+        if (!canFallbackFromLink(error)) throw error
+        await copyManagedFileNoReplace(temporaryPath, nextPath)
+      }
+      const published = await inspectMigrationFile(nextPath)
+      if (!migrationFileMatches(published, expected)) throw new Error('重命名校验失败')
       await fsp.rm(temporaryPath, { force: true })
     } catch (error) {
-      const currentStat = await fsp.stat(currentPath).catch(() => null)
-      let restored = Boolean(currentStat && currentStat.dev === temporaryStat.dev && currentStat.ino === temporaryStat.ino)
-      if (!restored) {
-        try {
-          await fsp.link(temporaryPath, currentPath)
-          restored = true
-        } catch {}
-      }
-      if (restored) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+      await restoreQuarantinedFile(temporaryPath, currentPath).catch(() => {})
+      await removeFileIfMatches(nextPath, expected).catch(() => {})
       throw error
     }
   }
@@ -503,7 +900,7 @@ function createLibrary(dbPath) {
     return snapshots
   }
 
-  async function reconcileManagedFiles({ force = false } = {}) {
+  async function reconcileManagedFilesUnlocked({ force = false } = {}) {
     const config = getConfig()
     const watchKey = `${config.libraryId}\0${config.rootdir}`
     const shouldStartWatchers = watchKey !== managedWatchedKey || !managedWatcherHealthy
@@ -593,7 +990,7 @@ function createLibrary(dbPath) {
   }
 
   // 本地拖入复制为受管副本，网址则建立收藏；两者均写入资料库索引
-  async function importContent({ file = [], url = [] }) {
+  async function importContentUnlocked({ file = [], url = [] }) {
     const added = []
     const duplicates = []
 
@@ -710,7 +1107,7 @@ function createLibrary(dbPath) {
   }
 
   // 网络资源直接流入资料库暂存区，完成大小校验后再原子提交。
-  async function importRemoteContent({ sourceUrl, filename, mimeType, contentLength, body, maxBytes }) {
+  async function importRemoteContentUnlocked({ sourceUrl, filename, mimeType, contentLength, body, maxBytes }) {
     const normalizedUrl = normalizeUrl(sourceUrl)
     if (!normalizedUrl || !body) return { added: [], duplicates: [] }
     const libraryConfig = getConfig()
@@ -1022,7 +1419,7 @@ function createLibrary(dbPath) {
     return filename
   }
 
-  async function renameItem(id, rawTitle) {
+  async function renameItemUnlocked(id, rawTitle) {
     const item = readItemStmt.get(id)
     if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
     if (item.type === 'application') return { chenggong: false, xiaoxi: '应用程序不支持重命名' }
@@ -1086,7 +1483,7 @@ function createLibrary(dbPath) {
   }
 
   // 受管文件先移入同卷暂存区，数据库提交失败时可原位恢复。
-  async function deleteItem(id) {
+  async function deleteItemUnlocked(id) {
     const item = readItemStmt.get(id)
     if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
     let localPath = ''
@@ -1144,6 +1541,26 @@ function createLibrary(dbPath) {
     if (stagingPath) await fsp.rm(stagingPath, { force: true }).catch(() => {})
     if (item.storageMode === 'managed') markManagedSnapshotDirty(item.type, path.basename(item.relativePath))
     return { chenggong: true }
+  }
+
+  function reconcileManagedFiles(options) {
+    return runManagedOperation(() => reconcileManagedFilesUnlocked(options))
+  }
+
+  function importContent(payload) {
+    return runManagedOperation(() => importContentUnlocked(payload))
+  }
+
+  function importRemoteContent(payload) {
+    return runManagedOperation(() => importRemoteContentUnlocked(payload))
+  }
+
+  function renameItem(id, rawTitle) {
+    return runManagedOperation(() => renameItemUnlocked(id, rawTitle))
+  }
+
+  function deleteItem(id) {
+    return runManagedOperation(() => deleteItemUnlocked(id))
   }
 
   function close() {

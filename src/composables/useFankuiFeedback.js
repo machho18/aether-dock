@@ -8,6 +8,7 @@ const chushiConfirm = {
   detail: '',
   confirmText: '确定',
   cancelText: '取消',
+  showCancel: true,
   tone: 'default',
 }
 

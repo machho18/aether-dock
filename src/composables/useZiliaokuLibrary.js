@@ -21,7 +21,7 @@ function createCategoryWindows() {
 }
 
 // 渲染层仅保留当前分类附近的数据窗口，全量分类与搜索均交给 SQLite。
-export function useZiliaokuLibrary(xianshiToast) {
+export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   const categoryWindows = shallowRef(createCategoryWindows())
   const categoryCounts = shallowRef(Object.fromEntries(categoryIds.map((type) => [type, 0])))
   const currentCategory = shallowRef('document')
@@ -32,6 +32,7 @@ export function useZiliaokuLibrary(xianshiToast) {
   const currentCollapsedAnimation = shallowRef('kulian')
   const isImporting = shallowRef(false)
   const isYingyongSyncing = shallowRef(false)
+  const isLibraryRootMigrating = shallowRef(false)
   let searchRequestId = 0
   let libraryRefreshPromise = null
   let forcedRefreshVersion = 0
@@ -243,13 +244,60 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function xuanzeLibraryRootdir() {
-    const result = await huoquBridge()?.selectLibraryRootdir()
-    if (result?.quxiao || !result?.config) return false
-    libraryStateGeneration += 1
-    libraryConfig.value = result.config
-    await shuaxinLibraryIndex(true)
-    xianshiToast('资料库目录已设置', 'success')
-    return true
+    if (isLibraryRootMigrating.value) return false
+    isLibraryRootMigrating.value = true
+    try {
+      const result = await huoquBridge()?.selectLibraryRootdir()
+      if (result?.quxiao) return false
+      if (!result?.chenggong || !result.config) {
+        xianshiToast(result?.xiaoxi || '资料库迁移失败', 'error')
+        if (result?.conflictPath) {
+          xianshiMigrationReport?.({
+            title: '资料库迁移已停止',
+            message: result.xiaoxi || '目标目录存在冲突：',
+            tone: 'danger',
+            items: [{ title: result.conflictPath.split(/[\\/]/).at(-1), relativePath: result.conflictPath, reason: result.xiaoxi }],
+          })
+        }
+        return false
+      }
+      libraryStateGeneration += 1
+      libraryConfig.value = result.config
+      const refreshWarning = result.reconciliationWarning || !(await shuaxinLibraryIndex(true))
+      const migration = result.migration ?? {}
+      if (migration.kind === 'noop') {
+        xianshiToast(refreshWarning ? '当前已使用此目录 · 索引将在稍后刷新' : '当前已使用此目录', 'info')
+      } else if (migration.kind === 'migrated') {
+        const migratedCount = Number(migration.copied || 0) + Number(migration.reused || 0)
+        const details = [`资料库已迁移 · ${migratedCount} 项`]
+        if (migration.missing) {
+          const missingNames = (migration.missingItems ?? []).slice(0, 3).map(({ title }) => title).filter(Boolean)
+          const remainingCount = Math.max(0, Number(migration.missing) - missingNames.length)
+          const missingDetail = missingNames.length ? `缺失：${missingNames.join('、')}` : `${migration.missing} 项缺失`
+          details.push(remainingCount ? `${missingDetail} 等 ${migration.missing} 项` : missingDetail)
+        }
+        if (migration.cleanupWarnings) details.push('旧目录有副本未清理')
+        else if (migration.oldRootRemoved === false) details.push('旧目录包含其他文件，已保留')
+        if (refreshWarning) details.push('索引将在稍后刷新')
+        xianshiToast(details.join(' · '), migration.missing || migration.cleanupWarnings || refreshWarning ? 'info' : 'success')
+        if (migration.missingItems?.length) {
+          xianshiMigrationReport?.({
+            title: `迁移完成 · ${migration.missing} 项缺失`,
+            message: '以下资源在原目录和目标目录中均未找到：',
+            reason: '源文件缺失',
+            items: migration.missingItems,
+          })
+        }
+      } else {
+        xianshiToast(refreshWarning ? '资料库目录已设置 · 索引将在稍后刷新' : '资料库目录已设置', refreshWarning ? 'info' : 'success')
+      }
+      return true
+    } catch {
+      xianshiToast('资料库迁移失败', 'error')
+      return false
+    } finally {
+      isLibraryRootMigrating.value = false
+    }
   }
 
   async function quebaoLibrary() {
@@ -257,6 +305,10 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function daoruDragContent(dataTransfer) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return []
+    }
     if (isImporting.value) return []
     // DataTransfer 仅在 drop 事件周期内可靠，先同步提取网络地址再打开目录选择器。
     const draggedUrls = tiquDraggedResources(dataTransfer)
@@ -285,6 +337,10 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function dakaiLibraryItem(item) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return
+    }
     if (item.status !== 'ready') {
       const statusXiaoxi = {
         shortcut_missing: '桌面快捷方式已消失，请重新扫描',
@@ -301,10 +357,18 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   function dingweiLibraryItem(item) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return
+    }
     huoquBridge()?.locateLibraryItem(item.id)
   }
 
   async function chongmingmingLibraryItem(item, title) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return false
+    }
     try {
       const result = await huoquBridge()?.renameLibraryItem(item.id, title)
       if (!result?.chenggong) {
@@ -329,6 +393,10 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function shanchuLibraryItem(item) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return false
+    }
     try {
       const result = await huoquBridge()?.deleteLibraryItem(item.id)
       if (!result?.chenggong) {
@@ -354,6 +422,10 @@ export function useZiliaokuLibrary(xianshiToast) {
   }
 
   async function tongbuDesktopApplications() {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return false
+    }
     if (isYingyongSyncing.value) return false
     isYingyongSyncing.value = true
     try {
@@ -408,6 +480,7 @@ export function useZiliaokuLibrary(xianshiToast) {
     currentCollapsedAnimation,
     isImporting,
     isYingyongSyncing,
+    isLibraryRootMigrating,
     jiazaiLibrary,
     xuanzeLibraryCategory,
     sousuoLibrary,

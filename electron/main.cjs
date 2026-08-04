@@ -22,6 +22,7 @@ let yingyongSyncPromise = null
 let managedReconcilePromise = null
 let managedReconcileKey = ''
 let managedReconcileTimer = null
+let libraryRootMigrationPromise = null
 let yingyongIconCacheDir = ''
 const yingyongIconPromiseMap = new Map()
 const yingyongIconRenwuQueue = []
@@ -1228,12 +1229,49 @@ app.whenReady().then(async () => {
   })
   // 选择资料库根目录，并创建必要的目录标记
   ipcMain.handle(ipcTongdao.selectLibraryRootdir, async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择 AetherDock 资料库目录',
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    if (result.canceled || !result.filePaths[0]) return { quxiao: true }
-    return { quxiao: false, config: await library.setRootdir(result.filePaths[0]) }
+    if (libraryRootMigrationPromise) {
+      return { quxiao: false, chenggong: false, code: 'migration_busy', xiaoxi: '资料库正在迁移' }
+    }
+    libraryRootMigrationPromise = (async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: '选择并迁移 AetherDock 资料库',
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      if (result.canceled || !result.filePaths[0]) return { quxiao: true }
+      try {
+        const migrationResult = await library.setRootdir(result.filePaths[0])
+        let reconciliationWarning = false
+        try {
+          await tongbuManagedLibraryFiles()
+        } catch {
+          reconciliationWarning = true
+        }
+        return { quxiao: false, chenggong: true, reconciliationWarning, ...migrationResult }
+      } catch (error) {
+        const messageMap = {
+          target_library_conflict: '目标目录属于另一个资料库',
+          file_conflict: '目标目录存在同名但内容不同的文件',
+          invalid_target: '目标目录不可用',
+          source_unavailable: '原资料库目录暂时不可用',
+          unsafe_file: '资料库包含不安全的文件',
+          copy_verification_failed: '资源复制校验失败',
+          source_changed: '迁移期间资料库状态发生变化',
+        }
+        return {
+          quxiao: false,
+          chenggong: false,
+          code: error?.code || 'migration_failed',
+          xiaoxi: messageMap[error?.code] || '资料库迁移失败',
+          conflictPath: error?.conflictPath || '',
+        }
+      }
+    })().catch(() => ({
+      quxiao: false,
+      chenggong: false,
+      code: 'migration_failed',
+      xiaoxi: '资料库迁移失败',
+    })).finally(() => { libraryRootMigrationPromise = null })
+    return libraryRootMigrationPromise
   })
   ipcMain.handle(ipcTongdao.getLibraryConfig, () => library.getConfig())
   ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
