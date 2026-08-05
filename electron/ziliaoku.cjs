@@ -1467,12 +1467,14 @@ function createLibrary(dbPath) {
           throw new Error('资料库目录已更改')
         }
       }
-      renameItemStmt.run(title, nextRelativePath, Date.now(), id)
+      // 卡片内容变更时推进更新时间，确保渲染层能立即失效旧缓存并刷新状态。
+      const updatedAt = Math.max(Date.now(), Number(item.updatedAt ?? 0) + 1)
+      renameItemStmt.run(title, nextRelativePath, updatedAt, id)
       if (didRenameFile) {
         markManagedSnapshotDirty(item.type, path.basename(item.relativePath))
         markManagedSnapshotDirty(item.type, path.basename(nextRelativePath))
       }
-      return { chenggong: true, title }
+      return { chenggong: true, title, relativePath: nextRelativePath, updatedAt }
     } catch (error) {
       if (didRenameFile) {
         const rollback = isCaseOnlyRename ? renameManagedFileCaseOnly : renameManagedFileNoReplace

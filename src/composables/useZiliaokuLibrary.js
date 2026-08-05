@@ -376,14 +376,20 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
         return false
       }
       libraryStateGeneration += 1
-      const updateTitle = (currentItem) => currentItem.id === item.id
-        ? { ...currentItem, title: result.title }
+      // 同步卡片变更字段，触发时间展示与依赖更新时间的缓存刷新。
+      const gengxinKapian = (currentItem) => currentItem.id === item.id
+        ? {
+            ...currentItem,
+            title: result.title,
+            relativePath: result.relativePath ?? currentItem.relativePath,
+            updatedAt: result.updatedAt ?? currentItem.updatedAt,
+          }
         : currentItem
       categoryWindows.value = Object.fromEntries(categoryIds.map((type) => [
         type,
-        { ...categoryWindows.value[type], items: categoryWindows.value[type].items.map(updateTitle) },
+        { ...categoryWindows.value[type], items: categoryWindows.value[type].items.map(gengxinKapian) },
       ]))
-      searchState.value = { ...searchState.value, items: searchState.value.items.map(updateTitle) }
+      searchState.value = { ...searchState.value, items: searchState.value.items.map(gengxinKapian) }
       xianshiToast('已重命名', 'success')
       return true
     } catch {
