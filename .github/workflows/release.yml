@@ -1,0 +1,49 @@
+name: 发布 Windows 安装包
+
+# 仅在推送版本标签时构建发布包，普通代码提交不会触发发布。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 校验版本标签
+        shell: pwsh
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          if ("v$packageVersion" -ne "${{ github.ref_name }}") {
+            throw 'Git 标签必须与 package.json 的版本一致'
+          }
+
+      - name: 打包安装程序
+        run: npm run package
+
+      - name: 创建 Release 并上传安装包
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $installer = Get-ChildItem 'release' -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer) {
+            throw '未找到 Windows 安装包'
+          }
+          gh release create "${{ github.ref_name }}" $installer.FullName --title "AetherDock ${{ github.ref_name }}" --generate-notes
