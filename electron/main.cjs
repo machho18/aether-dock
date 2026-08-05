@@ -44,6 +44,8 @@ const startupWindowSize = { width: 360, height: 360 }
 const shouqikouWindowSize = { width: 226, height: 64 }
 const shouqikouMargin = 24
 const maxRemoteFileBytes = 100 * 1024 * 1024
+const isKaifaHuanjing = !app.isPackaged
+const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
 const websiteIconMimeTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon', 'application/octet-stream'])
@@ -95,6 +97,8 @@ function huoquShouqikouWindowShape() {
 function createWindowOptions(size) {
   return {
     ...size,
+    // 统一窗口、任务栏和安装包的品牌图标。
+    icon: path.join(__dirname, 'assets', 'tray-icon.ico'),
     minWidth: size.width,
     minHeight: size.height,
     maxWidth: size.width,
@@ -1324,7 +1328,8 @@ function createStartupWindow() {
 
 app.whenReady().then(async () => {
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
-  library = createLibrary(path.join(app.getPath('userData'), 'aether-dock.db'))
+  // 开发与生产使用独立数据库，调试数据不会影响已安装应用的资料库。
+  library = createLibrary(path.join(app.getPath('userData'), ziliaokuDbFilename))
   library.onManagedFilesDirty(() => {
     void tongbuManagedFilesAndNotify().catch(() => {})
   })

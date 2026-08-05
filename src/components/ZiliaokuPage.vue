@@ -464,8 +464,8 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
     .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))
     .map(({ item }) => item)
     .filter((item) => {
-      if (item.iconStatus === 'ready' && item.iconCacheKey) return false
       const mappedIcon = yingyongIconMap.value[item.id]
+      // 数据库状态无法证明缓存文件仍存在，始终通过主进程确认并按需重建。
       if (mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))) return false
       return yingyongIconRequestKeyMap.value[item.id] !== (item.iconCacheKey || item.id)
     })
