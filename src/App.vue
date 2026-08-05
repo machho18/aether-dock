@@ -66,6 +66,8 @@
               :initial-category="currentZiliaokuCategory"
               :is-yingyong-syncing="isYingyongSyncing"
               :is-animation-busy="isExpansionAnimating"
+              :is-island-expanded="isExpanded"
+              @capture-clipboard="buhuoJiantiebanContent"
               @open-settings="qiehuanSettings"
               @float-window="qiehuanXuanfuqiu"
               @select-category="xuanzeZiliaokuCategory"
@@ -168,6 +170,7 @@ const {
   shuaxinLibraryIndex,
   xuanzeLibraryRootdir,
   daoruDragContent,
+  buhuoJiantiebanContent,
   dakaiLibraryItem,
   dingweiLibraryItem,
   chongmingmingLibraryItem,

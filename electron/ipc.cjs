@@ -13,6 +13,7 @@ const ipcTongdao = Object.freeze({
   getCollapsedAnimation: 'settings:read-collapsed-animation',
   setCollapsedAnimation: 'settings:set-collapsed-animation',
   importLibraryContent: 'library:import',
+  captureClipboardContent: 'library:capture-clipboard',
   tongbuDesktopApplications: 'applications:sync-desktop',
   getLibrarySummary: 'library:read-summary',
   libraryChanged: 'library:changed',

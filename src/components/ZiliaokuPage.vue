@@ -13,19 +13,27 @@
         <input v-model="searchKeyword" type="search" :placeholder="sousuoPlaceholder" :aria-label="sousuoPlaceholder">
       </label>
       <div class="expanded-actions">
-        <button
-          class="expanded-float"
-          type="button"
-          aria-label="收为悬浮球"
-          title="收为悬浮球"
-          @click.stop="emit('float-window')"
-        >
-          <span class="expanded-float-mark" aria-hidden="true"></span>
-          <span>收起</span>
+        <button class="expanded-capture" type="button" aria-label="捕获剪贴板内容" title="捕获剪贴板内容" @click.stop="emit('capture-clipboard')">
+          <span aria-hidden="true">⎙</span>
+          <span>捕获</span>
         </button>
-        <button class="expanded-settings" type="button" aria-label="打开设置" title="设置" @click.stop="emit('open-settings')">
-          <img :src="settingsIcon" alt="" aria-hidden="true" draggable="false">
-        </button>
+        <div ref="gengduoCaozuo" class="expanded-more-wrap">
+          <button class="expanded-more" type="button" aria-label="更多操作" :aria-expanded="isGengduoVisible" @click.stop="qiehuanGengduo">
+            <i></i><i></i><i></i>
+          </button>
+          <Transition name="more-menu">
+            <div v-if="isGengduoVisible" class="expanded-more-menu" @click.stop>
+              <button type="button" @click="chuliGengduoCaozuo('float-window')">
+                <span class="expanded-more-icon" aria-hidden="true"><span class="expanded-dock-mark"><i></i></span></span>
+                <span title="收起到左下角">收起</span>
+              </button>
+              <button type="button" @click="chuliGengduoCaozuo('open-settings')">
+                <span class="expanded-more-icon" aria-hidden="true"><img :src="settingsIcon" alt="" draggable="false"></span>
+                <span>设置</span>
+              </button>
+            </div>
+          </Transition>
+        </div>
       </div>
     </section>
 
@@ -201,8 +209,8 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, watch } from 'vue'
-import { onKeyStroke } from '@vueuse/core'
+import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue'
+import { onClickOutside, onKeyStroke } from '@vueuse/core'
 import searchLensIcon from '@/assets/icons/sousuo-lens.svg'
 import settingsIcon from '@/assets/icons/shezhi-orbit.svg'
 import folderIcon from '@/assets/icons/wenjian-folder.svg'
@@ -224,10 +232,13 @@ const props = defineProps({
   initialCategory: { type: String, default: 'document' },
   isYingyongSyncing: { type: Boolean, default: false },
   isAnimationBusy: { type: Boolean, default: false },
+  isIslandExpanded: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'float-window', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
+const emit = defineEmits(['open-settings', 'float-window', 'capture-clipboard', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
+const gengduoCaozuo = useTemplateRef('gengduoCaozuo')
 const searchKeyword = shallowRef('')
+const isGengduoVisible = shallowRef(false)
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
@@ -353,6 +364,22 @@ watch([carouselIndex, () => currentItems.value.length], ([index, length]) => {
 }, { flush: 'post' })
 
 let searchTimer = 0
+onClickOutside(gengduoCaozuo, () => { isGengduoVisible.value = false })
+
+function qiehuanGengduo() {
+  isGengduoVisible.value = !isGengduoVisible.value
+}
+
+function chuliGengduoCaozuo(action) {
+  isGengduoVisible.value = false
+  emit(action)
+}
+
+// 灵动岛收起后组件仍会保留预热，此时主动关闭浮层以免残留在透明窗口中。
+watch(() => props.isIslandExpanded, (expanded) => {
+  if (!expanded) isGengduoVisible.value = false
+})
+
 watch(searchKeyword, (keyword) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => emit('search', keyword), 180)
@@ -714,44 +741,29 @@ onKeyStroke('ArrowRight', (event) => {
   -webkit-app-region: no-drag;
 }
 
-.expanded-settings {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  place-items: center;
-  pointer-events: auto;
-  -webkit-app-region: no-drag;
-}
+.expanded-dock-mark { position: relative; display: block; width: 16px; height: 16px; color: #376b35; }
+.expanded-dock-mark::before { position: absolute; right: 1px; bottom: 1px; left: 1px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, #63fe13, #3f9a38); box-shadow: 0 1px 3px rgba(70, 156, 57, .22); content: ""; }
+.expanded-dock-mark::after { position: absolute; top: 1px; right: 1px; width: 9px; height: 9px; border: 1.4px solid currentColor; border-radius: 3px; background: rgba(255, 255, 255, .72); box-shadow: inset 0 1px rgba(255, 255, 255, .84); content: ""; }
+.expanded-dock-mark i { position: absolute; z-index: 1; right: 4px; bottom: 4px; width: 4px; height: 4px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
 
-.expanded-settings img { width: 30px; height: 30px; filter: brightness(0); opacity: .72; transition: opacity 180ms ease, transform 220ms var(--motion-easing); -webkit-user-drag: none; user-select: none; }
-.expanded-settings:hover img { opacity: 1; transform: rotate(18deg); }
+/* 捕获按钮复用工具栏节奏，用轻量绿色提示其会直接写入资料库。 */
+.expanded-capture { display: inline-flex; height: 32px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); color: var(--ink-soft); cursor: pointer; font: 600 11px var(--font-body); letter-spacing: .04em; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }
+.expanded-capture span:first-child { color: #43813c; font-size: 14px; font-weight: 700; }
+.expanded-capture:hover { border-color: rgba(80, 145, 63, .34); background: rgba(238, 255, 232, .88); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); color: var(--ink); transform: translateY(-1px); }
+.expanded-capture:active { transform: translateY(0) scale(.98); }
 
-/* 将收起操作与设置归为同一工具组，避免散落在搜索框两侧。 */
-.expanded-float {
-  display: inline-flex;
-  height: 32px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid rgba(38, 38, 38, .13);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, .5);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 2px 6px rgba(38, 38, 38, .04);
-  color: var(--ink-soft);
-  cursor: pointer;
-  font: 600 11px var(--font-body);
-  letter-spacing: .04em;
-  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing);
-}
-
-.expanded-float-mark { position: relative; width: 12px; height: 12px; border: 1.5px solid currentColor; border-radius: 4px; opacity: .72; }
-.expanded-float-mark::after { position: absolute; right: -3px; bottom: -3px; width: 5px; height: 5px; border: 1.5px solid rgba(99, 254, 19, .92); border-radius: 50%; background: var(--paper-white); content: ""; }
-.expanded-float:hover { border-color: rgba(38, 38, 38, .24); background: rgba(255, 255, 255, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .94), 0 4px 10px rgba(38, 38, 38, .09); color: var(--ink); transform: translateY(-1px); }
-.expanded-float:active { transform: translateY(0) scale(.98); }
+/* 更多菜单收纳低频窗口操作，避免与搜索和捕获争夺工具栏空间。 */
+.expanded-more-wrap { position: relative; }
+.expanded-more { display: grid; width: 34px; height: 32px; padding: 0; place-content: center; gap: 3px; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); cursor: pointer; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+.expanded-more i { display: block; width: 3px; height: 3px; border-radius: 50%; background: var(--ink-soft); }
+.expanded-more:hover, .expanded-more[aria-expanded="true"] { border-color: rgba(38, 38, 38, .24); background: rgba(255, 255, 255, .84); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); }
+.expanded-more-menu { position: absolute; z-index: 12; top: calc(100% + 7px); right: 0; display: grid; width: 154px; gap: 3px; padding: 5px; border: 1px solid rgba(38, 38, 38, .13); border-radius: 12px; background: rgba(250, 250, 248, .98); box-shadow: 0 12px 28px rgba(38, 38, 38, .16); }
+.expanded-more-menu button { display: flex; height: 34px; align-items: center; gap: 8px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; font: 600 12px var(--font-body); text-align: left; }
+.expanded-more-menu button:hover { background: rgba(99, 254, 19, .1); color: var(--ink); }
+.expanded-more-icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
+.expanded-more-menu img { width: 16px; height: 16px; opacity: .72; }
+.more-menu-enter-active, .more-menu-leave-active { transition: opacity 130ms ease, transform 160ms var(--motion-easing); }
+.more-menu-enter-from, .more-menu-leave-to { opacity: 0; transform: translateY(-4px) scale(.97); }
 
 .folder-panel {
   position: absolute;

@@ -15,6 +15,7 @@ const ipcTongdao = Object.freeze({
   getCollapsedAnimation: 'settings:read-collapsed-animation',
   setCollapsedAnimation: 'settings:set-collapsed-animation',
   importLibraryContent: 'library:import',
+  captureClipboardContent: 'library:capture-clipboard',
   tongbuDesktopApplications: 'applications:sync-desktop',
   getLibrarySummary: 'library:read-summary',
   libraryChanged: 'library:changed',
@@ -79,6 +80,7 @@ contextBridge.exposeInMainWorld('aetherDock', {
       }).slice(0, 20),
     })
   },
+  captureClipboardContent: () => ipcRenderer.invoke(ipcTongdao.captureClipboardContent),
   tongbuDesktopApplications: () => ipcRenderer.invoke(ipcTongdao.tongbuDesktopApplications),
   getLibrarySummary: () => ipcRenderer.invoke(ipcTongdao.getLibrarySummary),
   onLibraryChanged: (callback) => {

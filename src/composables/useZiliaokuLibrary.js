@@ -336,6 +336,30 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     }
   }
 
+  // 捕获内容由主进程读取，避免渲染层因系统剪贴板权限而出现不一致。
+  async function buhuoJiantiebanContent() {
+    if (isLibraryRootMigrating.value || isImporting.value) return []
+    if (!(await quebaoLibrary())) return []
+    isImporting.value = true
+    try {
+      const result = await huoquBridge()?.captureClipboardContent()
+      const addedItems = result?.added ?? []
+      if (!addedItems.length) {
+        xianshiToast(result?.xiaoxi || '未发现可捕获的新内容', 'info')
+        return []
+      }
+      libraryStateGeneration += 1
+      await shuaxinLibraryIndex(true)
+      xianshiToast(`已捕获${result.captureType || '内容'}`, 'success')
+      return addedItems
+    } catch {
+      xianshiToast('剪贴板捕获失败，请稍后重试', 'error')
+      return []
+    } finally {
+      isImporting.value = false
+    }
+  }
+
   async function dakaiLibraryItem(item) {
     if (isLibraryRootMigrating.value) {
       xianshiToast('资料库正在迁移，请稍候', 'info')
@@ -494,6 +518,7 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     shuaxinLibraryIndex,
     xuanzeLibraryRootdir,
     daoruDragContent,
+    buhuoJiantiebanContent,
     dakaiLibraryItem,
     dingweiLibraryItem,
     chongmingmingLibraryItem,

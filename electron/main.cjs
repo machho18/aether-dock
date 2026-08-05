@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } = require('electron')
 const { execFile } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const dns = require('node:dns/promises')
@@ -170,6 +170,36 @@ function loadXuanfuqiuWindow(win) {
     return
   }
   win.loadFile(path.join(__dirname, '..', 'dist', 'floating.html'))
+}
+
+// 将剪贴板内容先落入系统临时目录，再复用资料库既有的受管文件导入流程。
+async function buhuoJiantiebanContent() {
+  const screenshot = clipboard.readImage()
+  let temporaryPath = ''
+  let captureType = ''
+  try {
+    if (!screenshot.isEmpty()) {
+      temporaryPath = path.join(os.tmpdir(), `aetherdock-clipboard-${Date.now()}-${process.pid}.png`)
+      await fsp.writeFile(temporaryPath, screenshot.toPNG())
+      captureType = '截图'
+    } else {
+      const content = clipboard.readText().trim()
+      if (!content) return { added: [], xiaoxi: '剪贴板中没有可捕获的内容' }
+      if (/^https?:\/\//i.test(content)) {
+        return { ...(await library.importContent({ file: [], url: [content] })), captureType: '链接' }
+      }
+      temporaryPath = path.join(os.tmpdir(), `aetherdock-note-${Date.now()}-${process.pid}.txt`)
+      await fsp.writeFile(temporaryPath, content.slice(0, 200000), 'utf8')
+      captureType = '笔记'
+    }
+    const result = await library.importContent({
+      file: [{ path: temporaryPath, name: path.basename(temporaryPath), type: captureType === '截图' ? 'image/png' : 'text/plain' }],
+      url: [],
+    })
+    return { ...result, captureType }
+  } finally {
+    if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
 }
 
 // 计算两次采样间的 CPU 使用率
@@ -1449,6 +1479,7 @@ app.whenReady().then(async () => {
     }
     return result
   })
+  ipcMain.handle(ipcTongdao.captureClipboardContent, buhuoJiantiebanContent)
   ipcMain.handle(ipcTongdao.setHeavyTasksPaused, (_, paused) => {
     isHeavyTasksPaused = Boolean(paused)
     if (!isHeavyTasksPaused) zhixingNextThumbnailRenwu()
