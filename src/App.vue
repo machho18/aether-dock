@@ -11,34 +11,34 @@
         'lingdongchuangkou--dropping': isDropping,
       }"
     >
-      <div class="island-frame island-frame--collapsed" aria-hidden="true"></div>
-      <div class="island-frame island-frame--expanded" aria-hidden="true"></div>
-      <div class="island-frame island-frame--drop" aria-hidden="true"></div>
-      <div
-        ref="islandShell"
-        class="island-shell"
-        aria-label="黑色玻璃灵动窗口"
-        tabindex="0"
-        @mouseenter="chuliIslandEnter"
-        @mouseleave="chuliIslandLeave"
-        @dragenter="chuliDragEnter"
-        @dragover="chuliDragOver"
-        @dragleave="chuliDragLeave"
-        @dragend="qingliDragState"
-        @drop="chuliDrop"
-        @focus="chuliIslandEnter"
-        @blur="chuliIslandBlur"
-        @transitionrun="chuliShellTransitionRun"
-        @transitionend="chuliShellTransitionEnd"
-      >
-        <div class="inner-glow"></div>
-        <div class="collapsed-stage">
-          <ShouqiStatus
-            :animation-id="currentCollapsedAnimation"
-            :hidden="isExpanded || (toastState.visible && !isDragging && !isDropping)"
-            :dragging="isDragging || isDropping"
-          />
-        </div>
+        <div class="island-frame island-frame--collapsed" aria-hidden="true"></div>
+        <div class="island-frame island-frame--expanded" aria-hidden="true"></div>
+        <div class="island-frame island-frame--drop" aria-hidden="true"></div>
+        <div
+          ref="islandShell"
+          class="island-shell"
+          aria-label="黑色玻璃灵动窗口"
+          tabindex="0"
+          @mouseenter="chuliIslandEnter"
+          @mouseleave="chuliIslandLeave"
+          @dragenter="chuliDragEnter"
+          @dragover="chuliDragOver"
+          @dragleave="chuliDragLeave"
+          @dragend="qingliDragState"
+          @drop="chuliDrop"
+          @focus="chuliIslandEnter"
+          @blur="chuliIslandBlur"
+          @transitionrun="chuliShellTransitionRun"
+          @transitionend="chuliShellTransitionEnd"
+        >
+          <div class="inner-glow"></div>
+          <div class="collapsed-stage">
+            <ShouqiStatus
+              :animation-id="currentCollapsedAnimation"
+              :hidden="isExpanded || (toastState.visible && !isDragging && !isDropping)"
+              :dragging="isDragging || isDropping"
+            />
+          </div>
 
         <div class="drop-hint" aria-hidden="true">
           <span class="drop-paste-stage">
@@ -53,67 +53,68 @@
           <span class="drop-label">{{ isDropping ? '贴入归档' : isImporting ? '正在归档' : '松手贴入' }}</span>
         </div>
 
-        <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
-        <div
-          class="library-stage"
-          :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && currentPage === 'library' }"
-        >
-          <ZiliaokuPage
-            :items="libraryItems"
-            :category-counts="categoryCounts"
-            :library-config="libraryConfig"
-            :library-available="libraryAvailable"
-            :initial-category="currentZiliaokuCategory"
-            :is-yingyong-syncing="isYingyongSyncing"
-            :is-animation-busy="isExpansionAnimating"
-            @open-settings="qiehuanSettings"
-            @select-category="xuanzeZiliaokuCategory"
-            @search="sousuoLibrary"
-            @load-more="jiazaiGengduo"
-            @open-item="dakaiLibraryItem"
-            @locate-item="dingweiLibraryItem"
-            @rename-item="chongmingmingLibraryItem"
-            @delete-item="qingqiuDeleteItem"
-            @sync-applications="tongbuDesktopApplications"
+          <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
+          <div
+            class="library-stage"
+            :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && currentPage === 'library' }"
+          >
+            <ZiliaokuPage
+              :items="libraryItems"
+              :category-counts="categoryCounts"
+              :library-config="libraryConfig"
+              :library-available="libraryAvailable"
+              :initial-category="currentZiliaokuCategory"
+              :is-yingyong-syncing="isYingyongSyncing"
+              :is-animation-busy="isExpansionAnimating"
+              @open-settings="qiehuanSettings"
+              @float-window="qiehuanXuanfuqiu"
+              @select-category="xuanzeZiliaokuCategory"
+              @search="sousuoLibrary"
+              @load-more="jiazaiGengduo"
+              @open-item="dakaiLibraryItem"
+              @locate-item="dingweiLibraryItem"
+              @rename-item="chongmingmingLibraryItem"
+              @delete-item="qingqiuDeleteItem"
+              @sync-applications="tongbuDesktopApplications"
+            />
+          </div>
+
+          <Transition name="glass-switch" mode="out-in">
+            <ShezhiPage
+              v-if="isExpanded && !isDragging && !isDropping && currentPage === 'settings'"
+              key="settings"
+              :animation-id="currentCollapsedAnimation"
+              :rootdir="libraryConfig.rootdir"
+              :is-rootdir-migrating="isLibraryRootMigrating"
+              @back="fanhuiLibrary"
+              @select-animation="shezhiCollapsedAnimation"
+              @select-rootdir="qingqiuMigrateLibrary"
+            />
+          </Transition>
+
+          <ConfirmDialog
+            :visible="confirmState.visible"
+            :title="confirmState.title"
+            :message="confirmState.message"
+            :detail="confirmState.detail"
+            :confirm-text="confirmState.confirmText"
+            :cancel-text="confirmState.cancelText"
+            :show-cancel="confirmState.showCancel"
+            :tone="confirmState.tone"
+            @confirm="querenAction"
+            @cancel="guanbiConfirm"
           />
         </div>
-
-        <Transition name="glass-switch" mode="out-in">
-          <ShezhiPage
-            v-if="isExpanded && !isDragging && !isDropping && currentPage === 'settings'"
-            key="settings"
-            :animation-id="currentCollapsedAnimation"
-            :rootdir="libraryConfig.rootdir"
-            :is-rootdir-migrating="isLibraryRootMigrating"
-            @back="fanhuiLibrary"
-            @select-animation="shezhiCollapsedAnimation"
-            @select-rootdir="qingqiuMigrateLibrary"
+        <div class="toast-layer">
+          <ToastMessage
+            :visible="toastState.visible && !isDragging && !isDropping"
+            :text="toastState.text"
+            :type="toastState.type"
+            :compact="!isExpanded || toastState.text === '已删除'"
+            :corner="isExpanded && toastState.text === '已删除'"
+            :embedded="!isExpanded"
           />
-        </Transition>
-
-        <ConfirmDialog
-          :visible="confirmState.visible"
-          :title="confirmState.title"
-          :message="confirmState.message"
-          :detail="confirmState.detail"
-          :confirm-text="confirmState.confirmText"
-          :cancel-text="confirmState.cancelText"
-          :show-cancel="confirmState.showCancel"
-          :tone="confirmState.tone"
-          @confirm="querenAction"
-          @cancel="guanbiConfirm"
-        />
-      </div>
-      <div class="toast-layer">
-        <ToastMessage
-          :visible="toastState.visible && !isDragging && !isDropping"
-          :text="toastState.text"
-          :type="toastState.type"
-          :compact="!isExpanded || toastState.text === '已删除'"
-          :corner="isExpanded && toastState.text === '已删除'"
-          :embedded="!isExpanded"
-        />
-      </div>
+        </div>
     </section>
   </main>
 </template>
@@ -242,6 +243,13 @@ function qiehuanSettings() {
 function fanhuiLibrary() {
   currentPage.value = 'library'
   isLibraryContentVisible.value = true
+}
+
+// 主灵动岛窗口保持原位，主进程仅显示已预加载的独立悬浮球窗口。
+async function qiehuanXuanfuqiu() {
+  if (isDragging.value || confirmState.value.visible) return
+  qiehuanIslandState(false)
+  await window.aetherDock?.setFloatingMode(true)
 }
 
 function chuliIslandEnter() {

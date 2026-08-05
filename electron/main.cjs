@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, screen, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } = require('electron')
 const { execFile } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const dns = require('node:dns/promises')
@@ -16,6 +16,9 @@ const { ipcTongdao } = require('./ipc.cjs')
 // 持有主窗口引用，避免被垃圾回收后自动关闭
 let mainWindow = null
 let startupWindow = null
+let xuanfuqiuWindow = null
+let isXuanfuqiuWindowReady = false
+let tuopan = null
 let lastCpuStat = null
 let library = null
 let yingyongSyncPromise = null
@@ -34,9 +37,12 @@ const tupianThumbnailRenwuQueue = []
 let tupianThumbnailHuodongRenwu = 0
 let tupianThumbnailRenwuXuhao = 0
 let isHeavyTasksPaused = false
+let isXuanfuqiuMoshi = false
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
+const shouqikouWindowSize = { width: 226, height: 64 }
+const shouqikouMargin = 24
 const maxRemoteFileBytes = 100 * 1024 * 1024
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
@@ -56,6 +62,19 @@ const remoteMimeExtensions = new Map([
   ['application/vnd.oasis.opendocument.presentation', '.odp'],
 ])
 
+// 按像素行计算圆角停靠坞轮廓，让透明窗口的交互范围贴合可见区域。
+function huoquShouqikouWindowShape() {
+  const { width, height } = shouqikouWindowSize
+  const radius = Math.min(24, Math.floor(height / 2))
+  const rects = []
+  for (let y = 0; y < height; y += 1) {
+    const distanceY = y < radius ? radius - y - .5 : y >= height - radius ? y - (height - radius) + .5 : 0
+    const inset = distanceY ? Math.ceil(radius - Math.sqrt(Math.max(0, radius ** 2 - distanceY ** 2))) : 0
+    rects.push({ x: inset, y, width: width - inset * 2, height: 1 })
+  }
+  return rects
+}
+
 // 两类透明窗口共享安全的浏览器配置，仅尺寸与生命周期不同。
 function createWindowOptions(size) {
   return {
@@ -69,6 +88,7 @@ function createWindowOptions(size) {
     transparent: true,
     useContentSize: true,
     resizable: false,
+    skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
     backgroundColor: '#00000000',
@@ -88,7 +108,49 @@ function positionMainWindow() {
   mainWindow.setPosition(coordX, workArea.y)
 }
 
-// 根据窗口角色加载相同渲染页面，开机窗口仅展示加载动画
+// 独立收起坞固定在左下角，模式切换时无需移动主灵动岛窗口。
+function positionXuanfuqiuWindow(point) {
+  if (!xuanfuqiuWindow || xuanfuqiuWindow.isDestroyed()) return
+  const display = screen.getDisplayNearestPoint(point)
+  const workArea = display.workArea
+  const minX = workArea.x + shouqikouMargin
+  const maxX = workArea.x + workArea.width - shouqikouMargin - shouqikouWindowSize.width
+  const minY = workArea.y + shouqikouMargin
+  const maxY = workArea.y + workArea.height - shouqikouMargin - shouqikouWindowSize.height
+  const coordX = Math.min(Math.max(point.x, minX), maxX)
+  const coordY = Math.min(Math.max(point.y, minY), maxY)
+  xuanfuqiuWindow.setPosition(Math.round(coordX), Math.round(coordY))
+}
+
+// 等待悬浮球首帧完成，禁止未绘制的透明窗口提前显示。
+function dengdaiXuanfuqiuWindowReady() {
+  if (isXuanfuqiuWindowReady) return Promise.resolve()
+  return new Promise((resolve) => xuanfuqiuWindow?.once('ready-to-show', resolve))
+}
+
+// 两个窗口均在启动时预加载，模式切换只交换可见性，不触发透明窗口的重定位重绘。
+async function qiehuanXuanfuqiuMoshi(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || !xuanfuqiuWindow || xuanfuqiuWindow.isDestroyed()) return
+  isXuanfuqiuMoshi = Boolean(enabled)
+  if (isXuanfuqiuMoshi) {
+    await dengdaiXuanfuqiuWindowReady()
+    const workArea = screen.getPrimaryDisplay().workArea
+    positionXuanfuqiuWindow({
+      x: workArea.x + shouqikouMargin,
+      y: workArea.y + workArea.height - shouqikouMargin - shouqikouWindowSize.height,
+    })
+    mainWindow.hide()
+    xuanfuqiuWindow.setIgnoreMouseEvents(true, { forward: true })
+    xuanfuqiuWindow.showInactive()
+  } else {
+    xuanfuqiuWindow.hide()
+    positionMainWindow()
+    mainWindow.setIgnoreMouseEvents(true, { forward: true })
+    mainWindow.showInactive()
+  }
+}
+
+// 主灵动岛与开机窗口共用完整页面，开机窗口仅展示加载动画。
 function loadRendererWindow(win, isStartup) {
   if (process.env.VITE_DEV_SERVER_URL) {
     const url = new URL(process.env.VITE_DEV_SERVER_URL)
@@ -99,6 +161,15 @@ function loadRendererWindow(win, isStartup) {
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
     query: { startup: isStartup ? '1' : '0' },
   })
+}
+
+// 悬浮球使用独立入口，避免解析资料库、Lottie 与主界面组件。
+function loadXuanfuqiuWindow(win) {
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(new URL('/floating.html', process.env.VITE_DEV_SERVER_URL).toString())
+    return
+  }
+  win.loadFile(path.join(__dirname, '..', 'dist', 'floating.html'))
 }
 
 // 计算两次采样间的 CPU 使用率
@@ -206,6 +277,20 @@ function huoquRemoteReferer(currentUrl, requestContext = {}) {
   } catch {
     return ''
   }
+}
+
+// 创建常驻托盘入口，窗口不在任务栏出现时仍可让用户退出程序。
+function createTuopan() {
+  const iconPath = path.join(__dirname, 'assets', 'tray-icon.ico')
+  const icon = nativeImage.createFromPath(iconPath)
+  if (icon.isEmpty()) throw new Error('托盘图标加载失败')
+  tuopan = new Tray(icon)
+  tuopan.setToolTip('AetherDock')
+  tuopan.setContextMenu(Menu.buildFromTemplate([
+    { label: 'AetherDock', enabled: false },
+    { type: 'separator' },
+    { label: '退出 AetherDock', click: () => app.quit() },
+  ]))
 }
 
 function huoquLoginItemOptions() {
@@ -1146,6 +1231,30 @@ function createMainWindow() {
   })
 }
 
+// 预加载独立收起坞窗口，切换时无需移动主灵动岛窗口。
+function createXuanfuqiuWindow() {
+  xuanfuqiuWindow = new BrowserWindow(createWindowOptions(shouqikouWindowSize))
+  isXuanfuqiuWindowReady = false
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    xuanfuqiuWindow.setShape(huoquShouqikouWindowShape())
+  }
+  const workArea = screen.getPrimaryDisplay().workArea
+  positionXuanfuqiuWindow({
+    x: workArea.x + shouqikouMargin,
+    y: workArea.y + workArea.height - shouqikouMargin - shouqikouWindowSize.height,
+  })
+  xuanfuqiuWindow.once('ready-to-show', () => {
+    isXuanfuqiuWindowReady = true
+    xuanfuqiuWindow?.setAlwaysOnTop(true, 'screen-saver')
+    xuanfuqiuWindow?.setIgnoreMouseEvents(true, { forward: true })
+  })
+  loadXuanfuqiuWindow(xuanfuqiuWindow)
+  xuanfuqiuWindow.on('closed', () => {
+    xuanfuqiuWindow = null
+    isXuanfuqiuWindowReady = false
+  })
+}
+
 // 创建独立开机窗口，避免重定位主灵动岛造成平移与卡顿
 function createStartupWindow() {
   startupWindow = new BrowserWindow(createWindowOptions(startupWindowSize))
@@ -1215,9 +1324,17 @@ app.whenReady().then(async () => {
     if (typeof enabled !== 'boolean') return { chenggong: false, ...huoquAppInfo() }
     return shezhiAutoLaunch(enabled)
   })
-  ipcMain.handle(ipcTongdao.setIslandPassthrough, (_, isPassthrough) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    mainWindow.setIgnoreMouseEvents(Boolean(isPassthrough), { forward: Boolean(isPassthrough) })
+  ipcMain.handle(ipcTongdao.setIslandPassthrough, (event, isPassthrough) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!targetWindow || targetWindow.isDestroyed()) return
+    targetWindow.setIgnoreMouseEvents(Boolean(isPassthrough), { forward: Boolean(isPassthrough) })
+  })
+  ipcMain.handle(ipcTongdao.setFloatingMode, (_, enabled) => {
+    qiehuanXuanfuqiuMoshi(enabled)
+  })
+  ipcMain.handle(ipcTongdao.moveFloatingIsland, (_, point) => {
+    if (!isXuanfuqiuMoshi || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return
+    positionXuanfuqiuWindow(point)
   })
   // 开机窗口完成后直接显示已预加载的顶部灵动岛
   ipcMain.handle(ipcTongdao.completeStartup, () => {
@@ -1411,12 +1528,15 @@ app.whenReady().then(async () => {
     void tongbuManagedFilesAndNotify().catch(() => {})
   }, 5 * 60 * 1000)
   managedReconcileTimer.unref()
+  createTuopan()
   createMainWindow()
+  createXuanfuqiuWindow()
   createStartupWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
+      createXuanfuqiuWindow()
       createStartupWindow()
     }
   })

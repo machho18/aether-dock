@@ -4,6 +4,8 @@ const ipcTongdao = Object.freeze({
   getAppInfo: 'app:read-info',
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
+  setFloatingMode: 'island:set-floating-mode',
+  moveFloatingIsland: 'island:move-floating',
   completeStartup: 'island:startup-complete',
   setHeavyTasksPaused: 'island:set-heavy-tasks-paused',
   selectLibraryRootdir: 'library:select-rootdir',

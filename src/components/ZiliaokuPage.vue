@@ -10,11 +10,23 @@
     <section class="expanded-top" aria-label="窗口工具栏">
       <label class="expanded-search">
         <img :src="searchLensIcon" alt="" aria-hidden="true" draggable="false">
-        <input v-model="searchKeyword" type="search" placeholder="搜索" aria-label="搜索资料">
+        <input v-model="searchKeyword" type="search" :placeholder="sousuoPlaceholder" :aria-label="sousuoPlaceholder">
       </label>
-      <button class="expanded-settings" type="button" aria-label="打开设置" @click.stop="emit('open-settings')">
-        <img :src="settingsIcon" alt="" aria-hidden="true" draggable="false">
-      </button>
+      <div class="expanded-actions">
+        <button
+          class="expanded-float"
+          type="button"
+          aria-label="收为悬浮球"
+          title="收为悬浮球"
+          @click.stop="emit('float-window')"
+        >
+          <span class="expanded-float-mark" aria-hidden="true"></span>
+          <span>收起</span>
+        </button>
+        <button class="expanded-settings" type="button" aria-label="打开设置" title="设置" @click.stop="emit('open-settings')">
+          <img :src="settingsIcon" alt="" aria-hidden="true" draggable="false">
+        </button>
+      </div>
     </section>
 
     <nav class="folder-panel" aria-label="资料分类">
@@ -98,7 +110,7 @@
               <span class="library-shelf-cover">
                 <strong>{{ huoquCardName(item) }}</strong>
                 <small :class="{ 'library-shelf-status--missing': item.status !== 'ready' }">
-                  {{ item.type === 'application' ? huoquApplicationStatus(item) : geshiCardTime(item.createdAt) }}
+                  {{ item.type === 'application' ? huoquApplicationStatus(item) : geshiCardTime(item.updatedAt || item.createdAt) }}
                 </small>
               </span>
             </button>
@@ -214,7 +226,7 @@ const props = defineProps({
   isAnimationBusy: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
+const emit = defineEmits(['open-settings', 'float-window', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
 const searchKeyword = shallowRef('')
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
@@ -242,6 +254,12 @@ const fenleiList = [
   { id: 'url', name: '网址', caption: 'WEB · URL', icon: urlIcon },
   { id: 'application', name: '应用程序', caption: 'APP · EXE', icon: yingyongIcon },
 ]
+
+// 提示搜索仅作用于当前分类，避免用户误以为会跨分类查询。
+const sousuoPlaceholder = computed(() => {
+  const fenleiName = fenleiList.find(({ id }) => id === currentCategory.value)?.name ?? '内容'
+  return `搜索${fenleiName}`
+})
 
 // 根据当前分类生成更明确的空状态提示。
 const kongzhuangtaiWenAn = computed(() => {
@@ -684,10 +702,19 @@ onKeyStroke('ArrowRight', (event) => {
 .expanded-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font: 500 16px var(--font-display); letter-spacing: .04em; }
 .expanded-search input::placeholder { color: var(--ink-faint); }
 
-.expanded-settings {
+.expanded-actions {
   position: absolute;
   right: 0;
-  top: 1px;
+  top: 0;
+  display: flex;
+  height: 44px;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.expanded-settings {
   display: grid;
   width: 42px;
   height: 42px;
@@ -702,6 +729,29 @@ onKeyStroke('ArrowRight', (event) => {
 
 .expanded-settings img { width: 30px; height: 30px; filter: brightness(0); opacity: .72; transition: opacity 180ms ease, transform 220ms var(--motion-easing); -webkit-user-drag: none; user-select: none; }
 .expanded-settings:hover img { opacity: 1; transform: rotate(18deg); }
+
+/* 将收起操作与设置归为同一工具组，避免散落在搜索框两侧。 */
+.expanded-float {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(38, 38, 38, .13);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .5);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 2px 6px rgba(38, 38, 38, .04);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  letter-spacing: .04em;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing);
+}
+
+.expanded-float-mark { position: relative; width: 12px; height: 12px; border: 1.5px solid currentColor; border-radius: 4px; opacity: .72; }
+.expanded-float-mark::after { position: absolute; right: -3px; bottom: -3px; width: 5px; height: 5px; border: 1.5px solid rgba(99, 254, 19, .92); border-radius: 50%; background: var(--paper-white); content: ""; }
+.expanded-float:hover { border-color: rgba(38, 38, 38, .24); background: rgba(255, 255, 255, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .94), 0 4px 10px rgba(38, 38, 38, .09); color: var(--ink); transform: translateY(-1px); }
+.expanded-float:active { transform: translateY(0) scale(.98); }
 
 .folder-panel {
   position: absolute;

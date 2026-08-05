@@ -1,0 +1,25 @@
+/* 悬浮球独立入口仅保留必要画布样式，避免加载主界面主题与组件样式。 */
+:root {
+  --xuanfuqiu-accent: #63fe13;
+  background: transparent;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: rgb(0 0 0 / 0) !important;
+  -webkit-app-region: no-drag;
+}
+
+button:focus-visible {
+  outline: none;
+}
