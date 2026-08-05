@@ -75,8 +75,10 @@
               @load-more="jiazaiGengduo"
               @open-item="dakaiLibraryItem"
               @locate-item="dingweiLibraryItem"
+              @share-item="fenxiangLibraryItem"
               @rename-item="chongmingmingLibraryItem"
               @delete-item="qingqiuDeleteItem"
+              @delete-items="qingqiuPiliangDelete"
               @sync-applications="tongbuDesktopApplications"
             />
           </div>
@@ -173,8 +175,10 @@ const {
   buhuoJiantiebanContent,
   dakaiLibraryItem,
   dingweiLibraryItem,
+  fenxiangLibraryItem,
   chongmingmingLibraryItem,
   shanchuLibraryItem,
+  shanchuLibraryItems,
   tongbuDesktopApplications,
   shezhiCollapsedAnimation,
 } = useZiliaokuLibrary(xianshiToast, xianshiMigrationReport)
@@ -335,6 +339,18 @@ function qingqiuDeleteItem(item) {
     confirmText: isKuaijieShortcut ? '移除' : '删除',
     tone: isKuaijieShortcut ? 'default' : 'danger',
   }, () => shanchuLibraryItem(item))
+}
+
+function qingqiuPiliangDelete(items) {
+  const count = Array.isArray(items) ? items.length : 0
+  if (!count) return
+  qingqiuConfirm({
+    title: `删除 ${count} 项资料`,
+    message: '确定删除已选内容？',
+    detail: '受管图片和文档会一并删除；应用程序仅移除 AetherDock 记录。此操作不可撤销。',
+    confirmText: '删除',
+    tone: 'danger',
+  }, () => shanchuLibraryItems(items))
 }
 
 function qingqiuMigrateLibrary() {

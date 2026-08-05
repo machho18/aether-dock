@@ -5,6 +5,7 @@ const ipcTongdao = Object.freeze({
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   setFloatingMode: 'island:set-floating-mode',
+  floatingWindowShown: 'floating:shown',
   moveFloatingIsland: 'island:move-floating',
   completeStartup: 'island:startup-complete',
   setHeavyTasksPaused: 'island:set-heavy-tasks-paused',
@@ -26,6 +27,7 @@ const ipcTongdao = Object.freeze({
   locateLibraryItem: 'library:locate-item',
   renameLibraryItem: 'library:rename-item',
   deleteLibraryItem: 'library:delete-item',
+  shareLibraryItem: 'library:share-item',
 })
 
 module.exports = { ipcTongdao }

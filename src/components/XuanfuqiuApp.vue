@@ -1,7 +1,9 @@
 <template>
   <main class="shouqikou-root">
     <button
+      :key="weizhiTishiXuhao"
       class="shouqikou"
+      :class="{ 'shouqikou--position-tip': isWeizhiTishiVisible }"
       type="button"
       aria-label="展开 AetherDock"
       title="展开 AetherDock"
@@ -19,7 +21,20 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, shallowRef } from 'vue'
+
 let isPassthrough = true
+const isWeizhiTishiVisible = shallowRef(false)
+const weizhiTishiXuhao = shallowRef(0)
+
+// 每次收起坞显示时播放一次入位提示，帮助用户确认它固定在左下角。
+function bofangWeizhiTishi() {
+  isWeizhiTishiVisible.value = true
+  weizhiTishiXuhao.value += 1
+}
+
+const quxiaoXianshiTishiListener = window.aetherDock?.onFloatingWindowShown?.(bofangWeizhiTishi)
+onBeforeUnmount(() => quxiaoXianshiTishiListener?.())
 
 function jieshouMouse() {
   shezhiMousePassthrough(false)
@@ -61,6 +76,7 @@ function shezhiMousePassthrough(passthrough) {
   align-items: center;
   gap: 10px;
   overflow: hidden;
+  isolation: isolate;
   appearance: none;
   -webkit-appearance: none;
   border: 1px solid rgba(255, 255, 255, .14);
@@ -74,11 +90,29 @@ function shezhiMousePassthrough(passthrough) {
   -webkit-app-region: no-drag;
 }
 
+/* 刀锋亮光仅扫过一次外壳，强化坞已在左下角就位的反馈。 */
+.shouqikou::after { position: absolute; z-index: 2; inset: -52% -28px; background: linear-gradient(108deg, transparent 43%, rgba(234, 255, 226, .06) 47%, rgba(221, 255, 204, .82) 50%, rgba(156, 255, 117, .28) 53%, transparent 58%); content: ""; opacity: 0; pointer-events: none; transform: translateX(-72%) skewX(-18deg); }
+
 .shouqikou:hover {
   width: 210px;
   border-color: rgba(170, 255, 139, .36);
   background: linear-gradient(145deg, rgba(48, 58, 52, .99), rgba(15, 20, 17, .99));
   box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 10px 26px rgba(0, 0, 0, .34), 0 0 18px rgba(99, 254, 19, .12);
+}
+
+/* 入位提示仅在底部坞刚出现时运行一次，强调固定停靠位置。 */
+.shouqikou--position-tip { animation: shouqikou-position-tip 760ms cubic-bezier(.16, 1, .3, 1) both; }
+.shouqikou--position-tip::after { animation: shouqikou-blade-flash 760ms cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes shouqikou-position-tip {
+  0% { opacity: 0; transform: translateX(-18px) scale(.92); }
+  58% { opacity: 1; transform: translateX(3px) scale(1.02); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes shouqikou-blade-flash {
+  0%, 20% { opacity: 0; transform: translateX(-72%) skewX(-18deg); }
+  38% { opacity: 1; }
+  66% { opacity: .72; transform: translateX(72%) skewX(-18deg); }
+  100% { opacity: 0; transform: translateX(92%) skewX(-18deg); }
 }
 
 .shouqikou:active { transform: translateY(1px); }
@@ -108,6 +142,8 @@ function shezhiMousePassthrough(passthrough) {
   .shouqikou,
   .shouqikou-wenzi,
   .shouqikou-jiantou { transition: none; }
+  .shouqikou--position-tip { animation: none; }
+  .shouqikou--position-tip::after { animation: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) {

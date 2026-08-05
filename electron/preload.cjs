@@ -7,6 +7,7 @@ const ipcTongdao = Object.freeze({
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   setFloatingMode: 'island:set-floating-mode',
+  floatingWindowShown: 'floating:shown',
   moveFloatingIsland: 'island:move-floating',
   completeStartup: 'island:startup-complete',
   setHeavyTasksPaused: 'island:set-heavy-tasks-paused',
@@ -28,6 +29,7 @@ const ipcTongdao = Object.freeze({
   locateLibraryItem: 'library:locate-item',
   renameLibraryItem: 'library:rename-item',
   deleteLibraryItem: 'library:delete-item',
+  shareLibraryItem: 'library:share-item',
 })
 
 // 在预加载隔离层直接读取原生 File，避免跨 Context Bridge 后丢失文件路径
@@ -56,6 +58,12 @@ contextBridge.exposeInMainWorld('aetherDock', {
   setAutoLaunch: (enabled) => ipcRenderer.invoke(ipcTongdao.setAutoLaunch, enabled),
   setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke(ipcTongdao.setIslandPassthrough, isPassthrough),
   setFloatingMode: (enabled) => ipcRenderer.invoke(ipcTongdao.setFloatingMode, enabled),
+  onFloatingWindowShown: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = () => callback()
+    ipcRenderer.on(ipcTongdao.floatingWindowShown, listener)
+    return () => ipcRenderer.removeListener(ipcTongdao.floatingWindowShown, listener)
+  },
   moveFloatingIsland: (position) => ipcRenderer.invoke(ipcTongdao.moveFloatingIsland, position),
   completeStartup: () => ipcRenderer.invoke(ipcTongdao.completeStartup),
   setHeavyTasksPaused: (paused) => ipcRenderer.invoke(ipcTongdao.setHeavyTasksPaused, paused),
@@ -98,4 +106,5 @@ contextBridge.exposeInMainWorld('aetherDock', {
   locateLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.locateLibraryItem, itemId),
   renameLibraryItem: (itemId, title) => ipcRenderer.invoke(ipcTongdao.renameLibraryItem, itemId, title),
   deleteLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.deleteLibraryItem, itemId),
+  shareLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.shareLibraryItem, itemId),
 })

@@ -27,6 +27,10 @@
                 <span class="expanded-more-icon" aria-hidden="true"><span class="expanded-dock-mark"><i></i></span></span>
                 <span title="收起到左下角">收起</span>
               </button>
+              <button type="button" @click="kaishiPiliangShanchu">
+                <span class="expanded-more-icon expanded-more-icon--select" aria-hidden="true"></span>
+                <span>批量选择</span>
+              </button>
               <button type="button" @click="chuliGengduoCaozuo('open-settings')">
                 <span class="expanded-more-icon" aria-hidden="true"><img :src="settingsIcon" alt="" draggable="false"></span>
                 <span>设置</span>
@@ -54,6 +58,12 @@
         <i>{{ category.caption }}</i>
       </button>
     </nav>
+
+    <div v-if="isPiliangMoshi" class="piliang-actionbar" aria-label="批量删除操作">
+      <span>已选 {{ xuanzeItemIds.size }} 项</span>
+      <button type="button" @click="quxiaoPiliangShanchu">取消</button>
+      <button type="button" :disabled="!xuanzeItemIds.size" @click="tijiaoPiliangShanchu">删除</button>
+    </div>
 
     <button
       v-if="currentCategory === 'application' && categoryCounts.application"
@@ -89,11 +99,12 @@
               {
                 'library-shelf-card--center': offset === 0,
                 'library-shelf-card--missing': item.status !== 'ready',
+                'library-shelf-card--selected': xuanzeItemIds.has(item.id),
               },
             ]"
             :style="huoquCardStyle(offset)"
           >
-            <button class="library-shelf-main" type="button" @click.stop="offset === 0 ? emit('open-item', item) : tiaozhuanCarousel(index)">
+            <button class="library-shelf-main" type="button" @click.stop="isPiliangMoshi ? qiehuanKapianXuanze(item) : offset === 0 ? emit('open-item', item) : tiaozhuanCarousel(index)">
               <div class="library-shelf-view" :class="{ 'library-shelf-view--pending': cardInfo.iconPending }" aria-hidden="true">
                 <img
                   v-if="cardInfo.preview"
@@ -123,7 +134,7 @@
               </span>
             </button>
             <div
-              v-if="offset === 0"
+              v-if="offset === 0 && !isPiliangMoshi"
               class="library-shelf-actions"
               :class="{ 'library-shelf-actions--triple': item.type !== 'application' && item.storageMode !== 'bookmark' && item.status !== 'shortcut_missing' }"
               aria-label="卡片操作"
@@ -153,6 +164,20 @@
                 <img :src="deleteIcon" alt="" aria-hidden="true" draggable="false">
               </button>
             </div>
+            <button
+              v-if="offset === 0 && !isPiliangMoshi && item.type !== 'application' && item.storageMode !== 'shortcut'"
+              class="library-shelf-share"
+              type="button"
+              aria-label="快捷分享"
+              title="分享资源"
+              @click.stop="emit('share-item', item)"
+            >
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V4m0 0-4 4m4-4 4 4M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" /></svg>
+            </button>
+            <button v-if="isPiliangMoshi" class="library-shelf-select" type="button" :aria-pressed="xuanzeItemIds.has(item.id)" @click.stop="qiehuanKapianXuanze(item)">
+              <span aria-hidden="true">✓</span>
+              <span class="sr-only">{{ xuanzeItemIds.has(item.id) ? '取消选择' : '选择' }}</span>
+            </button>
             <form
               v-if="renamingItemId === item.id"
               class="library-rename-editor"
@@ -235,10 +260,12 @@ const props = defineProps({
   isIslandExpanded: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-settings', 'float-window', 'capture-clipboard', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'rename-item', 'delete-item', 'sync-applications'])
+const emit = defineEmits(['open-settings', 'float-window', 'capture-clipboard', 'select-category', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications'])
 const gengduoCaozuo = useTemplateRef('gengduoCaozuo')
 const searchKeyword = shallowRef('')
 const isGengduoVisible = shallowRef(false)
+const isPiliangMoshi = shallowRef(false)
+const xuanzeItemIds = shallowRef(new Set())
 const currentCategory = shallowRef(props.initialCategory)
 const carouselIndex = shallowRef(0)
 const switchDirection = shallowRef(1)
@@ -373,6 +400,31 @@ function qiehuanGengduo() {
 function chuliGengduoCaozuo(action) {
   isGengduoVisible.value = false
   emit(action)
+}
+
+function kaishiPiliangShanchu() {
+  isGengduoVisible.value = false
+  isPiliangMoshi.value = true
+  xuanzeItemIds.value = new Set()
+}
+
+function quxiaoPiliangShanchu() {
+  isPiliangMoshi.value = false
+  xuanzeItemIds.value = new Set()
+}
+
+function qiehuanKapianXuanze(item) {
+  const nextIds = new Set(xuanzeItemIds.value)
+  if (nextIds.has(item.id)) nextIds.delete(item.id)
+  else nextIds.add(item.id)
+  xuanzeItemIds.value = nextIds
+}
+
+function tijiaoPiliangShanchu() {
+  const items = currentItems.value.filter((item) => xuanzeItemIds.value.has(item.id))
+  if (!items.length) return
+  emit('delete-items', items)
+  quxiaoPiliangShanchu()
 }
 
 // 灵动岛收起后组件仍会保留预热，此时主动关闭浮层以免残留在透明窗口中。
@@ -525,6 +577,7 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
 
 function xuanzeCategory(categoryId) {
   if (categoryId === currentCategory.value) return
+  if (isPiliangMoshi.value) quxiaoPiliangShanchu()
   const currentIndex = fenleiList.findIndex(({ id }) => id === currentCategory.value)
   const nextIndex = fenleiList.findIndex(({ id }) => id === categoryId)
   switchDirection.value = nextIndex >= currentIndex ? 1 : -1
@@ -696,7 +749,8 @@ onKeyStroke('ArrowRight', (event) => {
 
 .expanded-top {
   position: absolute;
-  z-index: 2;
+  /* 工具栏下拉菜单需跨越资料列表显示，避免被后续内容层遮挡。 */
+  z-index: 10;
   top: 25px;
   right: 34px;
   left: 34px;
@@ -760,7 +814,10 @@ onKeyStroke('ArrowRight', (event) => {
 .expanded-more-menu { position: absolute; z-index: 12; top: calc(100% + 7px); right: 0; display: grid; width: 154px; gap: 3px; padding: 5px; border: 1px solid rgba(38, 38, 38, .13); border-radius: 12px; background: rgba(250, 250, 248, .98); box-shadow: 0 12px 28px rgba(38, 38, 38, .16); }
 .expanded-more-menu button { display: flex; height: 34px; align-items: center; gap: 8px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; font: 600 12px var(--font-body); text-align: left; }
 .expanded-more-menu button:hover { background: rgba(99, 254, 19, .1); color: var(--ink); }
+.expanded-more-menu button:last-child { color: var(--ink); }
 .expanded-more-icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
+.expanded-more-icon--select { position: relative; width: 14px; height: 14px; border: 1.4px solid #43813c; border-radius: 4px; color: #43813c; }
+.expanded-more-icon--select::after { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 3px; border-bottom: 1.5px solid #43813c; border-left: 1.5px solid #43813c; content: ""; transform: rotate(-45deg); }
 .expanded-more-menu img { width: 16px; height: 16px; opacity: .72; }
 .more-menu-enter-active, .more-menu-leave-active { transition: opacity 130ms ease, transform 160ms var(--motion-easing); }
 .more-menu-enter-from, .more-menu-leave-to { opacity: 0; transform: translateY(-4px) scale(.97); }
@@ -782,6 +839,12 @@ onKeyStroke('ArrowRight', (event) => {
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
+
+/* 批量操作固定在分类栏对侧，避免压缩搜索框和主工具栏。 */
+.piliang-actionbar { position: absolute; z-index: 8; top: 84px; right: 0; display: flex; height: 36px; align-items: center; gap: 5px; padding: 0 5px 0 10px; border: 1px solid rgba(38, 38, 38, .13); border-radius: 12px; background: rgba(252, 252, 250, .96); box-shadow: 0 8px 18px rgba(38, 38, 38, .1); color: var(--ink-soft); font: 600 11px var(--font-body); }
+.piliang-actionbar button { height: 26px; padding: 0 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.piliang-actionbar button:last-child { border-color: rgba(220, 86, 86, .3); background: rgba(255, 238, 238, .8); color: #b24444; }
+.piliang-actionbar button:last-child:disabled { cursor: default; opacity: .45; }
 
 .folder-card {
   position: relative;
@@ -986,12 +1049,24 @@ onKeyStroke('ArrowRight', (event) => {
 .library-shelf-rename { border-color: rgba(91, 188, 255, .3); color: rgba(177, 222, 255, .76); }
 .library-shelf-delete { border-color: rgba(232, 93, 93, .28); }
 .library-shelf-delete img { filter: brightness(0) invert(1); opacity: .62; }
+/* 分享入口独立于底部操作槽，维持三项操作的对称节奏。 */
+.library-shelf-share { position: absolute; z-index: 5; top: 8px; right: 8px; display: grid; width: 27px; height: 27px; padding: 0; place-items: center; border: 1px solid rgba(150, 207, 255, .34); border-radius: 8px; background: rgba(9, 14, 12, .58); box-shadow: inset 0 1px rgba(255, 255, 255, .1); color: rgba(189, 229, 255, .84); cursor: pointer; opacity: 0; pointer-events: none; transform: translate3d(0, -5px, 10px); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, opacity 130ms ease, transform 200ms var(--motion-easing); }
+.library-shelf-share svg { width: 14px; height: 14px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; pointer-events: none; }
 .library-shelf-card--center:hover .library-shelf-actions,
 .library-shelf-card--center:focus-within .library-shelf-actions { opacity: 1; pointer-events: auto; transform: translate3d(-50%, 0, -12px) scale(1); }
+.library-shelf-card--center:hover .library-shelf-share,
+.library-shelf-card--center:focus-within .library-shelf-share { opacity: 1; pointer-events: auto; transform: translate3d(0, 0, 10px); }
+.library-shelf-share:hover { border-color: rgba(184, 229, 255, .76); background: rgba(28, 53, 65, .8); box-shadow: inset 0 1px rgba(255, 255, 255, .18), 0 7px 14px rgba(37, 110, 153, .2); color: #d4efff; transform: translate3d(0, -2px, 10px); }
+.library-shelf-share:active { transform: translate3d(0, 0, 10px) scale(.96); }
 .library-shelf-enter:hover { border-color: rgba(99, 254, 19, .82); box-shadow: inset 0 -1px rgba(255, 255, 255, .12), 0 9px 18px rgba(99, 254, 19, .2); }
 .library-shelf-rename:hover { border-color: rgba(91, 188, 255, .78); box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 9px 18px rgba(91, 188, 255, .18); color: #bde5ff; }
 .library-shelf-delete:hover { border-color: rgba(232, 93, 93, .76); box-shadow: inset 0 -1px rgba(255, 255, 255, .1), 0 9px 18px rgba(232, 93, 93, .18); }
 .library-shelf-delete:hover img { filter: brightness(0) saturate(100%) invert(52%) sepia(59%) saturate(1065%) hue-rotate(315deg) brightness(103%) contrast(82%); opacity: 1; }
+.library-shelf-select { position: absolute; z-index: 5; top: 9px; right: 9px; display: grid; width: 23px; height: 23px; padding: 0; place-items: center; border: 1px solid rgba(255, 255, 255, .54); border-radius: 7px; background: rgba(9, 12, 10, .42); color: transparent; cursor: pointer; transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }
+.library-shelf-select[aria-pressed="true"] { border-color: #8dff60; background: #4b9b39; color: #fff; box-shadow: 0 0 0 3px rgba(99, 254, 19, .16); }
+.library-shelf-select span:first-child { font-size: 13px; font-weight: 800; line-height: 1; }
+.library-shelf-card--selected { border-color: rgba(141, 255, 96, .88) !important; box-shadow: inset 0 0 0 1px rgba(99, 254, 19, .18), 0 12px 26px rgba(99, 254, 19, .14); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 .library-rename-editor {
   position: absolute;

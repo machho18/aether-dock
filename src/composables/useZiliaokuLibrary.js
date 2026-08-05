@@ -388,6 +388,17 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     huoquBridge()?.locateLibraryItem(item.id)
   }
 
+  async function fenxiangLibraryItem(item) {
+    try {
+      const result = await huoquBridge()?.shareLibraryItem(item.id)
+      xianshiToast(result?.xiaoxi || '分享失败，请稍后重试', result?.chenggong ? 'success' : 'error')
+      return Boolean(result?.chenggong)
+    } catch {
+      xianshiToast('分享失败，请稍后重试', 'error')
+      return false
+    }
+  }
+
   async function chongmingmingLibraryItem(item, title) {
     if (isLibraryRootMigrating.value) {
       xianshiToast('资料库正在迁移，请稍候', 'info')
@@ -449,6 +460,29 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
       xianshiToast('删除失败', 'error')
       return false
     }
+  }
+
+  // 批量删除统一完成后再刷新索引，避免多次更新轮播窗口造成界面跳动。
+  async function shanchuLibraryItems(items) {
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return 0
+    }
+    const validItems = [...new Map((items ?? []).filter((item) => item?.id).map((item) => [item.id, item])).values()]
+    if (!validItems.length) return 0
+    let deletedCount = 0
+    for (const item of validItems) {
+      const result = await huoquBridge()?.deleteLibraryItem(item.id)
+      if (result?.chenggong) deletedCount += 1
+    }
+    if (!deletedCount) {
+      xianshiToast('删除失败，请稍后重试', 'error')
+      return 0
+    }
+    libraryStateGeneration += 1
+    await shuaxinLibraryIndex(true)
+    xianshiToast(`已删除 ${deletedCount} 项`, 'success')
+    return deletedCount
   }
 
   async function tongbuDesktopApplications() {
@@ -521,8 +555,10 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     buhuoJiantiebanContent,
     dakaiLibraryItem,
     dingweiLibraryItem,
+    fenxiangLibraryItem,
     chongmingmingLibraryItem,
     shanchuLibraryItem,
+    shanchuLibraryItems,
     tongbuDesktopApplications,
     shezhiCollapsedAnimation,
   }

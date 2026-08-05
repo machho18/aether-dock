@@ -62,6 +62,22 @@ const remoteMimeExtensions = new Map([
   ['application/vnd.oasis.opendocument.presentation', '.odp'],
 ])
 
+// 通过 Windows 原生剪贴板写入文件拖放列表，让聊天软件和资源管理器接收真实文件。
+async function fuzhiWenjianZiyuan(localPath) {
+  if (process.platform !== 'win32') throw new Error('当前系统不支持文件资源分享')
+  const fuzhiScript = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$fileList = New-Object System.Collections.Specialized.StringCollection',
+    '$fileList.Add($env:AETHERDOCK_SHARE_PATH)',
+    '[System.Windows.Forms.Clipboard]::SetFileDropList($fileList)',
+  ].join('; ')
+  await zhixingFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', fuzhiScript], {
+    windowsHide: true,
+    timeout: 5000,
+    env: { ...process.env, AETHERDOCK_SHARE_PATH: localPath },
+  })
+}
+
 // 按像素行计算圆角停靠坞轮廓，让透明窗口的交互范围贴合可见区域。
 function huoquShouqikouWindowShape() {
   const { width, height } = shouqikouWindowSize
@@ -142,6 +158,7 @@ async function qiehuanXuanfuqiuMoshi(enabled) {
     mainWindow.hide()
     xuanfuqiuWindow.setIgnoreMouseEvents(true, { forward: true })
     xuanfuqiuWindow.showInactive()
+    xuanfuqiuWindow.webContents.send(ipcTongdao.floatingWindowShown)
   } else {
     xuanfuqiuWindow.hide()
     positionMainWindow()
@@ -1553,6 +1570,22 @@ app.whenReady().then(async () => {
       return result
     } catch {
       return { chenggong: false, xiaoxi: '删除失败' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.shareLibraryItem, async (_, itemId) => {
+    const item = library.getItemDetail(itemId)
+    if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+    if (item.storageMode === 'bookmark' && item.sourceUrl) {
+      clipboard.writeText(item.sourceUrl)
+      return { chenggong: true, xiaoxi: '链接已复制，可直接粘贴分享' }
+    }
+    const localPath = await library.getValidatedItemLocalPath(item)
+    if (!localPath) return { chenggong: false, xiaoxi: '该文件暂时无法分享' }
+    try {
+      await fuzhiWenjianZiyuan(localPath)
+      return { chenggong: true, xiaoxi: '文件已复制，可直接粘贴分享' }
+    } catch {
+      return { chenggong: false, xiaoxi: '文件复制失败，请稍后重试' }
     }
   })
   managedReconcileTimer = setInterval(() => {
