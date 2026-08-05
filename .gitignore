@@ -28,6 +28,7 @@ pnpm-debug.log*
 
 # Markdown 文档
 *.md
+!README.md
 
 # 本地环境与密钥配置
 .env
