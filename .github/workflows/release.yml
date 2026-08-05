@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 配置 Node.js
         uses: actions/setup-node@v4
@@ -40,10 +42,74 @@ jobs:
       - name: 创建 Release 并上传安装包
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          function shengchengReleaseNotes($releaseTag) {
+            if ($releaseTag -eq 'v0.1.0') {
+              return @"
+          ## AetherDock $releaseTag
+
+          把常用资料、链接与桌面应用收进一个随时可展开的桌面入口。
+
+          ### 首个公开版本包含
+
+          - 灵动岛资料库入口与左下角收起坞
+          - 本地文件、网络图片和文档链接、网址收藏的归档管理
+          - 剪贴板截图、网址和文本捕获
+          - Windows 桌面应用快捷方式扫描、搜索、批量删除与快捷分享
+
+          ### 安装说明
+
+          运行附件中的安装程序，按提示选择安装位置；首次启动后选择资料库目录即可使用。
+
+          > 当前安装包未进行数字签名，Windows 可能显示 SmartScreen 风险提示。请确认下载来源为本仓库的 Releases 页面。
+          "@
+            }
+
+            $shangciTag = git tag --sort=-version:refname | Where-Object { $_ -ne $releaseTag } | Select-Object -First 1
+            if (-not $shangciTag) {
+              return "## 更新内容`n`n- 此版本暂无可对比的历史提交。"
+            }
+
+            $fenleiList = [ordered]@{
+              '新增功能' = @()
+              '问题修复' = @()
+              '文档更新' = @()
+              '其他改动' = @()
+            }
+            $tijiaoList = git log "$shangciTag..$releaseTag" --pretty=format:%s
+            foreach ($tijiao in $tijiaoList) {
+              if ($tijiao -match '^\[(feat|fix|docs)\]\s*(.+)$') {
+                $fenleiName = switch ($Matches[1]) {
+                  'feat' { '新增功能' }
+                  'fix' { '问题修复' }
+                  'docs' { '文档更新' }
+                }
+                $fenleiList[$fenleiName] += $Matches[2].Trim()
+                continue
+              }
+              $fenleiList['其他改动'] += $tijiao
+            }
+
+            $sectionList = @('## 更新内容')
+            foreach ($fenleiName in $fenleiList.Keys) {
+              $neirongList = $fenleiList[$fenleiName]
+              if (-not $neirongList.Count) { continue }
+              $sectionList += "### $fenleiName`n`n$($neirongList | ForEach-Object { "- $_" } | Out-String)".Trim()
+            }
+            return $sectionList -join "`n`n"
+          }
+
           $installer = Get-ChildItem 'release' -Filter '*.exe' | Select-Object -First 1
           if (-not $installer) {
             throw '未找到 Windows 安装包'
           }
-          gh release create "${{ github.ref_name }}" $installer.FullName --title "AetherDock ${{ github.ref_name }}" --generate-notes
+          $releaseTag = "${{ github.ref_name }}"
+          $releaseNotes = shengchengReleaseNotes $releaseTag
+          gh release view $releaseTag --json id 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $releaseTag --title "AetherDock $releaseTag" --notes $releaseNotes
+            gh release upload $releaseTag $installer.FullName --clobber
+            exit $LASTEXITCODE
+          }
+          gh release create $releaseTag $installer.FullName --title "AetherDock $releaseTag" --notes $releaseNotes

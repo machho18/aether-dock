@@ -34,6 +34,7 @@ AetherDock 是一款面向 Windows 的桌面资料库。它以灵动岛形式停
 - 首次使用时选择资料库目录。
 - 当前发布包面向 Windows x64。
 - 当前安装包尚未进行数字签名，Windows 可能显示 SmartScreen 风险提示；这是未签名桌面应用的正常现象，请确认下载来源为本仓库的 Releases 页面。
+- 如安装程序无法运行，请右键安装文件，选择“属性”，勾选“解除锁定”后点击“应用”，再重新运行安装程序。
 
 ### 资料与卸载说明
 
@@ -81,11 +82,11 @@ npm run package
 为避免调试影响已安装版本，开发与生产使用独立数据库：
 
 ```text
-开发环境：aether-dock.dev.db
-生产环境：aether-dock.db
+开发环境：%APPDATA%\aether-dock-dev\aether-dock.dev.db
+生产环境：%APPDATA%\aether-dock\aether-dock.db
 ```
 
-两者均位于 Electron 的应用数据目录中；资料库文件本身仍由你在应用内选择的位置管理。
+开发与生产还会使用各自独立的应用缓存目录；卸载生产版不会影响开发环境数据。资料库文件本身仍由你在应用内选择的位置管理。
 
 ## 数据与隐私边界
 

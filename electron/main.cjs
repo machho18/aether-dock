@@ -45,6 +45,7 @@ const shouqikouWindowSize = { width: 226, height: 64 }
 const shouqikouMargin = 24
 const maxRemoteFileBytes = 100 * 1024 * 1024
 const isKaifaHuanjing = !app.isPackaged
+const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
 const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
@@ -63,6 +64,11 @@ const remoteMimeExtensions = new Map([
   ['application/vnd.oasis.opendocument.spreadsheet', '.ods'],
   ['application/vnd.oasis.opendocument.presentation', '.odp'],
 ])
+
+// 开发版使用独立数据目录，避免卸载生产版时误删调试数据库与缓存。
+if (isKaifaHuanjing) {
+  app.setPath('userData', kaifaUserDataDir)
+}
 
 // 通过 Windows 原生剪贴板写入文件拖放列表，让聊天软件和资源管理器接收真实文件。
 async function fuzhiWenjianZiyuan(localPath) {
