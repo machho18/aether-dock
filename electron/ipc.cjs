@@ -2,6 +2,9 @@
 const ipcTongdao = Object.freeze({
   getSystemStatus: 'system:read-status',
   getAppInfo: 'app:read-info',
+  checkAppUpdate: 'app:check-update',
+  openAppRelease: 'app:open-release',
+  appUpdateInfoChanged: 'app:update-info-changed',
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   setFloatingMode: 'island:set-floating-mode',

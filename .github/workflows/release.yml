@@ -100,16 +100,21 @@ jobs:
             return $sectionList -join "`n`n"
           }
 
-          $installer = Get-ChildItem 'release' -Filter '*.exe' | Select-Object -First 1
-          if (-not $installer) {
-            throw '未找到 Windows 安装包'
+          $releaseAssets = Get-ChildItem 'release' -File | Where-Object {
+            $_.Extension -eq '.exe' -or $_.Name -eq 'latest.yml' -or $_.Name -like '*.blockmap'
           }
+          $installer = $releaseAssets | Where-Object { $_.Extension -eq '.exe' } | Select-Object -First 1
+          $updateManifest = $releaseAssets | Where-Object { $_.Name -eq 'latest.yml' } | Select-Object -First 1
+          if (-not $installer -or -not $updateManifest) {
+            throw '未找到自动更新所需的安装包或 latest.yml'
+          }
+          $releaseAssetPaths = $releaseAssets.FullName
           $releaseTag = "${{ github.ref_name }}"
           $releaseNotes = shengchengReleaseNotes $releaseTag
           gh release view $releaseTag --json id 2>$null
           if ($LASTEXITCODE -eq 0) {
             gh release edit $releaseTag --title "AetherDock $releaseTag" --notes $releaseNotes
-            gh release upload $releaseTag $installer.FullName --clobber
+            gh release upload $releaseTag $releaseAssetPaths --clobber
             exit $LASTEXITCODE
           }
-          gh release create $releaseTag $installer.FullName --title "AetherDock $releaseTag" --notes $releaseNotes
+          gh release create $releaseTag $releaseAssetPaths --title "AetherDock $releaseTag" --notes $releaseNotes

@@ -4,6 +4,9 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 const ipcTongdao = Object.freeze({
   getSystemStatus: 'system:read-status',
   getAppInfo: 'app:read-info',
+  checkAppUpdate: 'app:check-update',
+  openAppRelease: 'app:open-release',
+  appUpdateInfoChanged: 'app:update-info-changed',
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
   setFloatingMode: 'island:set-floating-mode',
@@ -55,6 +58,14 @@ window.addEventListener('drop', (event) => {
 contextBridge.exposeInMainWorld('aetherDock', {
   getSystemStatus: () => ipcRenderer.invoke(ipcTongdao.getSystemStatus),
   getAppInfo: () => ipcRenderer.invoke(ipcTongdao.getAppInfo),
+  checkAppUpdate: () => ipcRenderer.invoke(ipcTongdao.checkAppUpdate),
+  openAppRelease: (url) => ipcRenderer.invoke(ipcTongdao.openAppRelease, url),
+  onAppUpdateInfoChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_, info) => callback(info)
+    ipcRenderer.on(ipcTongdao.appUpdateInfoChanged, listener)
+    return () => ipcRenderer.removeListener(ipcTongdao.appUpdateInfoChanged, listener)
+  },
   setAutoLaunch: (enabled) => ipcRenderer.invoke(ipcTongdao.setAutoLaunch, enabled),
   setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke(ipcTongdao.setIslandPassthrough, isPassthrough),
   setFloatingMode: (enabled) => ipcRenderer.invoke(ipcTongdao.setFloatingMode, enabled),
