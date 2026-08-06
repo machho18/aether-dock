@@ -6,6 +6,18 @@
         <small>AETHERDOCK / SETTINGS</small>
         <h2>灵动配置</h2>
       </div>
+      <div class="settings-update-area">
+        <small v-if="updateHint" class="settings-update-hint" :class="`settings-update-hint--${updateHintStatus}`">{{ updateHint }}</small>
+        <button
+          class="settings-update-button"
+          type="button"
+          :disabled="isCheckingUpdate || isUpdateDownloading"
+          :title="updateDescription"
+          @click.stop="jianchaAppGengxin"
+        >
+          {{ isCheckingUpdate ? '检查中…' : isUpdateDownloading ? `下载 ${downloadPercent}%` : '检查更新' }}
+        </button>
+      </div>
     </header>
 
     <section class="settings-group" aria-labelledby="animation-title">
@@ -47,26 +59,28 @@
 
       <section class="settings-group settings-group--system" aria-labelledby="system-title">
         <div class="settings-group-title">
-          <span id="system-title">系统启动</span>
+          <span id="system-title">系统与版本</span>
           <small>V{{ appVersion }}</small>
         </div>
-        <div class="system-startup-display">
-          <span>
-            <strong>开机自启</strong>
-            <small>{{ autoLaunchDescription }}</small>
-          </span>
-          <button
-            class="startup-switch"
-            :class="{ 'startup-switch--active': autoLaunchEnabled }"
-            type="button"
-            role="switch"
-            :aria-checked="autoLaunchEnabled"
-            :aria-label="autoLaunchEnabled ? '关闭开机自启' : '开启开机自启'"
-            :disabled="!autoLaunchSupported || isAutoLaunchUpdating"
-            @click.stop="qiehuanAutoLaunch"
-          >
-            <i aria-hidden="true"></i>
-          </button>
+        <div class="system-settings-panel">
+          <div class="system-startup-display">
+            <span>
+              <strong>开机自启</strong>
+              <small>{{ autoLaunchDescription }}</small>
+            </span>
+            <button
+              class="startup-switch"
+              :class="{ 'startup-switch--active': autoLaunchEnabled }"
+              type="button"
+              role="switch"
+              :aria-checked="autoLaunchEnabled"
+              :aria-label="autoLaunchEnabled ? '关闭开机自启' : '开启开机自启'"
+              :disabled="!autoLaunchSupported || isAutoLaunchUpdating"
+              @click.stop="qiehuanAutoLaunch"
+            >
+              <i aria-hidden="true"></i>
+            </button>
+          </div>
         </div>
       </section>
     </div>
@@ -91,12 +105,38 @@ const autoLaunchSupported = shallowRef(false)
 const autoLaunchEnabled = shallowRef(false)
 const autoLaunchUnavailableReason = shallowRef('')
 const isAutoLaunchUpdating = shallowRef(false)
+const isCheckingUpdate = shallowRef(false)
+const isManualUpdateChecked = shallowRef(false)
+const updateDescription = shallowRef('可检查 GitHub 最新版本')
+const hasUpdate = shallowRef(false)
+const latestVersion = shallowRef('')
+const isUpdateDownloading = shallowRef(false)
+const downloadPercent = shallowRef(0)
+const isUpdateDownloaded = shallowRef(false)
+const updateErrorMessage = shallowRef('')
 let previewPlayers = []
 let isPreviewActive = false
+let quxiaoAppGengxinListener = () => {}
 
 const autoLaunchDescription = computed(() => {
   if (autoLaunchSupported.value) return autoLaunchEnabled.value ? '已跟随系统启动' : '保持手动启动'
   return autoLaunchUnavailableReason.value === 'development' ? '仅安装版可设置' : '当前系统不支持'
+})
+
+const updateHint = computed(() => {
+  if (isCheckingUpdate.value) return '正在检查新版本'
+  if (isUpdateDownloading.value) return `正在下载 ${downloadPercent.value}%`
+  if (isUpdateDownloaded.value) return '更新已下载'
+  if (updateErrorMessage.value) return updateErrorMessage.value
+  if (hasUpdate.value) return `发现 V${latestVersion.value}，可更新`
+  return isManualUpdateChecked.value ? '当前已是最新版本' : ''
+})
+
+const updateHintStatus = computed(() => {
+  if (isCheckingUpdate.value || isUpdateDownloading.value) return 'loading'
+  if (isUpdateDownloaded.value || hasUpdate.value) return 'success'
+  if (updateErrorMessage.value) return 'error'
+  return 'neutral'
 })
 
 async function jiazaiAppInfo() {
@@ -107,7 +147,22 @@ async function jiazaiAppInfo() {
     autoLaunchSupported.value = Boolean(info.autoLaunchSupported)
     autoLaunchEnabled.value = Boolean(info.autoLaunchEnabled)
     autoLaunchUnavailableReason.value = info.autoLaunchUnavailableReason || ''
+    tongbuAppGengxinInfo(info.appGengxinInfo)
   } catch {}
+}
+
+// 启动检查完成后实时更新右上角的新版本提示。
+function tongbuAppGengxinInfo(info) {
+  if (!info) return
+  hasUpdate.value = Boolean(info.hasUpdate)
+  latestVersion.value = info.latestVersion || ''
+  isUpdateDownloading.value = Boolean(info.isDownloading)
+  downloadPercent.value = Math.max(0, Math.min(100, Number(info.downloadPercent) || 0))
+  isUpdateDownloaded.value = Boolean(info.isDownloaded)
+  updateErrorMessage.value = info.errorMessage || ''
+  if (info.isChecking) updateDescription.value = '正在检查新版本'
+  else if (info.hasUpdate) updateDescription.value = `发现 V${info.latestVersion}，点击即可更新`
+  else if (info.isChecked) updateDescription.value = '当前已是最新版本'
 }
 
 async function qiehuanAutoLaunch() {
@@ -118,6 +173,32 @@ async function qiehuanAutoLaunch() {
     if (result) autoLaunchEnabled.value = Boolean(result.autoLaunchEnabled)
   } finally {
     isAutoLaunchUpdating.value = false
+  }
+}
+
+// 手动检查时展示版本结果，并在发现新版后打开官方发布页面。
+async function jianchaAppGengxin() {
+  if (isCheckingUpdate.value) return
+  isManualUpdateChecked.value = true
+  isCheckingUpdate.value = true
+  try {
+    const result = await window.aetherDock?.checkAppUpdate()
+    if (!result?.chenggong) {
+      updateDescription.value = result?.xiaoxi || '更新检查失败，请稍后重试'
+      return
+    }
+    if (!result.hasUpdate) {
+      updateDescription.value = '当前已是最新版本'
+      return
+    }
+    if (result.autoDownload) {
+      updateDescription.value = `发现 V${result.latestVersion}，正在后台下载`
+      return
+    }
+    updateDescription.value = `发现 V${result.latestVersion}，已打开下载页`
+    if (result.releaseUrl) await window.aetherDock?.openAppRelease(result.releaseUrl)
+  } finally {
+    isCheckingUpdate.value = false
   }
 }
 
@@ -153,9 +234,11 @@ onMounted(() => {
   isPreviewActive = true
   chushihuaPreviews()
   jiazaiAppInfo()
+  quxiaoAppGengxinListener = window.aetherDock?.onAppUpdateInfoChanged(tongbuAppGengxinInfo) ?? (() => {})
 })
 onUnmounted(() => {
   isPreviewActive = false
+  quxiaoAppGengxinListener()
   previewPlayers.forEach((player) => player.destroy())
 })
 </script>
@@ -193,6 +276,33 @@ onUnmounted(() => {
   font: 500 20px var(--font-serif);
   letter-spacing: .08em;
 }
+
+.settings-update-area {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-update-hint { font: 600 10px var(--font-body); white-space: nowrap; }
+.settings-update-hint--loading { color: #2776cf; }
+.settings-update-hint--success { color: #378c0b; }
+.settings-update-hint--error { color: var(--danger); }
+.settings-update-hint--neutral { color: var(--ink-faint); }
+
+.settings-update-button {
+  padding: 8px 11px;
+  border: 1px solid var(--ink);
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  letter-spacing: .04em;
+}
+
+.settings-update-button:hover { background: #3d423f; color: #fff; }
+.settings-update-button:disabled { cursor: wait; opacity: .58; }
 
 .settings-back {
   display: grid;
@@ -297,6 +407,8 @@ onUnmounted(() => {
   border-radius: 14px;
   background: linear-gradient(135deg, rgba(255, 255, 255, .52), rgba(239, 241, 236, .5));
 }
+
+.system-settings-panel { display: grid; gap: 8px; }
 
 .system-startup-display > span { display: grid; min-width: 0; flex: 1; gap: 2px; }
 .system-startup-display strong { color: var(--ink); font: 600 11px var(--font-body); letter-spacing: .04em; }

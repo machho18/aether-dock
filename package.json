@@ -21,8 +21,16 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "machho18",
+        "repo": "aether-dock"
+      }
+    ],
     "win": {
       "target": "nsis",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
       "icon": "electron/assets/tray-icon.ico"
     },
     "nsis": {
@@ -34,6 +42,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.12",
     "@vueuse/core": "^13.7.0",
+    "electron-updater": "^6.8.9",
     "lottie-web": "^5.13.0",
     "tailwindcss": "^4.1.12",
     "vue": "^3.5.18"

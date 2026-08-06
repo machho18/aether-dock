@@ -10,6 +10,7 @@ const os = require('node:os')
 const path = require('node:path')
 const fsp = require('node:fs/promises')
 const { promisify } = require('node:util')
+const { autoUpdater } = require('electron-updater')
 const { createLibrary } = require('./ziliaoku.cjs')
 const { ipcTongdao } = require('./ipc.cjs')
 
@@ -38,12 +39,26 @@ let tupianThumbnailHuodongRenwu = 0
 let tupianThumbnailRenwuXuhao = 0
 let isHeavyTasksPaused = false
 let isXuanfuqiuMoshi = false
+let isGengxinDialogShowing = false
+let isAutoUpdaterInitialized = false
+let appGengxinInfo = {
+  hasUpdate: false,
+  latestVersion: '',
+  isChecking: false,
+  isChecked: false,
+  isDownloading: false,
+  downloadPercent: 0,
+  isDownloaded: false,
+  errorMessage: '',
+}
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 const startupWindowSize = { width: 360, height: 360 }
 const shouqikouWindowSize = { width: 226, height: 64 }
 const shouqikouMargin = 24
 const maxRemoteFileBytes = 100 * 1024 * 1024
+const githubReleaseApiUrl = 'https://api.github.com/repos/machho18/aether-dock/releases/latest'
+const githubReleasePageUrl = 'https://github.com/machho18/aether-dock/releases/latest'
 const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
 const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
@@ -369,7 +384,7 @@ function huoquAppInfo() {
     } catch {}
   }
   const autoLaunchUnavailableReason = autoLaunchSupported ? '' : app.isPackaged ? 'platform' : 'development'
-  return { version: app.getVersion(), autoLaunchSupported, autoLaunchEnabled, autoLaunchUnavailableReason }
+  return { version: app.getVersion(), autoLaunchSupported, autoLaunchEnabled, autoLaunchUnavailableReason, appGengxinInfo }
 }
 
 function shezhiAutoLaunch(enabled) {
@@ -380,6 +395,169 @@ function shezhiAutoLaunch(enabled) {
   } catch {
     return { chenggong: false, ...huoquAppInfo() }
   }
+}
+
+// 缓存启动检查结果，并同步给已打开的设置页显示版本提示。
+function gengxinAppGengxinInfo(info) {
+  appGengxinInfo = { ...appGengxinInfo, ...info }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.appUpdateInfoChanged, appGengxinInfo)
+}
+
+// 将 Release 标签规范为可比较的三段版本号，仅接受正式发布版本。
+function jiexianAppVersion(rawVersion) {
+  const version = String(rawVersion ?? '').trim().replace(/^v/i, '')
+  const matched = version.match(/^(\d+)\.(\d+)\.(\d+)$/)
+  if (!matched) return null
+  return matched.slice(1).map(Number)
+}
+
+function panduanAppVersionGengxin(latestVersion, currentVersion) {
+  const latestParts = jiexianAppVersion(latestVersion)
+  const currentParts = jiexianAppVersion(currentVersion)
+  if (!latestParts || !currentParts) return false
+  for (let index = 0; index < latestParts.length; index += 1) {
+    if (latestParts[index] !== currentParts[index]) return latestParts[index] > currentParts[index]
+  }
+  return false
+}
+
+// 仅请求固定的 GitHub Release 接口，避免更新检查引入可控的外部跳转。
+function qingqiuGithubLatestRelease() {
+  return new Promise((resolve, reject) => {
+    const request = https.get(githubReleaseApiUrl, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `AetherDock/${app.getVersion()}`,
+      },
+      timeout: 10000,
+    }, (response) => {
+      const chunks = []
+      let totalLength = 0
+      response.on('data', (chunk) => {
+        totalLength += chunk.length
+        if (totalLength > 1024 * 1024) {
+          response.destroy(new Error('更新信息过大'))
+          return
+        }
+        chunks.push(chunk)
+      })
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`更新服务暂不可用 (${response.statusCode || 0})`))
+          return
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+        } catch {
+          reject(new Error('更新信息格式无效'))
+        }
+      })
+      response.on('error', reject)
+    })
+    request.on('timeout', () => request.destroy(new Error('更新检查超时')))
+    request.on('error', reject)
+  })
+}
+
+function huoquSafeReleaseUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    const expectedPath = '/machho18/aether-dock/releases/tag/'
+    return url.protocol === 'https:' && url.hostname === 'github.com' && url.pathname.startsWith(expectedPath)
+      ? url.toString()
+      : githubReleasePageUrl
+  } catch {
+    return githubReleasePageUrl
+  }
+}
+
+// 开发环境仍可验证 GitHub Release 的版本信息，安装版使用自动更新器完成下载与安装。
+async function jianchaGithubAppGengxin() {
+  const currentVersion = app.getVersion()
+  gengxinAppGengxinInfo({ isChecking: true, isChecked: false, isDownloading: false, downloadPercent: 0, isDownloaded: false, errorMessage: '' })
+  try {
+    const release = await qingqiuGithubLatestRelease()
+    const latestVersion = String(release?.tag_name ?? '').trim().replace(/^v/i, '')
+    if (!jiexianAppVersion(latestVersion)) {
+      gengxinAppGengxinInfo({ hasUpdate: false, latestVersion: '', isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '未获取到有效的正式版本' })
+      return { chenggong: false, xiaoxi: '未获取到有效的正式版本' }
+    }
+    const hasUpdate = panduanAppVersionGengxin(latestVersion, currentVersion)
+    gengxinAppGengxinInfo({ hasUpdate, latestVersion, isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '' })
+    return {
+      chenggong: true,
+      hasUpdate,
+      currentVersion,
+      latestVersion,
+      releaseUrl: huoquSafeReleaseUrl(release?.html_url),
+    }
+  } catch {
+    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '无法连接更新服务，请检查网络后重试' })
+    return { chenggong: false, xiaoxi: '暂时无法连接更新服务，请稍后重试' }
+  }
+}
+
+// 安装版检查更新后自动下载，下载完成时由用户确认是否立即重启安装。
+async function jianchaAppGengxin() {
+  if (isKaifaHuanjing) return jianchaGithubAppGengxin()
+  gengxinAppGengxinInfo({ isChecking: true, isChecked: false, isDownloading: false, downloadPercent: 0, isDownloaded: false, errorMessage: '' })
+  try {
+    autoUpdater.autoDownload = true
+    const updateResult = await autoUpdater.checkForUpdates()
+    const latestVersion = String(updateResult?.updateInfo?.version ?? '').trim()
+    if (!jiexianAppVersion(latestVersion)) {
+      gengxinAppGengxinInfo({ hasUpdate: false, latestVersion: '', isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '未获取到有效的正式版本' })
+      return { chenggong: false, xiaoxi: '未获取到有效的正式版本' }
+    }
+    const hasUpdate = panduanAppVersionGengxin(latestVersion, app.getVersion())
+    gengxinAppGengxinInfo({ hasUpdate, latestVersion, isChecking: false, isChecked: true, isDownloading: hasUpdate, downloadPercent: 0, errorMessage: '' })
+    return {
+      chenggong: true,
+      hasUpdate,
+      currentVersion: app.getVersion(),
+      latestVersion,
+      autoDownload: true,
+    }
+  } catch {
+    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '检查更新失败，请检查网络后重试' })
+    return { chenggong: false, xiaoxi: '暂时无法连接更新服务，请稍后重试' }
+  }
+}
+
+async function tishiGengxinDownloadWancheng(updateInfo) {
+  if (isGengxinDialogShowing) return
+  isGengxinDialogShowing = true
+  try {
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '更新已下载',
+      message: `AetherDock ${updateInfo.version} 已准备就绪`,
+      detail: '更新将在退出应用时自动安装，也可以现在重启完成更新。',
+      buttons: ['稍后', '立即重启更新'],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+    })
+    if (response === 1) autoUpdater.quitAndInstall(false, true)
+  } finally {
+    isGengxinDialogShowing = false
+  }
+}
+
+// 自动更新器仅在安装版启用，开发调试不会下载或覆盖本地应用。
+function chushihuaAutoUpdater() {
+  if (isKaifaHuanjing || isAutoUpdaterInitialized) return
+  isAutoUpdaterInitialized = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('download-progress', (progress) => {
+    gengxinAppGengxinInfo({ isDownloading: true, downloadPercent: Math.round(progress.percent), isDownloaded: false, errorMessage: '' })
+  })
+  autoUpdater.on('update-downloaded', (updateInfo) => {
+    gengxinAppGengxinInfo({ isDownloading: false, downloadPercent: 100, isDownloaded: true, errorMessage: '' })
+    void tishiGengxinDownloadWancheng(updateInfo)
+  })
+  autoUpdater.on('error', () => gengxinAppGengxinInfo({ isDownloading: false, errorMessage: '下载失败，请检查网络后重试' }))
 }
 
 async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
@@ -1378,6 +1556,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
   ipcMain.handle(ipcTongdao.getAppInfo, () => huoquAppInfo())
+  ipcMain.handle(ipcTongdao.checkAppUpdate, jianchaAppGengxin)
+  ipcMain.handle(ipcTongdao.openAppRelease, (_, url) => shell.openExternal(huoquSafeReleaseUrl(url)))
   ipcMain.handle(ipcTongdao.setAutoLaunch, (_, enabled) => {
     if (typeof enabled !== 'boolean') return { chenggong: false, ...huoquAppInfo() }
     return shezhiAutoLaunch(enabled)
@@ -1607,6 +1787,8 @@ app.whenReady().then(async () => {
   createMainWindow()
   createXuanfuqiuWindow()
   createStartupWindow()
+  chushihuaAutoUpdater()
+  setTimeout(() => { void jianchaGithubAppGengxin() }, 5000).unref()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
