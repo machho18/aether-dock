@@ -97,7 +97,7 @@ npm run package
 
 ## 参与贡献
 
-欢迎提交 Issue 和 Pull Request。请从当前稳定主干 `master` 创建 `feat/xxx` 或 `fix/xxx` 分支，完成后通过 Pull Request 合并。
+欢迎提交 Issue 和 Pull Request。请从当前稳定主干 `master` 创建 `feat/xxx` 或 `fix/xxx` 分支，完成后通过 Pull Request 合并。具体流程见 [贡献指南](./CONTRIBUTING.md)，安全问题请遵循 [安全策略](./SECURITY.md)。
 
 在提交前请至少执行：
 
@@ -108,4 +108,4 @@ npm audit
 
 ## License
 
-本仓库当前尚未附带开源许可证。正式公开前，请添加 `LICENSE` 文件并明确采用的许可证；在此之前，请勿默认认为可以自由复制、修改或分发本项目。
+本项目采用 [MIT License](./LICENSE) 开源。

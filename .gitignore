@@ -29,6 +29,11 @@ pnpm-debug.log*
 # Markdown 文档
 *.md
 !README.md
+!CONTRIBUTING.md
+!SECURITY.md
+!CODE_OF_CONDUCT.md
+!PRIVACY.md
+!.github/PULL_REQUEST_TEMPLATE.md
 
 # 本地环境与密钥配置
 .env

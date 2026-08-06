@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题
+    url: https://github.com/machho18/aether-dock/security/advisories
+    about: 请使用私密安全报告，不要公开漏洞细节。
