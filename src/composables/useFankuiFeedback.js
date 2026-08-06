@@ -7,8 +7,11 @@ const chushiConfirm = {
   message: '',
   detail: '',
   confirmText: '确定',
+  alternativeText: '',
   cancelText: '取消',
+  showAlternative: false,
   showCancel: true,
+  compact: false,
   tone: 'default',
 }
 
@@ -17,6 +20,7 @@ export function useFankuiFeedback() {
   const toastState = shallowRef({ visible: false, text: '', type: 'info' })
   const confirmState = shallowRef({ ...chushiConfirm })
   let pendingAction = null
+  let pendingAlternativeAction = null
 
   const { start: chongqiToastTimer, stop: tingzhiToastTimer } = useTimeoutFn(
     () => {
@@ -32,24 +36,35 @@ export function useFankuiFeedback() {
     chongqiToastTimer()
   }
 
-  function qingqiuConfirm(options, action) {
+  function qingqiuConfirm(options, action, alternativeAction) {
     confirmState.value = {
       ...chushiConfirm,
       ...options,
       visible: true,
     }
     pendingAction = action ?? null
+    pendingAlternativeAction = alternativeAction ?? null
   }
 
   function guanbiConfirm() {
     confirmState.value = { ...confirmState.value, visible: false }
     pendingAction = null
+    pendingAlternativeAction = null
   }
 
   async function querenAction() {
     confirmState.value = { ...confirmState.value, visible: false }
     const action = pendingAction
     pendingAction = null
+    pendingAlternativeAction = null
+    await action?.()
+  }
+
+  async function zhixingAlternativeAction() {
+    confirmState.value = { ...confirmState.value, visible: false }
+    const action = pendingAlternativeAction
+    pendingAction = null
+    pendingAlternativeAction = null
     await action?.()
   }
 
@@ -60,5 +75,6 @@ export function useFankuiFeedback() {
     qingqiuConfirm,
     guanbiConfirm,
     querenAction,
+    zhixingAlternativeAction,
   }
 }

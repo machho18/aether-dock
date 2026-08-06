@@ -243,11 +243,11 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     return libraryRefreshPromise
   }
 
-  async function xuanzeLibraryRootdir() {
+  async function xuanzeLibraryRootdir(mode = 'migrate') {
     if (isLibraryRootMigrating.value) return false
     isLibraryRootMigrating.value = true
     try {
-      const result = await huoquBridge()?.selectLibraryRootdir()
+      const result = await huoquBridge()?.selectLibraryRootdir(mode)
       if (result?.quxiao) return false
       if (!result?.chenggong || !result.config) {
         xianshiToast(result?.xiaoxi || '资料库迁移失败', 'error')
@@ -288,6 +288,12 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
             items: migration.missingItems,
           })
         }
+      } else if (migration.kind === 'switched') {
+        const details = ['已切换至新资料库 · 旧资料库未迁移']
+        if (migration.rebuilt) details.push(`已识别 ${migration.rebuilt} 项已有内容`)
+        if (migration.skipped) details.push(`跳过 ${migration.skipped} 个无法识别的文件`)
+        if (refreshWarning) details.push('索引将在稍后刷新')
+        xianshiToast(details.join(' · '), refreshWarning ? 'info' : 'success')
       } else if (migration.kind === 'initialized' && migration.rebuilt) {
         const details = [`已恢复资料库索引 · ${migration.rebuilt} 项`]
         if (migration.skipped) details.push(`跳过 ${migration.skipped} 个无法识别的文件`)

@@ -415,7 +415,42 @@ function createLibrary(dbPath) {
     }
   }
 
-  async function setRootdir(rootdir) {
+  // 切换资料库时保留旧库文件和索引，仅将后续受管内容写入新资料库。
+  async function qiehuanXinZiliaoku(targetRootdir) {
+    const target = await prepareLibraryTarget(targetRootdir)
+    try {
+      const saomiaoResult = await saomiaoXianyouManagedFiles(target.config)
+      const timestamp = Date.now()
+      runTransaction(() => {
+        writeSettingStmt.run('ziliaoKuGenMulu', target.config.rootdir, timestamp)
+        writeSettingStmt.run('ziliaoKuId', target.config.libraryId, timestamp)
+        for (const item of saomiaoResult.items) {
+          if (findManagedItemByRelativePathStmt.get(item.libraryId, item.relativePath)) continue
+          insertItemStmt.run(
+            item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath,
+            item.libraryId, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize,
+            item.createdAt, item.updatedAt,
+          )
+        }
+      })
+      managedSnapshotDirty = true
+      invalidateAllImageThumbnails = true
+      startManagedWatchers(target.config)
+      return {
+        config: target.config,
+        migration: {
+          kind: 'switched', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0,
+          rebuilt: saomiaoResult.items.length, skipped: saomiaoResult.skipped,
+        },
+      }
+    } catch (error) {
+      if (target.createdMarker) await fsp.rm(target.markerPath, { force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  async function setRootdir(rootdir, mode = 'migrate') {
+    if (!['migrate', 'new'].includes(mode)) throw createMigrationError('invalid_mode', '不支持的资料库切换方式')
     await beginManagedMigration()
     const createdFiles = []
     let target = null
@@ -452,20 +487,26 @@ function createLibrary(dbPath) {
         }
       }
 
-      if (!(await validateLibraryConfig(sourceConfig))) throw createMigrationError('source_unavailable', '原资料库目录暂时不可用')
-      const [sourceRealPath, targetRealPath] = await Promise.all([
-        fsp.realpath(sourceConfig.rootdir),
-        fsp.mkdir(resolvedTarget, { recursive: true }).then(() => fsp.realpath(resolvedTarget)),
-      ])
-      if (process.platform === 'win32' ? sourceRealPath.toLowerCase() === targetRealPath.toLowerCase() : sourceRealPath === targetRealPath) {
+      if (mode === 'migrate' && !(await validateLibraryConfig(sourceConfig))) {
+        throw createMigrationError('source_unavailable', '原资料库目录暂时不可用')
+      }
+      const targetRealPath = await fsp.mkdir(resolvedTarget, { recursive: true }).then(() => fsp.realpath(resolvedTarget))
+      let sourceRealPath = ''
+      try {
+        sourceRealPath = await fsp.realpath(sourceConfig.rootdir)
+      } catch (error) {
+        if (mode === 'migrate') throw createMigrationError('source_unavailable', '原资料库目录暂时不可用')
+      }
+      if (sourceRealPath && (process.platform === 'win32' ? sourceRealPath.toLowerCase() === targetRealPath.toLowerCase() : sourceRealPath === targetRealPath)) {
         return { config: sourceConfig, migration: { kind: 'noop', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0 } }
       }
-      if (pathsOverlap(sourceRealPath, targetRealPath) || pathsOverlap(targetRealPath, sourceRealPath)) {
+      if (sourceRealPath && (pathsOverlap(sourceRealPath, targetRealPath) || pathsOverlap(targetRealPath, sourceRealPath))) {
         throw createMigrationError('invalid_target', '新旧资料库目录不能互相嵌套')
       }
 
       closeManagedWatchers()
       managedRootGeneration += 1
+      if (mode === 'new') return await qiehuanXinZiliaoku(targetRealPath)
       target = await prepareLibraryTarget(targetRealPath, sourceConfig.libraryId)
       const items = readManagedItemsStmt.all(sourceConfig.libraryId)
       const migratedFiles = []

@@ -102,10 +102,14 @@
             :message="confirmState.message"
             :detail="confirmState.detail"
             :confirm-text="confirmState.confirmText"
+            :alternative-text="confirmState.alternativeText"
             :cancel-text="confirmState.cancelText"
+            :show-alternative="confirmState.showAlternative"
             :show-cancel="confirmState.showCancel"
+            :compact="confirmState.compact"
             :tone="confirmState.tone"
             @confirm="querenAction"
+            @alternative="zhixingAlternativeAction"
             @cancel="guanbiConfirm"
           />
         </div>
@@ -153,6 +157,7 @@ const {
   qingqiuConfirm,
   guanbiConfirm,
   querenAction,
+  zhixingAlternativeAction,
 } = useFankuiFeedback()
 
 const {
@@ -360,13 +365,16 @@ function qingqiuMigrateLibrary() {
   }
   qingqiuConfirm({
     title: '更换资料库目录',
-    message: '当前资料库中的图片和文档将迁移到新目录。',
-    detail: '系统会先复制并校验全部资源，确认迁移成功后才清理旧目录。\n迁移失败、文件冲突或目标目录不可用时，原资料库和文件不会被删除。\n迁移期间请勿关闭应用或手动修改新旧目录。',
-    confirmText: '选择新目录',
+    message: '请选择更换方式。默认新建资料库，不会移动现有内容。',
+    detail: '新建资料库：旧资料库保持不变，后续内容保存到新目录。\n迁移资料库：先复制并校验资源，成功后再清理旧目录。\n两种方式都不会在失败时删除旧资料。',
+    confirmText: '新建，不迁移',
+    alternativeText: '迁移资料库',
     cancelText: '取消',
     showCancel: true,
+    showAlternative: true,
+    compact: true,
     tone: 'default',
-  }, () => xuanzeLibraryRootdir())
+  }, () => xuanzeLibraryRootdir('new'), () => xuanzeLibraryRootdir('migrate'))
 }
 
 function gengxinMousePassthrough(event) {
