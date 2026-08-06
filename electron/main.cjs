@@ -1582,8 +1582,8 @@ app.whenReady().then(async () => {
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
   })
-  // 选择资料库根目录，并在新索引中恢复现有受管文件。
-  ipcMain.handle(ipcTongdao.selectLibraryRootdir, async () => {
+  // 选择资料库根目录，并按用户选择迁移或建立独立资料库。
+  ipcMain.handle(ipcTongdao.selectLibraryRootdir, async (_, mode = 'migrate') => {
     if (libraryRootMigrationPromise) {
       return { quxiao: false, chenggong: false, code: 'migration_busy', xiaoxi: '资料库正在迁移' }
     }
@@ -1594,7 +1594,7 @@ app.whenReady().then(async () => {
       })
       if (result.canceled || !result.filePaths[0]) return { quxiao: true }
       try {
-        const migrationResult = await library.setRootdir(result.filePaths[0])
+        const migrationResult = await library.setRootdir(result.filePaths[0], mode)
         let reconciliationWarning = false
         try {
           await tongbuManagedLibraryFiles()
@@ -1611,6 +1611,7 @@ app.whenReady().then(async () => {
           unsafe_file: '资料库包含不安全的文件',
           copy_verification_failed: '资源复制校验失败',
           source_changed: '迁移期间资料库状态发生变化',
+          invalid_mode: '资料库切换方式无效',
         }
         return {
           quxiao: false,

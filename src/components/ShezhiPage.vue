@@ -52,7 +52,7 @@
         <div class="library-directory-display">
           <span>{{ rootdir || '尚未设置资料库目录' }}</span>
           <button type="button" :disabled="isRootdirMigrating" @click.stop="emit('select-rootdir')">
-            {{ isRootdirMigrating ? '正在迁移…' : rootdir ? '更换目录' : '选择目录' }}
+            {{ isRootdirMigrating ? '正在处理…' : rootdir ? '更换目录' : '选择目录' }}
           </button>
         </div>
       </section>

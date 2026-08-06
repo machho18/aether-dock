@@ -2,7 +2,7 @@
   <Transition name="confirm-fade">
     <div v-if="visible" class="confirm-overlay" @click.self="emit('cancel')">
       <Transition name="confirm-pop" appear>
-        <div v-if="visible" class="confirm-card" :class="`confirm-card--${tone}`" role="dialog" aria-modal="true" :aria-labelledby="titleId">
+        <div v-if="visible" class="confirm-card" :class="[`confirm-card--${tone}`, { 'confirm-card--compact': compact }]" role="dialog" aria-modal="true" :aria-labelledby="titleId">
           <div class="confirm-head">
             <span class="confirm-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" stroke-linecap="round">
@@ -17,6 +17,7 @@
           <p v-if="detail" class="confirm-detail">{{ detail }}</p>
           <div class="confirm-actions">
             <button v-if="showCancel" class="confirm-btn confirm-btn--ghost" type="button" @click="emit('cancel')">{{ cancelText }}</button>
+            <button v-if="showAlternative" class="confirm-btn confirm-btn--alternative" type="button" @click="emit('alternative')">{{ alternativeText }}</button>
             <button class="confirm-btn confirm-btn--solid" :class="`confirm-btn--${tone}`" type="button" @click="emit('confirm')">{{ confirmText }}</button>
           </div>
         </div>
@@ -35,12 +36,15 @@ const props = defineProps({
   message: { type: String, default: '' },
   detail: { type: String, default: '' },
   confirmText: { type: String, default: '确定' },
+  alternativeText: { type: String, default: '' },
   cancelText: { type: String, default: '取消' },
+  showAlternative: { type: Boolean, default: false },
   showCancel: { type: Boolean, default: true },
+  compact: { type: Boolean, default: false },
   tone: { type: String, default: 'default' },
 })
 
-const emit = defineEmits(['confirm', 'cancel'])
+const emit = defineEmits(['confirm', 'alternative', 'cancel'])
 const titleId = `confirm-${useId()}`
 
 // 键盘确认与取消由组件统一处理，并由 VueUse 自动清理监听器。
@@ -83,6 +87,17 @@ useEventListener(window, 'keydown', (event) => {
   box-shadow: 0 0 0 1px rgba(24, 12, 13, .9), 0 0 0 4px rgba(232, 93, 93, .12), inset 0 1px rgba(255, 220, 220, .18), inset 0 -16px 26px rgba(0, 0, 0, .38), 0 24px 60px rgba(0, 0, 0, .5);
 }
 
+/* 三按钮选择弹窗压缩排版，避免资料库切换时的按钮与文字拥挤。 */
+.confirm-card--compact { width: min(392px, calc(100% - 32px)); padding: 18px 20px 17px; }
+.confirm-card--compact .confirm-head { gap: 9px; margin-bottom: 10px; }
+.confirm-card--compact .confirm-icon { width: 27px; height: 27px; }
+.confirm-card--compact .confirm-icon svg { width: 15px; height: 15px; }
+.confirm-card--compact .confirm-title { font-size: 15px; }
+.confirm-card--compact .confirm-message { margin-bottom: 5px; font-size: 13px; }
+.confirm-card--compact .confirm-detail { max-height: 126px; margin-bottom: 14px; font-size: 11px; }
+.confirm-card--compact .confirm-actions { gap: 7px; margin-top: 14px; }
+.confirm-card--compact .confirm-btn { min-width: 66px; padding: 8px 10px; font-size: 12px; }
+
 .confirm-head { display: flex; min-width: 0; align-items: center; gap: 11px; margin-bottom: 14px; }
 .confirm-icon { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid rgba(99, 254, 19, .34); border-radius: 9px; color: var(--accent); }
 .confirm-card--danger .confirm-icon { border-color: rgba(232, 93, 93, .48); color: var(--danger); }
@@ -106,6 +121,8 @@ useEventListener(window, 'keydown', (event) => {
 
 .confirm-btn--ghost { border-color: rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .04); color: var(--text-on-ink-muted); }
 .confirm-btn--ghost:hover { border-color: rgba(255, 255, 255, .34); background: rgba(255, 255, 255, .08); }
+.confirm-btn--alternative { border-color: rgba(153, 208, 255, .46); background: rgba(91, 188, 255, .1); color: #c8e8ff; }
+.confirm-btn--alternative:hover { border-color: rgba(153, 208, 255, .76); background: rgba(91, 188, 255, .18); }
 .confirm-btn--solid { border-color: rgba(99, 254, 19, .72); background: linear-gradient(145deg, var(--accent-soft), var(--accent)); color: var(--ink-deep); box-shadow: inset 0 1px rgba(255, 255, 255, .38), 0 6px 16px rgba(33, 140, 0, .28); }
 .confirm-btn--default:hover { transform: translateY(-1px); box-shadow: inset 0 1px rgba(255, 255, 255, .48), 0 8px 20px rgba(33, 140, 0, .38); }
 .confirm-btn--danger { border-color: rgba(232, 93, 93, .7); background: linear-gradient(145deg, var(--danger), var(--danger-deep)); color: rgba(255, 245, 245, .98); box-shadow: inset 0 1px rgba(255, 200, 200, .3), 0 6px 16px rgba(182, 50, 50, .34); }
