@@ -78,7 +78,7 @@ contextBridge.exposeInMainWorld('aetherDock', {
   moveFloatingIsland: (position) => ipcRenderer.invoke(ipcTongdao.moveFloatingIsland, position),
   completeStartup: () => ipcRenderer.invoke(ipcTongdao.completeStartup),
   setHeavyTasksPaused: (paused) => ipcRenderer.invoke(ipcTongdao.setHeavyTasksPaused, paused),
-  selectLibraryRootdir: () => ipcRenderer.invoke(ipcTongdao.selectLibraryRootdir),
+  selectLibraryRootdir: (mode) => ipcRenderer.invoke(ipcTongdao.selectLibraryRootdir, mode),
   getLibraryConfig: () => ipcRenderer.invoke(ipcTongdao.getLibraryConfig),
   getCollapsedAnimation: () => ipcRenderer.invoke(ipcTongdao.getCollapsedAnimation),
   setCollapsedAnimation: (animation) => ipcRenderer.invoke(ipcTongdao.setCollapsedAnimation, animation),
