@@ -1,0 +1,35 @@
+name: 验证
+
+# 在合并前验证依赖安装、生产构建与高危漏洞状态。
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 构建与审计
+    runs-on: windows-latest
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建检查
+        run: npm run build
+
+      - name: 安全审计
+        run: npm audit --audit-level=high
