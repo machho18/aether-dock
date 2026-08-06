@@ -288,6 +288,11 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
             items: migration.missingItems,
           })
         }
+      } else if (migration.kind === 'initialized' && migration.rebuilt) {
+        const details = [`已恢复资料库索引 · ${migration.rebuilt} 项`]
+        if (migration.skipped) details.push(`跳过 ${migration.skipped} 个无法识别的文件`)
+        if (refreshWarning) details.push('索引将在稍后刷新')
+        xianshiToast(details.join(' · '), refreshWarning ? 'info' : 'success')
       } else {
         xianshiToast(refreshWarning ? '资料库目录已设置 · 索引将在稍后刷新' : '资料库目录已设置', refreshWarning ? 'info' : 'success')
       }

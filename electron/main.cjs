@@ -1402,14 +1402,14 @@ app.whenReady().then(async () => {
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
   })
-  // 选择资料库根目录，并创建必要的目录标记
+  // 选择资料库根目录，并在新索引中恢复现有受管文件。
   ipcMain.handle(ipcTongdao.selectLibraryRootdir, async () => {
     if (libraryRootMigrationPromise) {
       return { quxiao: false, chenggong: false, code: 'migration_busy', xiaoxi: '资料库正在迁移' }
     }
     libraryRootMigrationPromise = (async () => {
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: '选择并迁移 AetherDock 资料库',
+        title: '选择 AetherDock 资料库',
         properties: ['openDirectory', 'createDirectory'],
       })
       if (result.canceled || !result.filePaths[0]) return { quxiao: true }

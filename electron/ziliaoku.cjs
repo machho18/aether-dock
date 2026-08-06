@@ -159,6 +159,7 @@ function createLibrary(dbPath) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
   `)
   const findItemBySourceStmt = db.prepare("SELECT * FROM items WHERE sourcePath = ? AND storageMode = 'managed' AND libraryId = ? LIMIT 1")
+  const findManagedItemByRelativePathStmt = db.prepare("SELECT id FROM items WHERE storageMode = 'managed' AND libraryId = ? AND relativePath = ? COLLATE NOCASE LIMIT 1")
   const findItemByUrlStmt = db.prepare("SELECT * FROM items WHERE normalizedUrl = ? AND (storageMode != 'managed' OR libraryId = ?) ORDER BY storageMode = 'bookmark' DESC LIMIT 1")
   const insertItemStmt = db.prepare(`
     INSERT INTO items (id, type, storageMode, title, sourcePath, relativePath, libraryId, sourceUrl, normalizedUrl, mimeType, byteSize, status, createdAt, updatedAt)
@@ -423,13 +424,32 @@ function createLibrary(dbPath) {
       const resolvedTarget = path.resolve(rootdir)
       if (!sourceConfig.rootdir || !sourceConfig.libraryId) {
         target = await prepareLibraryTarget(resolvedTarget)
+        const saomiaoResult = await saomiaoXianyouManagedFiles(target.config)
         const timestamp = Date.now()
         runTransaction(() => {
           writeSettingStmt.run('ziliaoKuGenMulu', target.config.rootdir, timestamp)
           writeSettingStmt.run('ziliaoKuId', target.config.libraryId, timestamp)
+          for (const item of saomiaoResult.items) {
+            if (findManagedItemByRelativePathStmt.get(item.libraryId, item.relativePath)) continue
+            insertItemStmt.run(
+              item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath,
+              item.libraryId, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize,
+              item.createdAt, item.updatedAt,
+            )
+          }
         })
+        if (saomiaoResult.items.length) {
+          managedSnapshotDirty = true
+          invalidateAllImageThumbnails = true
+        }
         startManagedWatchers(target.config)
-        return { config: target.config, migration: { kind: 'initialized', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0 } }
+        return {
+          config: target.config,
+          migration: {
+            kind: 'initialized', copied: 0, reused: 0, missing: 0, missingItems: [], cleanupWarnings: 0,
+            rebuilt: saomiaoResult.items.length, skipped: saomiaoResult.skipped,
+          },
+        }
       }
 
       if (!(await validateLibraryConfig(sourceConfig))) throw createMigrationError('source_unavailable', '原资料库目录暂时不可用')
@@ -584,6 +604,57 @@ function createLibrary(dbPath) {
     if (file.type?.startsWith('image/') || imageExts.has(ext)) return { type: 'image', mimeType: file.type || null }
     if (documentExts.has(ext)) return { type: 'document', mimeType: file.type || null }
     return null
+  }
+
+  // 新数据库连接既有资料库时，仅扫描受管目录中的常规文件并重建可恢复索引。
+  async function saomiaoXianyouManagedFiles(config) {
+    const items = []
+    let skipped = 0
+    for (const [type, directory] of Object.entries(managedCategoryDirs)) {
+      const directoryPath = path.join(config.rootdir, directory)
+      const entries = await fsp.readdir(directoryPath, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isFile()) {
+          skipped += 1
+          continue
+        }
+        const filePath = path.join(directoryPath, entry.name)
+        let stat
+        let sourcePath
+        try {
+          ;[stat, sourcePath] = await Promise.all([fsp.stat(filePath), fsp.realpath(filePath)])
+        } catch {
+          skipped += 1
+          continue
+        }
+        if (!stat.isFile()) {
+          skipped += 1
+          continue
+        }
+        const classification = classifyLocalFile({ name: entry.name })
+        if (!classification || classification.type !== type) {
+          skipped += 1
+          continue
+        }
+        const updatedAt = Math.max(0, Math.round(stat.mtimeMs || Date.now()))
+        items.push({
+          id: randomUUID(),
+          type,
+          storageMode: 'managed',
+          title: entry.name,
+          sourcePath,
+          relativePath: path.join(directory, entry.name),
+          libraryId: config.libraryId,
+          sourceUrl: null,
+          normalizedUrl: null,
+          mimeType: classification.mimeType,
+          byteSize: stat.size,
+          createdAt: Math.max(0, Math.round(stat.birthtimeMs || updatedAt)),
+          updatedAt,
+        })
+      }
+    }
+    return { items, skipped }
   }
 
   // 生成资源管理器中可辨认且不会冲突的受管文件名
