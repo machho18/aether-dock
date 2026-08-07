@@ -1624,7 +1624,25 @@ function createStartupWindow() {
   })
 }
 
-app.whenReady().then(async () => {
+// 唤起已有窗口，避免桌面快捷方式重复启动多个灵动岛进程。
+function jihuoYiyouLingdongdaoWindow() {
+  if (startupWindow && !startupWindow.isDestroyed()) {
+    startupWindow.show()
+    startupWindow.focus()
+    return
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (isXuanfuqiuMoshi) {
+    void qiehuanXuanfuqiuMoshi(false).then(() => mainWindow?.focus())
+    return
+  }
+  positionMainWindow()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+async function chushihuaYingyong() {
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   // 开发与生产使用独立数据库，调试数据不会影响已安装应用的资料库。
   library = createLibrary(path.join(app.getPath('userData'), ziliaokuDbFilename))
@@ -1912,7 +1930,16 @@ app.whenReady().then(async () => {
       createStartupWindow()
     }
   })
-})
+}
+
+// 同一用户仅保留一个进程，后续启动请求交由已有进程处理。
+const hasDanliYingyongLock = app.requestSingleInstanceLock()
+if (!hasDanliYingyongLock) {
+  app.quit()
+} else {
+  app.on('second-instance', jihuoYiyouLingdongdaoWindow)
+  app.whenReady().then(chushihuaYingyong)
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

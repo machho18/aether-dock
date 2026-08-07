@@ -332,7 +332,8 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
       })
       const addedItems = result?.added ?? []
       if (!addedItems.length) {
-        xianshiToast('未发现可导入的新内容', 'info')
+        const duplicateCount = result?.duplicates?.length ?? 0
+        xianshiToast(duplicateCount ? `资源已存在 · ${duplicateCount} 项` : '未发现可导入的新内容', 'info')
         return []
       }
       libraryStateGeneration += 1
