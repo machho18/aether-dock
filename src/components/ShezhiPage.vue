@@ -7,7 +7,12 @@
         <h2>灵动配置</h2>
       </div>
       <div class="settings-update-area">
-        <small v-if="updateHint" class="settings-update-hint" :class="`settings-update-hint--${updateHintStatus}`">{{ updateHint }}</small>
+        <small
+          v-if="updateHint"
+          class="settings-update-hint"
+          :class="`settings-update-hint--${updateHintStatus}`"
+          :style="updateHintStatus === 'neutral' ? { color: '#ff8a00' } : undefined"
+        >{{ updateHint }}</small>
         <button
           class="settings-update-button"
           type="button"
@@ -15,7 +20,11 @@
           :title="updateDescription"
           @click.stop="jianchaAppGengxin"
         >
-          {{ isCheckingUpdate ? '检查中…' : isUpdateDownloading ? `下载 ${downloadPercent}%` : '检查更新' }}
+          <span v-if="isCheckingUpdate" class="settings-update-loading">
+            检查中
+            <span class="settings-update-loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </span>
+          <span v-else>{{ isUpdateDownloading ? `下载 ${downloadPercent}%` : '检查更新' }}</span>
         </button>
       </div>
     </header>
@@ -124,9 +133,8 @@ const autoLaunchDescription = computed(() => {
 })
 
 const updateHint = computed(() => {
-  if (isCheckingUpdate.value) return '正在检查新版本'
-  if (isUpdateDownloading.value) return `正在下载 ${downloadPercent.value}%`
-  if (isUpdateDownloaded.value) return '更新已下载'
+  if (isCheckingUpdate.value || isUpdateDownloading.value) return ''
+  if (isUpdateDownloaded.value) return '更新已下载，退出应用后自动安装'
   if (updateErrorMessage.value) return updateErrorMessage.value
   if (hasUpdate.value) return `发现 V${latestVersion.value}，可更新`
   return isManualUpdateChecked.value ? '当前已是最新版本' : ''
@@ -161,6 +169,7 @@ function tongbuAppGengxinInfo(info) {
   isUpdateDownloaded.value = Boolean(info.isDownloaded)
   updateErrorMessage.value = info.errorMessage || ''
   if (info.isChecking) updateDescription.value = '正在检查新版本'
+  else if (info.isDownloaded) updateDescription.value = '更新已下载，退出应用后自动安装'
   else if (info.hasUpdate) updateDescription.value = `发现 V${info.latestVersion}，点击即可更新`
   else if (info.isChecked) updateDescription.value = '当前已是最新版本'
 }
@@ -288,7 +297,7 @@ onUnmounted(() => {
 .settings-update-hint--loading { color: #2776cf; }
 .settings-update-hint--success { color: #378c0b; }
 .settings-update-hint--error { color: var(--danger); }
-.settings-update-hint--neutral { color: var(--ink-faint); }
+.settings-update-hint--neutral { color: #ff8a00; }
 
 .settings-update-button {
   padding: 8px 11px;
@@ -303,6 +312,23 @@ onUnmounted(() => {
 
 .settings-update-button:hover { background: #3d423f; color: #fff; }
 .settings-update-button:disabled { cursor: wait; opacity: .58; }
+/* 检查状态在按钮内逐点循环，避免与左侧提示信息重复。 */
+.settings-update-loading,
+.settings-update-loading-dots { display: inline-flex; align-items: center; }
+.settings-update-loading { align-items: baseline; gap: 3px; }
+.settings-update-loading-dots { width: 10px; align-self: baseline; justify-content: space-between; }
+.settings-update-loading-dots i { width: 2px; height: 2px; border-radius: 50%; background: currentColor; animation: settings-update-dot 900ms ease-in-out infinite; }
+.settings-update-loading-dots i:nth-child(2) { animation-delay: 150ms; }
+.settings-update-loading-dots i:nth-child(3) { animation-delay: 300ms; }
+
+@keyframes settings-update-dot {
+  0%, 60%, 100% { opacity: .25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-update-loading-dots i { animation: none; opacity: 1; }
+}
 
 .settings-back {
   display: grid;
@@ -439,7 +465,7 @@ onUnmounted(() => {
   transition: transform 220ms var(--motion-easing);
 }
 
-.startup-switch--active { border-color: rgba(71, 190, 17, .58); background: var(--accent); box-shadow: 0 0 0 3px rgba(99, 254, 19, .09); }
+.startup-switch--active { border-color: var(--ink); background: var(--ink); box-shadow: 0 0 0 3px rgba(38, 38, 38, .09); }
 .startup-switch--active i { transform: translateX(16px); }
 .startup-switch:disabled { cursor: wait; opacity: .5; }
 
