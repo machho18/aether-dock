@@ -41,6 +41,8 @@ let isHeavyTasksPaused = false
 let isXuanfuqiuMoshi = false
 let isGengxinDialogShowing = false
 let isAutoUpdaterInitialized = false
+let zhengzaiGithubGengxinJianchaPromise = null
+let gengxinJianchaStateReadyPromise = null
 let appGengxinInfo = {
   hasUpdate: false,
   latestVersion: '',
@@ -59,6 +61,9 @@ const shouqikouMargin = 24
 const maxRemoteFileBytes = 100 * 1024 * 1024
 const githubReleaseApiUrl = 'https://api.github.com/repos/machho18/aether-dock/releases/latest'
 const githubReleasePageUrl = 'https://github.com/machho18/aether-dock/releases/latest'
+const gengxinZidongJianchaJiangeMs = 6 * 60 * 60 * 1000
+const gengxinXianliuBaodiDengdaiMs = 60 * 1000
+const gengxinJianchaState = { lastSuccessAt: 0, retryAt: 0 }
 const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
 const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
@@ -421,6 +426,86 @@ function panduanAppVersionGengxin(latestVersion, currentVersion) {
   return false
 }
 
+// 将更新检查状态保存在用户目录，应用重启后仍可避免重复请求 GitHub。
+function huoquGengxinJianchaStatePath() {
+  return path.join(app.getPath('userData'), 'update-check-state.json')
+}
+
+async function duquGengxinJianchaState() {
+  if (gengxinJianchaStateReadyPromise) return gengxinJianchaStateReadyPromise
+  gengxinJianchaStateReadyPromise = (async () => {
+    try {
+      const content = await fsp.readFile(huoquGengxinJianchaStatePath(), 'utf8')
+      const savedState = JSON.parse(content)
+      const lastSuccessAt = Number(savedState?.lastSuccessAt)
+      const retryAt = Number(savedState?.retryAt)
+      gengxinJianchaState.lastSuccessAt = Number.isFinite(lastSuccessAt) && lastSuccessAt > 0 ? lastSuccessAt : 0
+      gengxinJianchaState.retryAt = Number.isFinite(retryAt) && retryAt > 0 ? retryAt : 0
+    } catch {}
+  })()
+  return gengxinJianchaStateReadyPromise
+}
+
+async function baocunGengxinJianchaState() {
+  try {
+    await fsp.writeFile(huoquGengxinJianchaStatePath(), JSON.stringify(gengxinJianchaState), 'utf8')
+  } catch {}
+}
+
+async function jiluGengxinJianchaChenggong() {
+  await duquGengxinJianchaState()
+  gengxinJianchaState.lastSuccessAt = Date.now()
+  gengxinJianchaState.retryAt = 0
+  await baocunGengxinJianchaState()
+}
+
+async function jiluGengxinXianliu(retryAt) {
+  await duquGengxinJianchaState()
+  gengxinJianchaState.retryAt = Math.max(Date.now() + gengxinXianliuBaodiDengdaiMs, retryAt || 0)
+  await baocunGengxinJianchaState()
+}
+
+function huoquGengxinXianliuTishi(retryAt) {
+  const retryTime = new Date(retryAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return `更新服务请求过于频繁，请于 ${retryTime} 后再试`
+}
+
+async function panduanGengxinJianchaKeFouZhixing(shiShoudong) {
+  await duquGengxinJianchaState()
+  const now = Date.now()
+  if (gengxinJianchaState.retryAt > now) {
+    const xiaoxi = huoquGengxinXianliuTishi(gengxinJianchaState.retryAt)
+    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, errorMessage: xiaoxi })
+    return { keZhixing: false, xiaoxi }
+  }
+  if (!shiShoudong && now - gengxinJianchaState.lastSuccessAt < gengxinZidongJianchaJiangeMs) {
+    return { keZhixing: false, xiaoxi: '' }
+  }
+  return { keZhixing: true, xiaoxi: '' }
+}
+
+// 优先使用 Retry-After，其次使用 GitHub 限流窗口的重置时间。
+function huoquGengxinXianliuRetryAt(headers) {
+  const retryAfter = Array.isArray(headers['retry-after']) ? headers['retry-after'][0] : headers['retry-after']
+  const retrySeconds = Number(retryAfter)
+  if (Number.isFinite(retrySeconds) && retrySeconds >= 0) return Date.now() + retrySeconds * 1000
+  const retryDate = Date.parse(retryAfter || '')
+  if (Number.isFinite(retryDate) && retryDate > Date.now()) return retryDate
+  const resetAt = Number(Array.isArray(headers['x-ratelimit-reset']) ? headers['x-ratelimit-reset'][0] : headers['x-ratelimit-reset']) * 1000
+  return Number.isFinite(resetAt) && resetAt > Date.now() ? resetAt : Date.now() + gengxinXianliuBaodiDengdaiMs
+}
+
+function panduanGengxinQingqiuXianliu(error) {
+  const headers = error?.response?.headers || error?.headers || {}
+  const statusCode = Number(error?.statusCode || error?.status || error?.response?.statusCode)
+  const remaining = Array.isArray(headers['x-ratelimit-remaining']) ? headers['x-ratelimit-remaining'][0] : headers['x-ratelimit-remaining']
+  return statusCode === 429 || (statusCode === 403 && remaining === '0')
+}
+
+function huoquGengxinQingqiuHeaders(error) {
+  return error?.response?.headers || error?.headers || {}
+}
+
 // 仅请求固定的 GitHub Release 接口，避免更新检查引入可控的外部跳转。
 function qingqiuGithubLatestRelease() {
   return new Promise((resolve, reject) => {
@@ -443,7 +528,12 @@ function qingqiuGithubLatestRelease() {
       })
       response.on('end', () => {
         if (response.statusCode !== 200) {
-          reject(new Error(`更新服务暂不可用 (${response.statusCode || 0})`))
+          const isQingqiuXianliu = response.statusCode === 429
+            || (response.statusCode === 403 && response.headers['x-ratelimit-remaining'] === '0')
+          const error = new Error(isQingqiuXianliu ? '更新服务请求过于频繁' : `更新服务暂不可用 (${response.statusCode || 0})`)
+          error.code = isQingqiuXianliu ? 'update_rate_limited' : 'update_service_unavailable'
+          if (isQingqiuXianliu) error.retryAt = huoquGengxinXianliuRetryAt(response.headers)
+          reject(error)
           return
         }
         try {
@@ -471,35 +561,54 @@ function huoquSafeReleaseUrl(rawUrl) {
   }
 }
 
-// 开发环境仍可验证 GitHub Release 的版本信息，安装版使用自动更新器完成下载与安装。
-async function jianchaGithubAppGengxin() {
-  const currentVersion = app.getVersion()
-  gengxinAppGengxinInfo({ isChecking: true, isChecked: false, isDownloading: false, downloadPercent: 0, isDownloaded: false, errorMessage: '' })
+// 开发环境仍可验证 GitHub Release 的版本信息，启动检查受本地冷却时间控制。
+async function jianchaGithubAppGengxin({ shiShoudong = false, yiJianyan = false } = {}) {
+  if (zhengzaiGithubGengxinJianchaPromise) return zhengzaiGithubGengxinJianchaPromise
+  zhengzaiGithubGengxinJianchaPromise = (async () => {
+    if (!yiJianyan) {
+      const jianchaJieguo = await panduanGengxinJianchaKeFouZhixing(shiShoudong)
+      if (!jianchaJieguo.keZhixing) return { chenggong: false, xiaoxi: jianchaJieguo.xiaoxi, yiLue: !jianchaJieguo.xiaoxi }
+    }
+    const currentVersion = app.getVersion()
+    gengxinAppGengxinInfo({ isChecking: true, isChecked: false, isDownloading: false, downloadPercent: 0, isDownloaded: false, errorMessage: '' })
+    try {
+      const release = await qingqiuGithubLatestRelease()
+      const latestVersion = String(release?.tag_name ?? '').trim().replace(/^v/i, '')
+      if (!jiexianAppVersion(latestVersion)) {
+        gengxinAppGengxinInfo({ hasUpdate: false, latestVersion: '', isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '未获取到有效的正式版本' })
+        return { chenggong: false, xiaoxi: '未获取到有效的正式版本' }
+      }
+      const hasUpdate = panduanAppVersionGengxin(latestVersion, currentVersion)
+      gengxinAppGengxinInfo({ hasUpdate, latestVersion, isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '' })
+      await jiluGengxinJianchaChenggong()
+      return {
+        chenggong: true,
+        hasUpdate,
+        currentVersion,
+        latestVersion,
+        releaseUrl: huoquSafeReleaseUrl(release?.html_url),
+      }
+    } catch (error) {
+      // GitHub 限流与网络故障分别提示，避免用户误判为本地网络异常。
+      const isQingqiuXianliu = error?.code === 'update_rate_limited' || panduanGengxinQingqiuXianliu(error)
+      if (isQingqiuXianliu) await jiluGengxinXianliu(error.retryAt || huoquGengxinXianliuRetryAt(huoquGengxinQingqiuHeaders(error)))
+      const xiaoxi = isQingqiuXianliu ? huoquGengxinXianliuTishi(gengxinJianchaState.retryAt) : '无法连接更新服务，请检查网络后重试'
+      gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: xiaoxi })
+      return { chenggong: false, xiaoxi }
+    }
+  })()
   try {
-    const release = await qingqiuGithubLatestRelease()
-    const latestVersion = String(release?.tag_name ?? '').trim().replace(/^v/i, '')
-    if (!jiexianAppVersion(latestVersion)) {
-      gengxinAppGengxinInfo({ hasUpdate: false, latestVersion: '', isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '未获取到有效的正式版本' })
-      return { chenggong: false, xiaoxi: '未获取到有效的正式版本' }
-    }
-    const hasUpdate = panduanAppVersionGengxin(latestVersion, currentVersion)
-    gengxinAppGengxinInfo({ hasUpdate, latestVersion, isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '' })
-    return {
-      chenggong: true,
-      hasUpdate,
-      currentVersion,
-      latestVersion,
-      releaseUrl: huoquSafeReleaseUrl(release?.html_url),
-    }
-  } catch {
-    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '无法连接更新服务，请检查网络后重试' })
-    return { chenggong: false, xiaoxi: '暂时无法连接更新服务，请稍后重试' }
+    return await zhengzaiGithubGengxinJianchaPromise
+  } finally {
+    zhengzaiGithubGengxinJianchaPromise = null
   }
 }
 
-// 安装版检查更新后自动下载，下载完成时由用户确认是否立即重启安装。
+// 安装版检查更新后自动下载，下载进度仅同步至设置页的检查更新区域。
 async function jianchaAppGengxin() {
-  if (isKaifaHuanjing) return jianchaGithubAppGengxin()
+  const jianchaJieguo = await panduanGengxinJianchaKeFouZhixing(true)
+  if (!jianchaJieguo.keZhixing) return { chenggong: false, xiaoxi: jianchaJieguo.xiaoxi }
+  if (isKaifaHuanjing) return jianchaGithubAppGengxin({ shiShoudong: true, yiJianyan: true })
   gengxinAppGengxinInfo({ isChecking: true, isChecked: false, isDownloading: false, downloadPercent: 0, isDownloaded: false, errorMessage: '' })
   try {
     autoUpdater.autoDownload = true
@@ -511,6 +620,7 @@ async function jianchaAppGengxin() {
     }
     const hasUpdate = panduanAppVersionGengxin(latestVersion, app.getVersion())
     gengxinAppGengxinInfo({ hasUpdate, latestVersion, isChecking: false, isChecked: true, isDownloading: hasUpdate, downloadPercent: 0, errorMessage: '' })
+    await jiluGengxinJianchaChenggong()
     return {
       chenggong: true,
       hasUpdate,
@@ -518,12 +628,16 @@ async function jianchaAppGengxin() {
       latestVersion,
       autoDownload: true,
     }
-  } catch {
-    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: '检查更新失败，请检查网络后重试' })
-    return { chenggong: false, xiaoxi: '暂时无法连接更新服务，请稍后重试' }
+  } catch (error) {
+    const isQingqiuXianliu = panduanGengxinQingqiuXianliu(error)
+    if (isQingqiuXianliu) await jiluGengxinXianliu(huoquGengxinXianliuRetryAt(huoquGengxinQingqiuHeaders(error)))
+    const xiaoxi = isQingqiuXianliu ? huoquGengxinXianliuTishi(gengxinJianchaState.retryAt) : '检查更新失败，请检查网络后重试'
+    gengxinAppGengxinInfo({ isChecking: false, isChecked: true, isDownloading: false, downloadPercent: 0, errorMessage: xiaoxi })
+    return { chenggong: false, xiaoxi }
   }
 }
 
+// 下载完成后再提供安装选择，避免将下载进度分散到系统弹窗中。
 async function tishiGengxinDownloadWancheng(updateInfo) {
   if (isGengxinDialogShowing) return
   isGengxinDialogShowing = true
@@ -1789,7 +1903,7 @@ app.whenReady().then(async () => {
   createXuanfuqiuWindow()
   createStartupWindow()
   chushihuaAutoUpdater()
-  setTimeout(() => { void jianchaGithubAppGengxin() }, 5000).unref()
+  setTimeout(() => { void jianchaGithubAppGengxin({ shiShoudong: false }) }, 5000).unref()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
