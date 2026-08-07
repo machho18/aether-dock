@@ -255,6 +255,7 @@ const props = defineProps({
   libraryConfig: { type: Object, default: () => ({ rootdir: '' }) },
   libraryAvailable: { type: Boolean, default: false },
   initialCategory: { type: String, default: 'document' },
+  focusItemId: { type: String, default: '' },
   isYingyongSyncing: { type: Boolean, default: false },
   isAnimationBusy: { type: Boolean, default: false },
   isIslandExpanded: { type: Boolean, default: false },
@@ -382,6 +383,13 @@ watch(currentItems, (items, previousItems) => {
   const currentId = previousItems[carouselIndex.value]?.id
   const preservedIndex = currentId ? items.findIndex(({ id }) => id === currentId) : -1
   carouselIndex.value = preservedIndex >= 0 ? preservedIndex : Math.min(carouselIndex.value, Math.max(items.length - 1, 0))
+}, { flush: 'post' })
+
+// 新导入资源到达后优先置中，方便用户立即确认归档结果。
+watch(() => props.focusItemId, (itemId) => {
+  if (!itemId) return
+  const itemIndex = currentItems.value.findIndex(({ id }) => id === itemId)
+  if (itemIndex >= 0) carouselIndex.value = itemIndex
 }, { flush: 'post' })
 
 watch([carouselIndex, () => currentItems.value.length], ([index, length]) => {
