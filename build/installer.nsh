@@ -1,6 +1,9 @@
-; 卸载前明确保留用户资料库文件，避免用户误以为原始资料会被删除。
+; 自动更新保留用户数据；手动卸载由用户明确选择是否清理应用数据。
 !macro customUnInstall
-  MessageBox MB_ICONINFORMATION|MB_OK "AetherDock 即将卸载。$\r$\n$\r$\n资料库中的文件和原始资料不会被删除。$\r$\n$\r$\n应用设置、索引数据库与缓存将被清理。"
-  ; Electron 按 package.json 的应用名保存数据，需清理实际的生产数据目录。
-  RMDir /r "$APPDATA\aether-dock"
+  ${ifNot} ${isUpdated}
+    MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "是否同时清除 AetherDock 的应用设置、索引数据库与缓存？$\r$\n$\r$\n资料库文件和原始资料不会被删除。" IDYES qingliYonghuShuju IDNO baoliuYonghuShuju
+    qingliYonghuShuju:
+      RMDir /r "$APPDATA\aether-dock"
+    baoliuYonghuShuju:
+  ${endIf}
 !macroend

@@ -5,7 +5,7 @@
       <time class="shouqi-time">{{ currentTime }}</time>
       <div class="xitong-status">
         <span><b>CPU</b><em>{{ systemStatus.cpu }}%</em></span>
-        <span><b>MEM</b><em>{{ systemStatus.neicun }}%</em></span>
+        <span><b>RAM</b><em>{{ systemStatus.neicun }}%</em></span>
       </div>
     </div>
   </div>
@@ -143,6 +143,7 @@ onUnmounted(() => {
 .xitong-status span {
   display: grid;
   grid-template-columns: 27px 1fr;
+  align-items: baseline;
   column-gap: 5px;
 }
 
