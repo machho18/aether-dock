@@ -1,7 +1,14 @@
 <template>
-  <div class="shouqi-status" :class="{ 'shouqi-status--hidden': hidden, 'shouqi-status--drop': dragging }">
-    <div ref="lottieHolder" class="cat-lottie" aria-hidden="true"></div>
-    <div class="shouqi-xinxi" aria-hidden="true">
+  <div
+    class="shouqi-status"
+    :class="{
+      'shouqi-status--hidden': hidden,
+      'shouqi-status--charm': charm,
+      'shouqi-status--moving': moving,
+    }"
+  >
+    <div ref="lottieHolder" class="cat-lottie" aria-hidden="true" draggable="false"></div>
+    <div v-if="!charm" class="shouqi-xinxi" aria-hidden="true">
       <time class="shouqi-time">{{ currentTime }}</time>
       <div class="xitong-status">
         <span><b>CPU</b><em>{{ systemStatus.cpu }}%</em></span>
@@ -20,7 +27,9 @@ import { jiazaiDonghuaData } from '@/constants/donghua'
 const props = defineProps({
   animationId: { type: String, default: 'kulian' },
   hidden: { type: Boolean, default: false },
-  dragging: { type: Boolean, default: false },
+  charm: { type: Boolean, default: false },
+  moving: { type: Boolean, default: false },
+  pasting: { type: Boolean, default: false },
 })
 
 const lottieHolder = useTemplateRef('lottieHolder')
@@ -30,6 +39,7 @@ let lottiePlayer = null
 let currentLottieRequest = 0
 
 function gengxinCurrentTime() {
+  if (props.charm) return
   currentTime.value = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -38,6 +48,7 @@ function gengxinCurrentTime() {
 }
 
 async function gengxinSystemStatus() {
+  if (props.charm) return
   try {
     const status = await window.aetherDock?.getSystemStatus()
     if (status) systemStatus.value = status
@@ -63,11 +74,20 @@ async function chongjianLottie() {
     animationData: structuredClone(animationData),
     rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
   })
+  tongbuLottiePlayback()
+}
+
+// 不可见或移动期间冻结当前帧，避免 SVG 动画与透明窗口位移同时触发重绘。
+function tongbuLottiePlayback() {
+  if (!lottiePlayer) return
+  if (props.hidden || props.moving || props.pasting) lottiePlayer.pause()
+  else lottiePlayer.play()
 }
 
 useIntervalFn(gengxinCurrentTime, 1000, { immediateCallback: true })
 useIntervalFn(gengxinSystemStatus, 2000, { immediateCallback: true })
 watch(() => props.animationId, chongjianLottie)
+watch(() => [props.hidden, props.moving, props.pasting], tongbuLottiePlayback)
 onMounted(chongjianLottie)
 onUnmounted(() => {
   currentLottieRequest += 1
@@ -91,8 +111,10 @@ onUnmounted(() => {
   height: 80px;
   z-index: 0;
   pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
   transform: translateY(-50%);
-  transition: opacity 180ms ease, transform 260ms var(--motion-easing);
+  transition: opacity 180ms ease, transform 150ms var(--motion-easing);
 }
 
 .shouqi-xinxi {
@@ -169,12 +191,22 @@ onUnmounted(() => {
 .shouqi-status--hidden .cat-lottie { transform: translateY(-50%) scale(.94); }
 .shouqi-status--hidden .shouqi-xinxi { transform: scale(.94); }
 
-.shouqi-status--drop .cat-lottie,
-.shouqi-status--drop .shouqi-xinxi {
-  opacity: .18;
-  filter: blur(5px) saturate(.5);
+/* 挂件态让猫动画成为唯一主角，避免小面积内的信息噪声。 */
+.shouqi-status--charm .cat-lottie {
+  top: 0;
+  left: -6px;
+  width: 116px;
+  height: 116px;
+  backface-visibility: hidden;
+  filter: drop-shadow(0 9px 11px rgba(35, 52, 44, .16)) saturate(.98) contrast(1.02);
+  transform: translateZ(0);
 }
 
-.shouqi-status--drop .cat-lottie { transform: translateY(-50%) scale(.96); }
-.shouqi-status--drop .shouqi-xinxi { transform: scale(.96); }
+/* 移动时保持已冻结的 Lottie 合成层不变，避免透明窗口位移期间内部重绘。 */
+.shouqi-status--charm.shouqi-status--moving .cat-lottie {
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.shouqi-status--charm.shouqi-status--hidden .cat-lottie { transform: translateZ(0) scale(.94); }
 </style>

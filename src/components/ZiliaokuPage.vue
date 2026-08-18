@@ -25,7 +25,7 @@
             <div v-if="isGengduoVisible" class="expanded-more-menu" @click.stop>
               <button type="button" @click="chuliGengduoCaozuo('float-window')">
                 <span class="expanded-more-icon" aria-hidden="true"><span class="expanded-dock-mark"><i></i></span></span>
-                <span title="收起到左下角">收起</span>
+                <span title="收起到右侧胶囊">收起</span>
               </button>
               <button type="button" @click="kaishiPiliangShanchu">
                 <span class="expanded-more-icon expanded-more-icon--select" aria-hidden="true"></span>
