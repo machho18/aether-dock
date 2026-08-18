@@ -55,6 +55,21 @@ let appGengxinInfo = {
 }
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
+const mainWindowMargin = 12
+// 主窗口透明画布内的可见区域尺寸，需与 App.vue 的灵动岛布局保持一致。
+const mainIslandSize = { width: 680, height: 380 }
+const mainIslandCharmSize = { width: 104, height: 116 }
+const mainIslandDropSize = { width: 232, height: 116 }
+const mainIslandCharmEdgeOffset = 28
+// 裁剪边距覆盖主体阴影与拖动回弹的完整视觉范围，防止靠边时被窗口形状截断。
+const mainIslandCharmShapeMargin = { horizontal: 14, top: 16, bottom: 18 }
+const mainIslandCixiShapeMargin = { horizontal: 28, top: 30, bottom: 28 }
+// 拖动边界只约束宠物本体，允许外围磁场自然延伸至屏幕之外。
+const mainIslandCharmBoundaryMargin = { horizontal: 6, top: 4, bottom: 6 }
+let mainIslandAnchor = { horizontal: 'right', vertical: 'center' }
+let mainIslandMoveTimer = null
+let mainIslandMoveContext = null
+let isMainIslandShapeReady = false
 const startupWindowSize = { width: 360, height: 360 }
 const shouqikouWindowSize = { width: 226, height: 64 }
 const shouqikouMargin = 24
@@ -146,12 +161,256 @@ function createWindowOptions(size) {
   }
 }
 
-// 主灵动岛固定在主屏幕工作区顶部中央。
+// 主灵动岛贴靠主屏工作区右侧，并为向左展开的内容保留透明画布。
 function positionMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const workArea = screen.getPrimaryDisplay().workArea
-  const coordX = Math.round(workArea.x + (workArea.width - mainWindowSize.width) / 2)
-  mainWindow.setPosition(coordX, workArea.y)
+  const coordX = Math.round(workArea.x + workArea.width - mainWindowSize.width - mainWindowMargin)
+  const coordY = Math.round(workArea.y + (workArea.height - mainWindowSize.height) / 2)
+  mainWindow.setPosition(coordX, coordY)
+}
+
+// 计算挂件锚点与投放区域在透明主窗口中的位置，渲染层使用相同锚点规则。
+function huoquMainIslandLayout(anchor = mainIslandAnchor) {
+  const islandOriginX = mainWindowSize.width - mainIslandSize.width
+  const islandOriginY = Math.round((mainWindowSize.height - mainIslandSize.height) / 2)
+  const charmOffsetX = anchor.horizontal === 'left'
+    ? mainIslandCharmEdgeOffset
+    : anchor.horizontal === 'center'
+      ? Math.round((mainIslandSize.width - mainIslandCharmSize.width) / 2)
+      : mainIslandSize.width - mainIslandCharmSize.width - mainIslandCharmEdgeOffset
+  const charmOffsetY = anchor.vertical === 'top'
+    ? mainIslandCharmEdgeOffset
+    : anchor.vertical === 'bottom'
+      ? mainIslandSize.height - mainIslandCharmSize.height - mainIslandCharmEdgeOffset
+      : Math.round((mainIslandSize.height - mainIslandCharmSize.height) / 2)
+  const dropOffsetX = anchor.horizontal === 'left'
+    ? mainIslandCharmEdgeOffset
+    : anchor.horizontal === 'center'
+      ? charmOffsetX + mainIslandCharmSize.width - mainIslandDropSize.width
+      : mainIslandSize.width - mainIslandDropSize.width - mainIslandCharmEdgeOffset
+  const dropOffsetY = anchor.vertical === 'top'
+    ? mainIslandCharmEdgeOffset
+    : anchor.vertical === 'bottom'
+      ? mainIslandSize.height - mainIslandDropSize.height - mainIslandCharmEdgeOffset
+      : Math.round((mainIslandSize.height - mainIslandDropSize.height) / 2)
+
+  return {
+    islandOriginX,
+    islandOriginY,
+    charmOriginX: islandOriginX + charmOffsetX,
+    charmOriginY: islandOriginY + charmOffsetY,
+    dropOriginX: islandOriginX + dropOffsetX,
+    dropOriginY: islandOriginY + dropOffsetY,
+  }
+}
+
+function huoquMainIslandStateRect(state, anchor = mainIslandAnchor) {
+  const { islandOriginX, islandOriginY, charmOriginX, charmOriginY, dropOriginX, dropOriginY } = huoquMainIslandLayout(anchor)
+  const stateRects = {
+    collapsed: [{
+      x: charmOriginX - mainIslandCharmShapeMargin.horizontal,
+      y: charmOriginY - mainIslandCharmShapeMargin.top,
+      width: mainIslandCharmSize.width + mainIslandCharmShapeMargin.horizontal * 2,
+      height: mainIslandCharmSize.height + mainIslandCharmShapeMargin.top + mainIslandCharmShapeMargin.bottom,
+    }],
+    moving: [{
+      x: charmOriginX - mainIslandCixiShapeMargin.horizontal,
+      y: charmOriginY - mainIslandCixiShapeMargin.top,
+      width: mainIslandCharmSize.width + mainIslandCixiShapeMargin.horizontal * 2,
+      height: mainIslandCharmSize.height + mainIslandCixiShapeMargin.top + mainIslandCixiShapeMargin.bottom,
+    }],
+    expanded: [{ x: islandOriginX, y: islandOriginY, ...mainIslandSize }],
+    drop: [{ x: dropOriginX, y: dropOriginY, ...mainIslandDropSize }],
+  }
+  return stateRects[state]?.[0] ?? stateRects.collapsed[0]
+}
+
+// 原生裁剪区域覆盖所有状态的并集，运行期间不再重建以避免透明窗口闪烁。
+function shezhiMainIslandStableShape() {
+  if (isMainIslandShapeReady || !mainWindow || mainWindow.isDestroyed()) return
+  if (!['win32', 'linux'].includes(process.platform)) {
+    isMainIslandShapeReady = true
+    return
+  }
+
+  const { islandOriginX, islandOriginY } = huoquMainIslandLayout()
+  mainWindow.setShape([{
+    x: islandOriginX,
+    y: islandOriginY - 2,
+    width: mainIslandSize.width,
+    height: mainIslandSize.height + 2,
+  }])
+  isMainIslandShapeReady = true
+}
+
+function huoquMainIslandBoundaryRect(state, anchor = mainIslandAnchor) {
+  if (!['collapsed', 'moving'].includes(state)) return huoquMainIslandStateRect(state, anchor)
+
+  const { charmOriginX, charmOriginY } = huoquMainIslandLayout(anchor)
+  return {
+    x: charmOriginX - mainIslandCharmBoundaryMargin.horizontal,
+    y: charmOriginY - mainIslandCharmBoundaryMargin.top,
+    width: mainIslandCharmSize.width + mainIslandCharmBoundaryMargin.horizontal * 2,
+    height: mainIslandCharmSize.height + mainIslandCharmBoundaryMargin.top + mainIslandCharmBoundaryMargin.bottom,
+  }
+}
+
+// 收起与拖动按宠物本体约束，展开和投放仍确保完整可见。
+function yueshuMainIslandWindowPosition(position, state = 'collapsed', anchor = mainIslandAnchor) {
+  const rect = huoquMainIslandBoundaryRect(state, anchor)
+  const rectCenter = {
+    x: position.x + rect.x + rect.width / 2,
+    y: position.y + rect.y + rect.height / 2,
+  }
+  const workArea = screen.getDisplayNearestPoint(rectCenter).workArea
+  const minX = workArea.x - rect.x
+  const maxX = workArea.x + workArea.width - rect.x - rect.width
+  const minY = workArea.y - rect.y
+  const maxY = workArea.y + workArea.height - rect.y - rect.height
+  return {
+    x: Math.round(maxX >= minX ? Math.min(Math.max(position.x, minX), maxX) : workArea.x + (workArea.width - mainWindowSize.width) / 2),
+    y: Math.round(maxY >= minY ? Math.min(Math.max(position.y, minY), maxY) : workArea.y + (workArea.height - mainWindowSize.height) / 2),
+  }
+}
+
+// 展开前选择裁切最少的锚点，空间相同时保留当前方向以避免窗口无意义重排。
+function huoquMainIslandAnchorAxis(guajianCenter, workArea, panelSize, guajianSize, axis, currentAnchor) {
+  const workStart = axis === 'horizontal' ? workArea.x : workArea.y
+  const workSize = axis === 'horizontal' ? workArea.width : workArea.height
+  const safeMargin = 6
+  const startAnchor = axis === 'horizontal' ? 'left' : 'top'
+  const endAnchor = axis === 'horizontal' ? 'right' : 'bottom'
+  const anchorOffsets = {
+    center: panelSize / 2,
+    [startAnchor]: mainIslandCharmEdgeOffset + guajianSize / 2,
+    [endAnchor]: panelSize - mainIslandCharmEdgeOffset - guajianSize / 2,
+  }
+  const anchorValues = [currentAnchor, 'center', startAnchor, endAnchor]
+    .filter((value, index, values) => anchorOffsets[value] !== undefined && values.indexOf(value) === index)
+  const anchorOptions = anchorValues.map((value) => ({ value, guajianOffset: anchorOffsets[value] }))
+  const safeStart = workStart + safeMargin
+  const safeEnd = workStart + workSize - safeMargin
+  let bestOption = anchorOptions[0]
+  let minOverflow = Number.POSITIVE_INFINITY
+
+  for (const option of anchorOptions) {
+    const panelStart = guajianCenter - option.guajianOffset
+    const panelEnd = panelStart + panelSize
+    const overflow = Math.max(safeStart - panelStart, 0) + Math.max(panelEnd - safeEnd, 0)
+    if (overflow < minOverflow) {
+      bestOption = option
+      minOverflow = overflow
+    }
+  }
+
+  return bestOption.value
+}
+
+// 仅在窗口展开前调整透明画布内的锚点，挂件在屏幕上的位置保持不变。
+function youhuaMainIslandAnchor(position) {
+  const currentLayout = huoquMainIslandLayout()
+  const charmScreenOrigin = {
+    x: position.x + currentLayout.charmOriginX,
+    y: position.y + currentLayout.charmOriginY,
+  }
+  const charmCenter = {
+    x: charmScreenOrigin.x + mainIslandCharmSize.width / 2,
+    y: charmScreenOrigin.y + mainIslandCharmSize.height / 2,
+  }
+  const workArea = screen.getDisplayNearestPoint(charmCenter).workArea
+  const nextAnchor = {
+    horizontal: huoquMainIslandAnchorAxis(
+      charmCenter.x,
+      workArea,
+      mainIslandSize.width,
+      mainIslandCharmSize.width,
+      'horizontal',
+      mainIslandAnchor.horizontal,
+    ),
+    vertical: huoquMainIslandAnchorAxis(
+      charmCenter.y,
+      workArea,
+      mainIslandSize.height,
+      mainIslandCharmSize.height,
+      'vertical',
+      mainIslandAnchor.vertical,
+    ),
+  }
+  const nextLayout = huoquMainIslandLayout(nextAnchor)
+  mainIslandAnchor = nextAnchor
+  return {
+    x: charmScreenOrigin.x - nextLayout.charmOriginX,
+    y: charmScreenOrigin.y - nextLayout.charmOriginY,
+  }
+}
+
+// 状态切换只更新位置与锚点，原生裁剪区域始终保持稳定。
+function shezhiMainIslandWindowShape(state = 'collapsed', options = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+
+  const targetState = ['collapsed', 'moving', 'expanded', 'drop'].includes(state) ? state : 'collapsed'
+  const [currentX, currentY] = mainWindow.getPosition()
+  const optimizedPosition = options?.optimizeAnchor
+    ? youhuaMainIslandAnchor({ x: currentX, y: currentY })
+    : { x: currentX, y: currentY }
+  const targetPosition = yueshuMainIslandWindowPosition(optimizedPosition, targetState)
+  if (targetPosition.x !== currentX || targetPosition.y !== currentY) {
+    mainWindow.setPosition(targetPosition.x, targetPosition.y)
+  }
+
+  shezhiMainIslandStableShape()
+  return { anchor: { ...mainIslandAnchor } }
+}
+
+// 主进程直接采样系统鼠标坐标，避免渲染进程、IPC 与窗口移动形成追赶回路。
+function gengxinMainIslandWindowMove() {
+  if (!mainIslandMoveContext || !mainWindow || mainWindow.isDestroyed()) {
+    jieshuMainIslandWindowMove()
+    return
+  }
+
+  const cursorPosition = screen.getCursorScreenPoint()
+  const requestedPosition = {
+    x: cursorPosition.x - mainIslandMoveContext.offsetX,
+    y: cursorPosition.y - mainIslandMoveContext.offsetY,
+  }
+  const targetPosition = yueshuMainIslandWindowPosition(requestedPosition, 'moving')
+
+  // 到达屏幕边缘后重设抓取偏移，鼠标回移一像素时窗口即可立即跟随。
+  if (targetPosition.x !== requestedPosition.x) mainIslandMoveContext.offsetX = cursorPosition.x - targetPosition.x
+  if (targetPosition.y !== requestedPosition.y) mainIslandMoveContext.offsetY = cursorPosition.y - targetPosition.y
+
+  if (mainIslandMoveContext.windowX === targetPosition.x && mainIslandMoveContext.windowY === targetPosition.y) return
+  mainIslandMoveContext.windowX = targetPosition.x
+  mainIslandMoveContext.windowY = targetPosition.y
+  mainWindow.setPosition(targetPosition.x, targetPosition.y, false)
+}
+
+function kaishiMainIslandWindowMove() {
+  if (!mainWindow || mainWindow.isDestroyed() || isXuanfuqiuMoshi) return null
+  jieshuMainIslandWindowMove()
+
+  const layout = shezhiMainIslandWindowShape('moving')
+  const cursorPosition = screen.getCursorScreenPoint()
+  const [windowX, windowY] = mainWindow.getPosition()
+  mainIslandMoveContext = {
+    offsetX: cursorPosition.x - windowX,
+    offsetY: cursorPosition.y - windowY,
+    windowX,
+    windowY,
+  }
+  const displayFrequency = screen.getDisplayNearestPoint(cursorPosition).displayFrequency || 60
+  const moveInterval = Math.min(16, Math.max(7, Math.round(1000 / displayFrequency)))
+  mainIslandMoveTimer = setInterval(gengxinMainIslandWindowMove, moveInterval)
+  mainIslandMoveTimer.unref?.()
+  return layout
+}
+
+function jieshuMainIslandWindowMove() {
+  if (mainIslandMoveTimer) clearInterval(mainIslandMoveTimer)
+  mainIslandMoveTimer = null
+  mainIslandMoveContext = null
 }
 
 // 独立收起坞固定在左下角，模式切换时无需移动主灵动岛窗口。
@@ -192,6 +451,7 @@ async function qiehuanXuanfuqiuMoshi(enabled) {
   } else {
     xuanfuqiuWindow.hide()
     positionMainWindow()
+    shezhiMainIslandWindowShape()
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
   }
@@ -1560,22 +1820,28 @@ async function tongbuManagedFilesAndNotify() {
 
 // 创建应用主窗口
 function createMainWindow() {
+  isMainIslandShapeReady = false
   mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
 
-  // 主灵动岛始终预加载在桌面顶部，等待开机动画结束后再显示
+  // 主灵动岛始终预加载在桌面右侧，等待开机动画结束后再显示
   positionMainWindow()
+  shezhiMainIslandWindowShape()
   mainWindow.once('ready-to-show', () => {
     // 透明窗口就绪后再次锁定内容尺寸，避免沿用旧窗口边界
     mainWindow.setContentSize(mainWindowSize.width, mainWindowSize.height)
     positionMainWindow()
-    // 保持灵动岛位于普通应用窗口之上
-    mainWindow.setAlwaysOnTop(true, 'screen-saver')
+    isMainIslandShapeReady = false
+    shezhiMainIslandWindowShape()
+    // 以普通置顶层级常驻，避免覆盖系统级界面。
+    mainWindow.setAlwaysOnTop(true, 'floating')
     // 透明安全区默认鼠标穿透，仅灵动岛本体接收交互
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
   })
 
   loadRendererWindow(mainWindow, false)
   mainWindow.on('closed', () => {
+    jieshuMainIslandWindowMove()
+    isMainIslandShapeReady = false
     mainWindow = null
   })
 }
@@ -1594,7 +1860,7 @@ function createXuanfuqiuWindow() {
   })
   xuanfuqiuWindow.once('ready-to-show', () => {
     isXuanfuqiuWindowReady = true
-    xuanfuqiuWindow?.setAlwaysOnTop(true, 'screen-saver')
+    xuanfuqiuWindow?.setAlwaysOnTop(true, 'floating')
     xuanfuqiuWindow?.setIgnoreMouseEvents(true, { forward: true })
   })
   loadXuanfuqiuWindow(xuanfuqiuWindow)
@@ -1614,7 +1880,7 @@ function createStartupWindow() {
     Math.round(workArea.y + (workArea.height - startupWindowSize.height) / 2),
   )
   startupWindow.once('ready-to-show', () => {
-    startupWindow?.setAlwaysOnTop(true, 'screen-saver')
+    startupWindow?.setAlwaysOnTop(true, 'floating')
     startupWindow?.setIgnoreMouseEvents(true, { forward: true })
     startupWindow?.showInactive()
   })
@@ -1637,7 +1903,6 @@ function jihuoYiyouLingdongdaoWindow() {
     void qiehuanXuanfuqiuMoshi(false).then(() => mainWindow?.focus())
     return
   }
-  positionMainWindow()
   mainWindow.show()
   mainWindow.focus()
 }
@@ -1699,6 +1964,19 @@ async function chushihuaYingyong() {
     if (!targetWindow || targetWindow.isDestroyed()) return
     targetWindow.setIgnoreMouseEvents(Boolean(isPassthrough), { forward: Boolean(isPassthrough) })
   })
+  ipcMain.handle(ipcTongdao.kaishiMainIslandMove, (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return null
+    return kaishiMainIslandWindowMove()
+  })
+  ipcMain.on(ipcTongdao.jieshuMainIslandMove, (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return
+    jieshuMainIslandWindowMove()
+  })
+  ipcMain.handle(ipcTongdao.setIslandWindowShape, (event, state, options) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return
+    if (!['collapsed', 'moving', 'expanded', 'drop'].includes(state)) return
+    return shezhiMainIslandWindowShape(state, options)
+  })
   ipcMain.handle(ipcTongdao.setFloatingMode, (_, enabled) => {
     qiehuanXuanfuqiuMoshi(enabled)
   })
@@ -1706,11 +1984,12 @@ async function chushihuaYingyong() {
     if (!isXuanfuqiuMoshi || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return
     positionXuanfuqiuWindow(point)
   })
-  // 开机窗口完成后直接显示已预加载的顶部灵动岛
+  // 开机窗口完成后直接显示已预加载的右侧灵动岛
   ipcMain.handle(ipcTongdao.completeStartup, () => {
     if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close()
     if (!mainWindow || mainWindow.isDestroyed()) return
     positionMainWindow()
+    shezhiMainIslandWindowShape()
     mainWindow.setIgnoreMouseEvents(true, { forward: true })
     mainWindow.showInactive()
   })

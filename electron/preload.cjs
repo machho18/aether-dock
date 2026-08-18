@@ -9,6 +9,9 @@ const ipcTongdao = Object.freeze({
   appUpdateInfoChanged: 'app:update-info-changed',
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
+  setIslandWindowShape: 'island:set-window-shape',
+  kaishiMainIslandMove: 'island:start-main-move',
+  jieshuMainIslandMove: 'island:stop-main-move',
   setFloatingMode: 'island:set-floating-mode',
   floatingWindowShown: 'floating:shown',
   moveFloatingIsland: 'island:move-floating',
@@ -68,6 +71,9 @@ contextBridge.exposeInMainWorld('aetherDock', {
   },
   setAutoLaunch: (enabled) => ipcRenderer.invoke(ipcTongdao.setAutoLaunch, enabled),
   setIslandPassthrough: (isPassthrough) => ipcRenderer.invoke(ipcTongdao.setIslandPassthrough, isPassthrough),
+  setIslandWindowShape: (state, options) => ipcRenderer.invoke(ipcTongdao.setIslandWindowShape, state, options),
+  kaishiMainIslandMove: () => ipcRenderer.invoke(ipcTongdao.kaishiMainIslandMove),
+  jieshuMainIslandMove: () => ipcRenderer.send(ipcTongdao.jieshuMainIslandMove),
   setFloatingMode: (enabled) => ipcRenderer.invoke(ipcTongdao.setFloatingMode, enabled),
   onFloatingWindowShown: (callback) => {
     if (typeof callback !== 'function') return () => {}
