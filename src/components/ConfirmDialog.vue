@@ -65,7 +65,8 @@ useEventListener(window, 'keydown', (event) => {
   padding: 24px;
   place-items: center;
   overflow: hidden;
-  border-radius: inherit;
+  border-radius: 20px;
+  clip-path: inset(0 round 20px);
   background: radial-gradient(ellipse at 50% 38%, rgba(38, 38, 38, .38), rgba(15, 17, 16, .72));
   backdrop-filter: blur(10px) saturate(.8);
   -webkit-backdrop-filter: blur(10px) saturate(.8);

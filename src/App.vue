@@ -777,6 +777,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   z-index: 1;
   inset: 0;
   overflow: visible;
+  border-radius: 20px;
   clip-path: inset(
     var(--shouqi-y)
     calc(100% - var(--shouqi-x) - var(--shouqi-width))
