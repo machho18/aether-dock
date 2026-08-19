@@ -55,12 +55,12 @@ let appGengxinInfo = {
 }
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
-const mainWindowMargin = 12
 // 主窗口透明画布内的可见区域尺寸，需与 App.vue 的灵动岛布局保持一致。
 const mainIslandSize = { width: 680, height: 380 }
 const mainIslandCharmSize = { width: 104, height: 116 }
-const mainIslandDropSize = { width: 232, height: 116 }
+const mainIslandDropSize = { width: 160, height: 214 }
 const mainIslandCharmEdgeOffset = 28
+const mainIslandChushiScreenMargin = 88
 // 裁剪边距覆盖主体阴影与拖动回弹的完整视觉范围，防止靠边时被窗口形状截断。
 const mainIslandCharmShapeMargin = { horizontal: 14, top: 16, bottom: 18 }
 const mainIslandCixiShapeMargin = { horizontal: 28, top: 30, bottom: 28 }
@@ -161,11 +161,14 @@ function createWindowOptions(size) {
   }
 }
 
-// 主灵动岛贴靠主屏工作区右侧，并为向左展开的内容保留透明画布。
+// 首次出现按宠物可见区域留出屏幕边距，透明画布不参与视觉定位。
 function positionMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const workArea = screen.getPrimaryDisplay().workArea
-  const coordX = Math.round(workArea.x + workArea.width - mainWindowSize.width - mainWindowMargin)
+  const { charmOriginX } = huoquMainIslandLayout()
+  const coordX = Math.round(
+    workArea.x + workArea.width - mainIslandChushiScreenMargin - charmOriginX - mainIslandCharmSize.width,
+  )
   const coordY = Math.round(workArea.y + (workArea.height - mainWindowSize.height) / 2)
   mainWindow.setPosition(coordX, coordY)
 }
@@ -184,16 +187,10 @@ function huoquMainIslandLayout(anchor = mainIslandAnchor) {
     : anchor.vertical === 'bottom'
       ? mainIslandSize.height - mainIslandCharmSize.height - mainIslandCharmEdgeOffset
       : Math.round((mainIslandSize.height - mainIslandCharmSize.height) / 2)
-  const dropOffsetX = anchor.horizontal === 'left'
-    ? mainIslandCharmEdgeOffset
-    : anchor.horizontal === 'center'
-      ? charmOffsetX + mainIslandCharmSize.width - mainIslandDropSize.width
-      : mainIslandSize.width - mainIslandDropSize.width - mainIslandCharmEdgeOffset
+  const dropOffsetX = charmOffsetX + Math.round((mainIslandCharmSize.width - mainIslandDropSize.width) / 2)
   const dropOffsetY = anchor.vertical === 'top'
-    ? mainIslandCharmEdgeOffset
-    : anchor.vertical === 'bottom'
-      ? mainIslandSize.height - mainIslandDropSize.height - mainIslandCharmEdgeOffset
-      : Math.round((mainIslandSize.height - mainIslandDropSize.height) / 2)
+    ? charmOffsetY
+    : charmOffsetY - (mainIslandDropSize.height - mainIslandCharmSize.height)
 
   return {
     islandOriginX,
