@@ -742,9 +742,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
 .island-frame--expanded {
   width: 100%;
   height: 100%;
-  border-color: var(--border-ink);
   border-radius: 20px;
-  box-shadow: inset 0 1px rgba(255, 255, 255, .72), 0 12px 32px rgba(0, 0, 0, .18);
 }
 
 .toast-layer {
