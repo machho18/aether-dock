@@ -28,7 +28,6 @@
           :is-pasting="isPastingTape"
         />
         <div class="island-frame island-frame--expanded" aria-hidden="true"></div>
-        <div class="island-frame island-frame--drop" aria-hidden="true"></div>
         <div
           ref="islandShell"
           class="island-shell"
@@ -65,25 +64,21 @@
           </div>
 
           <div class="drop-hint" role="status" aria-live="polite">
-            <span
-              class="drop-preview"
-              :class="{ 'drop-preview--single': dropPreviewItems.length === 1 && !dropPreviewExtraCount }"
-              aria-hidden="true"
-            >
-              <span
-                v-for="item in dropPreviewItems"
-                :key="item.id"
-                class="drop-preview-card"
-                :class="`drop-preview-card--${item.tone}`"
-              >
-                <span class="drop-preview-glyph"></span>
-                <span class="drop-preview-label">{{ item.label }}</span>
-              </span>
-              <span v-if="dropPreviewExtraCount" class="drop-preview-extra">+{{ dropPreviewExtraCount }}</span>
-            </span>
             <span class="drop-copy">
               <strong>{{ dropFeedbackInfo.title }}</strong>
               <small>{{ dropFeedbackInfo.detail }}</small>
+            </span>
+            <span class="drop-motion" aria-hidden="true">
+              <span class="drop-particles">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+              <span class="drop-stream">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
             </span>
           </div>
 
@@ -188,8 +183,6 @@ const isMovingIsland = shallowRef(false)
 const isPastingTape = shallowRef(false)
 const islandAnchor = shallowRef({ horizontal: 'right', vertical: 'center' })
 const dropNeirongSummary = shallowRef('文件、链接或文字')
-const dropPreviewItems = shallowRef([{ id: 'file', label: 'FILE', tone: 'file' }])
-const dropPreviewExtraCount = shallowRef(0)
 const jujiaoLibraryItemId = shallowRef('')
 const currentPage = shallowRef('library')
 const isLibraryContentVisible = shallowRef(false)
@@ -204,9 +197,9 @@ let shouldIgnoreIslandClick = false
 let islandStateQingqiuVersion = 0
 
 const dropFeedbackInfo = computed(() => {
-  if (isDropping.value) return { title: '已接住', detail: dropNeirongSummary.value }
-  if (isDropImporting.value) return { title: '正在整理', detail: '完成后自动归类' }
-  return { title: '松手归档', detail: dropNeirongSummary.value }
+  if (isDropping.value) return { title: '正在接收', detail: dropNeirongSummary.value }
+  if (isDropImporting.value) return { title: '正在整理', detail: '完成后打开资料库' }
+  return { title: '松开以收纳', detail: `${dropNeirongSummary.value}将自动归档` }
 })
 
 const {
@@ -501,82 +494,21 @@ function baohanDragContent(event) {
   return types.some((type) => ['Files', 'text/uri-list', 'text/plain'].includes(type))
 }
 
-function huoquDropFileLabel(file) {
-  const filename = file?.name ?? ''
-  const extension = filename.includes('.') ? filename.split('.').pop() : ''
-  const normalizedExtension = extension?.replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase()
-  if (normalizedExtension) return normalizedExtension
-
-  const typeLabels = { image: 'IMG', audio: 'AUD', video: 'VID', text: 'TXT' }
-  return typeLabels[file?.type?.split('/')[0]] ?? 'FILE'
-}
-
-const wenjianToneExtensions = {
-  image: new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'heic', 'avif']),
-  pdf: new Set(['pdf']),
-  sheet: new Set(['xls', 'xlsx', 'csv', 'ods']),
-  archive: new Set(['zip', 'rar', '7z', 'tar', 'gz']),
-  media: new Set(['mp3', 'wav', 'flac', 'aac', 'mp4', 'mov', 'mkv', 'webm']),
-  document: new Set(['txt', 'md', 'doc', 'docx', 'rtf', 'ppt', 'pptx', 'json', 'js', 'ts', 'vue', 'css', 'html']),
-}
-
-// 依据文件类型生成克制的卡片材质，不读取文件内容。
-function huoquDropFileTone(file, label) {
-  const mimeType = file?.type ?? ''
-  const extension = label.toLowerCase()
-  if (mimeType.startsWith('image/') || wenjianToneExtensions.image.has(extension)) return 'image'
-  if (mimeType === 'application/pdf' || wenjianToneExtensions.pdf.has(extension)) return 'pdf'
-  if (wenjianToneExtensions.sheet.has(extension)) return 'sheet'
-  if (wenjianToneExtensions.archive.has(extension)) return 'archive'
-  if (mimeType.startsWith('audio/') || mimeType.startsWith('video/') || wenjianToneExtensions.media.has(extension)) return 'media'
-  if (mimeType.startsWith('text/') || wenjianToneExtensions.document.has(extension)) return 'document'
-  return 'file'
-}
-
-// 只展示文件类型与数量，不暴露或绘制完整文件名。
-function huoquDragContentInfo(dataTransfer) {
+// 仅反馈投放内容类型与数量，不暴露文件名。
+function huoquDragContentSummary(dataTransfer) {
   const fileItems = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
-  const itemFiles = fileItems.map((item) => item.getAsFile?.()).filter(Boolean)
-  const availableFiles = itemFiles.length ? itemFiles : Array.from(dataTransfer?.files ?? [])
-  const fileCount = Math.max(fileItems.length, availableFiles.length)
-  if (fileCount) {
-    const previewItems = Array.from({ length: Math.min(fileCount, 3) }, (_, index) => {
-      const file = availableFiles[index]
-      const label = huoquDropFileLabel(file)
-      return {
-        id: `file-${index}`,
-        label,
-        tone: huoquDropFileTone(file, label),
-      }
-    })
-    return {
-      summary: `${fileCount} 个文件`,
-      previewItems,
-      extraCount: Math.max(fileCount - previewItems.length, 0),
-    }
-  }
+  const fileCount = Math.max(fileItems.length, dataTransfer?.files?.length ?? 0)
+  if (fileCount) return `${fileCount} 个文件`
 
   const types = Array.from(dataTransfer?.types ?? [])
-  const isUrl = types.includes('text/uri-list')
-  return {
-    summary: isUrl ? '网页链接' : '文字内容',
-    previewItems: [{
-      id: isUrl ? 'url' : 'text',
-      label: isUrl ? 'URL' : 'TXT',
-      tone: isUrl ? 'url' : 'document',
-    }],
-    extraCount: 0,
-  }
+  return types.includes('text/uri-list') ? '网页链接' : '文字内容'
 }
 
 function chuliDragEnter(event) {
   if (isMovingIsland.value || isDropping.value || isDropImporting.value || !baohanDragContent(event)) return
   event.preventDefault()
   if (isDragging.value) return
-  const contentInfo = huoquDragContentInfo(event.dataTransfer)
-  dropNeirongSummary.value = contentInfo.summary
-  dropPreviewItems.value = contentInfo.previewItems
-  dropPreviewExtraCount.value = contentInfo.extraCount
+  dropNeirongSummary.value = huoquDragContentSummary(event.dataTransfer)
   isDragging.value = true
   isExpanded.value = false
   isLibraryContentVisible.value = false
@@ -738,19 +670,17 @@ function shezhiMousePassthrough(passthrough, force = false) {
   --shouqi-width: 104px;
   --shouqi-height: 116px;
   --shouqi-edge-offset: 28px;
-  --drop-width: 232px;
-  --drop-height: 116px;
-  --drop-visual-height: 108px;
-  --drop-visual-y: calc(var(--drop-y) + 4px);
-  --drop-content-width: calc(var(--drop-width) - var(--shouqi-width));
-  --drop-radius: 20px 34px 34px 20px;
-  --drop-enter-x: 8px;
-  --drop-light-x: 86%;
+  --drop-width: 160px;
+  --drop-height: 214px;
+  --drop-hint-height: 94px;
+  --drop-motion-height: 58px;
+  --drop-stream-height: 40px;
+  --drop-stream-distance: 48px;
+  --drop-x: calc(var(--shouqi-x) + (var(--shouqi-width) - var(--drop-width)) / 2);
+  --drop-y: calc(var(--shouqi-y) - (var(--drop-height) - var(--shouqi-height)));
+  --drop-hint-y: calc(var(--shouqi-y) - 70px);
   --shouqi-x: calc(100% - var(--shouqi-width) - var(--shouqi-edge-offset));
   --shouqi-y: calc((100% - var(--shouqi-height)) / 2);
-  --drop-x: calc(100% - var(--drop-width) - var(--shouqi-edge-offset));
-  --drop-y: calc((100% - var(--drop-height)) / 2);
-  --drop-content-x: var(--drop-x);
   position: relative;
   width: min(680px, calc(100vw - 40px));
   height: 380px;
@@ -762,32 +692,39 @@ function shezhiMousePassthrough(passthrough, force = false) {
 
 .lingdongchuangkou--anchor-x-left {
   --shouqi-x: var(--shouqi-edge-offset);
-  --drop-x: var(--shouqi-edge-offset);
-  --drop-content-x: calc(var(--drop-x) + var(--shouqi-width));
-  --drop-enter-x: -8px;
-  --drop-light-x: 14%;
-  --drop-radius: 34px 20px 20px 34px;
 }
 
 .lingdongchuangkou--anchor-x-center {
   --shouqi-x: calc((100% - var(--shouqi-width)) / 2);
-  --drop-x: calc(var(--shouqi-x) + var(--shouqi-width) - var(--drop-width));
-  --drop-content-x: var(--drop-x);
 }
 
 .lingdongchuangkou--anchor-y-center {
   --shouqi-y: calc((100% - var(--shouqi-height)) / 2);
-  --drop-y: calc((100% - var(--drop-height)) / 2);
 }
 
 .lingdongchuangkou--anchor-y-top {
+  --drop-hint-height: 90px;
+  --drop-motion-height: 50px;
+  --drop-stream-height: 24px;
+  --drop-stream-distance: 34px;
   --shouqi-y: var(--shouqi-edge-offset);
-  --drop-y: var(--shouqi-edge-offset);
+  --drop-y: var(--shouqi-y);
+  --drop-hint-y: calc(var(--shouqi-y) + var(--shouqi-height) + 8px);
+}
+
+.lingdongchuangkou--anchor-y-top .drop-hint {
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+}
+
+.lingdongchuangkou--anchor-y-top .drop-motion {
+  margin-top: 0;
+  margin-bottom: 7px;
+  transform: scaleY(-1);
 }
 
 .lingdongchuangkou--anchor-y-bottom {
   --shouqi-y: calc(100% - var(--shouqi-height) - var(--shouqi-edge-offset));
-  --drop-y: calc(100% - var(--drop-height) - var(--shouqi-edge-offset));
 }
 
 .island-frame {
@@ -808,17 +745,6 @@ function shezhiMousePassthrough(passthrough, force = false) {
   border-color: var(--border-ink);
   border-radius: 20px;
   box-shadow: inset 0 1px rgba(255, 255, 255, .72), 0 12px 32px rgba(0, 0, 0, .18);
-}
-
-.island-frame--drop {
-  top: var(--drop-visual-y);
-  left: var(--drop-x);
-  width: var(--drop-width);
-  height: var(--drop-visual-height);
-  border-color: rgba(190, 207, 198, .32);
-  border-radius: var(--drop-radius);
-  box-shadow: inset 0 1px rgba(255, 255, 255, .08), 0 10px 24px rgba(0, 0, 0, .14);
-  transform: none;
 }
 
 .toast-layer {
@@ -846,8 +772,6 @@ function shezhiMousePassthrough(passthrough, force = false) {
 }
 
 .lingdongchuangkou--expanded .island-frame--expanded { opacity: 1; transition-delay: 260ms; }
-.lingdongchuangkou--drop .island-frame--drop { opacity: 1; }
-
 .island-shell {
   position: absolute;
   z-index: 1;
@@ -964,7 +888,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   box-shadow: inset 0 1px rgba(255, 255, 255, .86), inset 0 -1px rgba(38, 38, 38, .08);
 }
 
-/* 上传态只在宠物周围展开轻量归档口袋，不移动原生窗口。 */
+/* 上传反馈像系统提示一样悬浮在桌宠上方，不建立额外容器。 */
 .lingdongchuangkou--drop {
   pointer-events: none;
 }
@@ -975,251 +899,144 @@ function shezhiMousePassthrough(passthrough, force = false) {
     calc(100% - var(--drop-x) - var(--drop-width))
     calc(100% - var(--drop-y) - var(--drop-height))
     var(--drop-x)
-    round var(--drop-radius)
   );
   pointer-events: auto;
   transition-duration: 160ms;
 }
 
-.lingdongchuangkou--drop .inner-glow {
-  inset: auto;
-  top: calc(var(--drop-visual-y) + 1px);
-  left: calc(var(--drop-x) + 1px);
-  width: calc(var(--drop-width) - 2px);
-  height: calc(var(--drop-visual-height) - 2px);
-  border-radius: var(--drop-radius);
-  background:
-    radial-gradient(circle at var(--drop-light-x) 44%, rgba(99, 254, 19, .085), transparent 31%),
-    linear-gradient(145deg, rgba(38, 43, 40, .97), rgba(16, 19, 18, .99));
-  box-shadow: inset 0 1px rgba(255, 255, 255, .06), inset 0 -1px rgba(0, 0, 0, .24);
-}
-
 .drop-hint {
   position: absolute;
   z-index: 2;
-  top: var(--drop-visual-y);
-  left: var(--drop-content-x);
+  top: var(--drop-hint-y);
+  left: var(--drop-x);
   display: flex;
-  width: var(--drop-content-width);
-  height: var(--drop-visual-height);
+  width: var(--drop-width);
+  height: var(--drop-hint-height);
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  color: var(--text-on-ink);
+  justify-content: flex-start;
+  color: rgba(246, 248, 246, .94);
+  isolation: isolate;
   opacity: 0;
   pointer-events: none;
-  transform: translate3d(var(--drop-enter-x), 0, 0);
-  transition: opacity 120ms ease, transform 160ms var(--motion-easing);
-}
-
-.drop-preview {
-  position: relative;
-  width: 40px;
-  height: 50px;
-  flex: 0 0 auto;
-}
-
-.drop-preview--single { width: 31px; }
-
-.drop-preview-card {
-  --drop-card-top: rgba(211, 224, 216, .2);
-  --drop-card-bottom: rgba(72, 86, 79, .14);
-  --drop-card-label: rgba(232, 239, 235, .76);
-  position: absolute;
-  top: 5px;
-  left: 1px;
-  z-index: 1;
-  display: grid;
-  width: 29px;
-  height: 40px;
-  grid-template-rows: 1fr auto;
-  gap: 2px;
-  overflow: hidden;
-  padding: 4px 3px 5px;
-  border: 1px solid rgba(230, 239, 234, .15);
-  border-radius: 9px;
-  background: linear-gradient(155deg, var(--drop-card-top), var(--drop-card-bottom));
-  box-shadow: 0 7px 14px rgba(0, 0, 0, .18), inset 0 1px rgba(255, 255, 255, .08);
-  opacity: 0;
-  transform: translate3d(var(--drop-enter-x), 5px, 0) scale(.92);
-  transition: opacity 130ms ease, transform 190ms var(--motion-easing), border-color 140ms ease;
-}
-
-.drop-preview-card::after {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(115deg, rgba(255, 255, 255, .07), transparent 42%);
-  content: '';
-  pointer-events: none;
-}
-
-.drop-preview-glyph,
-.drop-preview-label {
-  position: relative;
-  z-index: 1;
-}
-
-.drop-preview-glyph {
-  display: block;
-  width: 100%;
-  min-height: 17px;
-  border: 1px solid rgba(238, 244, 240, .1);
-  border-radius: 5px;
-  background: linear-gradient(145deg, rgba(230, 238, 233, .12), rgba(111, 127, 118, .08));
-  box-shadow: inset 0 1px rgba(255, 255, 255, .05);
-}
-
-.drop-preview-label {
-  justify-self: center;
-  color: var(--drop-card-label);
-  font: 650 7px/1 var(--font-mono);
-  letter-spacing: .055em;
-}
-
-/* 图片以静态缩略画布呈现。 */
-.drop-preview-card--image {
-  --drop-card-top: rgba(68, 113, 112, .42);
-  --drop-card-bottom: rgba(31, 58, 60, .3);
-  --drop-card-label: rgba(205, 232, 226, .9);
-}
-
-.drop-preview-card--image .drop-preview-glyph {
-  background:
-    radial-gradient(circle at 74% 26%, rgba(230, 242, 234, .8) 0 1.7px, transparent 2px),
-    linear-gradient(145deg, transparent 46%, rgba(116, 170, 151, .68) 47% 69%, transparent 70%),
-    linear-gradient(35deg, rgba(54, 101, 99, .94) 0 46%, transparent 47%),
-    linear-gradient(150deg, rgba(118, 157, 157, .42), rgba(31, 57, 59, .18));
-}
-
-/* 文档通过纸张行距与折角区分。 */
-.drop-preview-card--document {
-  --drop-card-top: rgba(164, 174, 170, .3);
-  --drop-card-bottom: rgba(65, 73, 70, .2);
-  --drop-card-label: rgba(230, 235, 232, .86);
-}
-
-.drop-preview-card--document .drop-preview-glyph {
-  background:
-    linear-gradient(225deg, rgba(12, 15, 14, .42) 0 4px, transparent 4.5px) top right / 7px 7px no-repeat,
-    repeating-linear-gradient(to bottom, rgba(226, 234, 230, .35) 0 1px, transparent 1px 4px),
-    linear-gradient(145deg, rgba(194, 204, 199, .2), rgba(94, 105, 100, .12));
-}
-
-.drop-preview-card--pdf {
-  --drop-card-top: rgba(128, 72, 68, .44);
-  --drop-card-bottom: rgba(66, 37, 36, .27);
-  --drop-card-label: rgba(240, 210, 205, .9);
-}
-
-.drop-preview-card--pdf .drop-preview-glyph {
-  background:
-    linear-gradient(225deg, rgba(58, 24, 23, .52) 0 4px, transparent 4.5px) top right / 7px 7px no-repeat,
-    repeating-linear-gradient(to bottom, rgba(245, 220, 215, .34) 0 1px, transparent 1px 4px),
-    linear-gradient(145deg, rgba(181, 106, 99, .28), rgba(83, 43, 41, .18));
-}
-
-/* 表格使用细网格，保持低饱和避免彩虹感。 */
-.drop-preview-card--sheet {
-  --drop-card-top: rgba(55, 101, 75, .44);
-  --drop-card-bottom: rgba(29, 59, 43, .28);
-  --drop-card-label: rgba(202, 232, 210, .9);
-}
-
-.drop-preview-card--sheet .drop-preview-glyph {
-  background:
-    repeating-linear-gradient(to right, transparent 0 5px, rgba(199, 229, 207, .2) 5px 6px),
-    repeating-linear-gradient(to bottom, transparent 0 4px, rgba(199, 229, 207, .2) 4px 5px),
-    linear-gradient(145deg, rgba(78, 130, 96, .36), rgba(32, 68, 48, .2));
-}
-
-.drop-preview-card--archive {
-  --drop-card-top: rgba(121, 93, 51, .45);
-  --drop-card-bottom: rgba(62, 47, 27, .28);
-  --drop-card-label: rgba(235, 218, 183, .9);
-}
-
-.drop-preview-card--archive .drop-preview-glyph {
-  background:
-    repeating-linear-gradient(to bottom, rgba(239, 218, 171, .45) 0 2px, transparent 2px 4px) center / 3px 100% no-repeat,
-    linear-gradient(90deg, transparent 44%, rgba(39, 29, 17, .28) 44% 56%, transparent 56%),
-    linear-gradient(145deg, rgba(147, 111, 60, .38), rgba(68, 51, 29, .2));
-}
-
-.drop-preview-card--media {
-  --drop-card-top: rgba(70, 82, 119, .46);
-  --drop-card-bottom: rgba(35, 42, 67, .29);
-  --drop-card-label: rgba(211, 217, 239, .9);
-}
-
-.drop-preview-card--media .drop-preview-glyph {
-  background:
-    linear-gradient(to top, rgba(213, 219, 240, .52) 0 68%, transparent 69%) 3px bottom / 2px 9px no-repeat,
-    linear-gradient(to top, rgba(213, 219, 240, .4) 0 42%, transparent 43%) 8px bottom / 2px 12px no-repeat,
-    linear-gradient(to top, rgba(213, 219, 240, .6) 0 78%, transparent 79%) 13px bottom / 2px 8px no-repeat,
-    linear-gradient(145deg, rgba(92, 106, 151, .36), rgba(42, 51, 81, .2));
-}
-
-.drop-preview-card--url {
-  --drop-card-top: rgba(55, 100, 111, .44);
-  --drop-card-bottom: rgba(28, 54, 62, .28);
-  --drop-card-label: rgba(202, 229, 233, .9);
-}
-
-.drop-preview-card--url .drop-preview-glyph {
-  background:
-    radial-gradient(circle at 30% 67%, transparent 0 3px, rgba(204, 232, 235, .46) 3.5px 4.5px, transparent 5px),
-    radial-gradient(circle at 70% 33%, transparent 0 3px, rgba(204, 232, 235, .46) 3.5px 4.5px, transparent 5px),
-    linear-gradient(145deg, transparent 45%, rgba(204, 232, 235, .4) 46% 54%, transparent 55%),
-    linear-gradient(145deg, rgba(72, 126, 137, .32), rgba(30, 62, 69, .2));
-}
-
-.drop-preview-card:nth-child(2) {
-  left: 6px;
-  z-index: 2;
-  transition-delay: 20ms;
-}
-
-.drop-preview-card:nth-child(3) {
-  left: 11px;
-  z-index: 3;
-  transition-delay: 40ms;
-}
-
-.drop-preview-extra {
-  position: absolute;
-  z-index: 4;
-  right: 0;
-  bottom: 1px;
-  min-width: 17px;
-  padding: 2px 3px;
-  border: 1px solid rgba(255, 255, 255, .1);
-  border-radius: 8px;
-  background: rgba(8, 10, 9, .88);
-  color: rgba(220, 229, 224, .72);
-  font: 650 7px/1 var(--font-mono);
-  text-align: center;
+  transform: translate3d(0, 5px, 0);
+  transition: opacity 150ms ease, transform 220ms var(--motion-easing);
 }
 
 .drop-copy {
+  position: relative;
+  z-index: 1;
   display: grid;
-  min-width: 0;
+  font-family: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  justify-items: center;
   gap: 3px;
+  text-align: center;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
 }
 
 .drop-copy strong {
-  color: rgba(244, 247, 245, .96);
-  font: 650 12px/1 var(--font-display);
-  letter-spacing: .035em;
+  color: rgba(153, 160, 155, .98);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: .015em;
+  text-shadow: 0 1px 1px rgba(8, 11, 9, .54);
   white-space: nowrap;
 }
 
 .drop-copy small {
   overflow: hidden;
-  color: rgba(196, 207, 201, .66);
-  font: 500 9px/1 var(--font-display);
-  letter-spacing: .045em;
+  max-width: 154px;
+  color: rgba(147, 154, 149, .96);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: .012em;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 1px rgba(8, 11, 9, .48);
   white-space: nowrap;
+}
+
+.drop-motion {
+  position: relative;
+  z-index: 1;
+  width: 64px;
+  height: var(--drop-motion-height);
+  margin-top: 7px;
+}
+
+/* 数据抵达宠物前以收纳刻线反馈。 */
+.drop-motion::after {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 15px;
+  height: 1px;
+  background: rgba(137, 144, 139, .72);
+  box-shadow: 0 1px rgba(248, 249, 248, .44), 0 -1px rgba(8, 11, 9, .18);
+  content: '';
+  opacity: .48;
+  transform: translate3d(-50%, 0, 0) scaleX(.42);
+  transform-origin: center;
+}
+
+.drop-particles {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 28px;
+}
+
+.drop-particles > span {
+  --drop-particle-x: 0px;
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 1px;
+  background: rgba(117, 124, 119, .74);
+  box-shadow: 0 1px rgba(248, 249, 248, .58);
+  transform: translate3d(var(--drop-particle-x), 0, 0);
+  will-change: transform, opacity;
+}
+
+.drop-particles > span:first-child { --drop-particle-x: -18px; }
+.drop-particles > span:last-child { --drop-particle-x: 18px; }
+
+.lingdongchuangkou--dropping .drop-particles > span {
+  animation: none;
+  opacity: 0;
+  transform: translate3d(0, 25px, 0) scaleX(.45);
+  transition: opacity 150ms ease, transform 180ms cubic-bezier(.4, 0, 1, 1);
+}
+
+.lingdongchuangkou--importing .drop-particles {
+  opacity: 0;
+}
+
+.drop-stream {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  width: 1px;
+  height: var(--drop-stream-height);
+  overflow: hidden;
+  background: linear-gradient(180deg, transparent, rgba(137, 144, 139, .34) 12%, rgba(137, 144, 139, .26) 86%, transparent);
+  box-shadow: 1px 0 rgba(248, 249, 248, .26), -1px 0 rgba(8, 11, 9, .12);
+  transform: translateX(-50%);
+}
+
+.drop-stream > span {
+  position: absolute;
+  top: -12px;
+  left: -1px;
+  width: 3px;
+  height: 12px;
+  background: linear-gradient(180deg, transparent, rgba(124, 132, 126, .96) 52%, transparent);
+  box-shadow: 1px 0 rgba(248, 249, 248, .48), -1px 0 rgba(8, 11, 9, .24);
+  will-change: transform, opacity;
 }
 
 .lingdongchuangkou--drop .drop-hint {
@@ -1227,34 +1044,43 @@ function shezhiMousePassthrough(passthrough, force = false) {
   transform: translate3d(0, 0, 0);
 }
 
-.lingdongchuangkou--drop .drop-preview-card:nth-child(1) {
-  opacity: 1;
-  transform: translate3d(0, 5px, 0) rotate(-7deg);
+@media (prefers-reduced-motion: no-preference) {
+  .lingdongchuangkou--drop:not(.lingdongchuangkou--dropping):not(.lingdongchuangkou--importing) .drop-particles > span {
+    animation: drop-particle-converge 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  }
+
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(2) { animation-delay: -500ms; }
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(3) { animation-delay: -1000ms; }
+
+  .lingdongchuangkou--drop .drop-stream > span {
+    animation: drop-stream-fall 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  }
+
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(2) { animation-delay: -500ms; }
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(3) { animation-delay: -1000ms; }
+
+  .lingdongchuangkou--drop .drop-motion::after {
+    animation: drop-intake-receive 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  }
 }
 
-.lingdongchuangkou--drop .drop-preview-card:nth-child(2) {
-  opacity: 1;
-  transform: translate3d(0, 1px, 0) rotate(-1deg);
+@keyframes drop-particle-converge {
+  0% { opacity: 0; transform: translate3d(var(--drop-particle-x), 0, 0) scaleX(1); }
+  20% { opacity: .82; }
+  68% { opacity: .58; }
+  100% { opacity: 0; transform: translate3d(0, 24px, 0) scaleX(.48); }
 }
 
-.lingdongchuangkou--drop .drop-preview-card:nth-child(3) {
-  opacity: 1;
-  transform: translate3d(0, 4px, 0) rotate(7deg);
+@keyframes drop-stream-fall {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) scaleY(.6); }
+  16% { opacity: .94; }
+  72% { opacity: .82; }
+  100% { opacity: 0; transform: translate3d(0, var(--drop-stream-distance), 0) scaleY(1); }
 }
 
-.lingdongchuangkou--dropping .island-frame--drop,
-.lingdongchuangkou--importing .island-frame--drop {
-  border-color: rgba(99, 254, 19, .32);
-}
-
-.lingdongchuangkou--dropping .drop-preview-card,
-.lingdongchuangkou--importing .drop-preview-card {
-  border-color: rgba(129, 221, 146, .28);
-}
-
-.lingdongchuangkou--dropping .drop-copy strong,
-.lingdongchuangkou--importing .drop-copy strong {
-  color: rgba(164, 227, 175, .94);
+@keyframes drop-intake-receive {
+  0%, 58%, 100% { opacity: .42; transform: translate3d(-50%, 0, 0) scaleX(.42); }
+  76% { opacity: .9; transform: translate3d(-50%, 0, 0) scaleX(1); }
 }
 
 @keyframes cixi-body-settle {
@@ -1277,12 +1103,20 @@ function shezhiMousePassthrough(passthrough, force = false) {
   }
 
   .library-stage--visible,
-  .lingdongchuangkou--expanded .island-frame--expanded,
-  .lingdongchuangkou--drop .island-frame--drop { transition-delay: 0s; }
+  .lingdongchuangkou--expanded .island-frame--expanded { transition-delay: 0s; }
 
   .lingdongchuangkou--pasting .island-shell { animation: none; }
 
-  .drop-preview-card { transition-duration: 0ms; }
+  .drop-particles > span,
+  .drop-stream > span,
+  .drop-motion::after { animation: none; transition-duration: 0ms; }
+
+  .drop-stream > span { opacity: 0; }
+
+  .drop-motion::after {
+    opacity: .68;
+    transform: translate3d(-50%, 0, 0) scaleX(.76);
+  }
 
   .lingdongchuangkou--moving .island-shell { transform: none; }
 }
