@@ -602,7 +602,12 @@ function tiquDraggedResources(dataTransfer) {
       if (!candidates.length) return []
       const anchorUrl = image.closest('a[href]')?.getAttribute('href')?.trim()
       const referer = /^https?:\/\//i.test(anchorUrl || '') ? anchorUrl : ''
-      return [{ sourceUrl: associatedTransferUrls[0] || referer || candidates[0], referer: referer || associatedTransferUrls[0] || '', candidates: candidates.slice(0, 8) }]
+      return [{
+        sourceUrl: associatedTransferUrls[0] || referer || candidates[0],
+        referer: referer || associatedTransferUrls[0] || '',
+        candidates: candidates.slice(0, 8),
+        isXiazaiPreferred: true,
+      }]
     })
     if (resources.length) return resources.slice(0, 20)
   }

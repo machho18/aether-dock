@@ -57,9 +57,26 @@ defineProps({
 .toast--corner { right: 18px; left: auto; transform: none; }
 .toast--corner.toast-rise-enter-from { transform: translateY(12px); }
 .toast--corner.toast-rise-leave-to { transform: translateY(8px); }
-.toast--embedded { bottom: 50%; padding-inline: 8px; border-color: transparent; background: transparent; box-shadow: none; transform: translate(-50%, 50%); }
-.toast--embedded.toast-rise-enter-from { transform: translate(-50%, calc(50% + 8px)); }
-.toast--embedded.toast-rise-leave-to { transform: translate(-50%, calc(50% - 5px)); }
+/* 收起态提示悬浮在宠物上方，保留主体并通过双向明暗保证跨背景可读。 */
+.toast--embedded {
+  bottom: calc(100% + 6px);
+  max-width: 160px;
+  padding-inline: 8px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(42, 48, 44, .96);
+  font-weight: 600;
+  letter-spacing: .015em;
+  text-shadow:
+    0 1px 1px rgba(255, 255, 255, .98),
+    0 0 4px rgba(255, 255, 255, .9),
+    0 1px 5px rgba(15, 17, 16, .26);
+  transform: translate(-50%, 0);
+}
+.toast--embedded .toast-dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, .9), 0 1px 5px rgba(15, 17, 16, .3); }
+.toast--embedded.toast-rise-enter-from { transform: translate(-50%, 8px); }
+.toast--embedded.toast-rise-leave-to { transform: translate(-50%, -5px); }
 .toast-rise-enter-active, .toast-rise-leave-active { transition: opacity 220ms ease, transform 320ms var(--motion-easing); }
 .toast-rise-enter-from { opacity: 0; transform: translate(-50%, 22px); }
 .toast-rise-leave-to { opacity: 0; transform: translate(-50%, 10px); }

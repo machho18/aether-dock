@@ -56,17 +56,23 @@
           <div class="collapsed-stage">
             <ShouqiStatus
               :animation-id="currentCollapsedAnimation"
-              :hidden="isExpanded || (toastState.visible && !isDragging && !isDropping && !isDropImporting)"
+              :hidden="isExpanded"
               :moving="isMovingIsland"
               :pasting="isPastingTape"
               charm
             />
           </div>
 
-          <div class="drop-hint" role="status" aria-live="polite">
-            <span class="drop-copy">
-              <strong>{{ dropFeedbackInfo.title }}</strong>
-              <small>{{ dropFeedbackInfo.detail }}</small>
+          <div
+            class="drop-hint"
+            role="status"
+            aria-live="polite"
+            :aria-label="dropTypeLabel"
+          >
+            <span class="drop-type-icon" aria-hidden="true">
+              <PhLinkSimple v-if="dropNeirongType === 'link'" :size="30" weight="regular" />
+              <PhImage v-else-if="dropNeirongType === 'image'" :size="30" weight="regular" />
+              <PhFile v-else :size="30" weight="regular" />
             </span>
             <span class="drop-motion" aria-hidden="true">
               <span class="drop-particles">
@@ -158,6 +164,7 @@
 </template>
 
 <script setup>
+import { PhFile, PhImage, PhLinkSimple } from '@phosphor-icons/vue'
 import { computed, defineAsyncComponent, onMounted, shallowRef, useTemplateRef } from 'vue'
 import { useEventListener, useTimeoutFn } from '@vueuse/core'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -181,13 +188,18 @@ const isDropping = shallowRef(false)
 const isDropImporting = shallowRef(false)
 const isMovingIsland = shallowRef(false)
 const isPastingTape = shallowRef(false)
-const islandAnchor = shallowRef({ horizontal: 'right', vertical: 'center' })
-const dropNeirongSummary = shallowRef('文件、链接或文字')
+const islandAnchor = shallowRef({ horizontal: 'right', vertical: 'bottom' })
+const dropNeirongType = shallowRef('file')
 const jujiaoLibraryItemId = shallowRef('')
 const currentPage = shallowRef('library')
 const isLibraryContentVisible = shallowRef(false)
 const isExpansionAnimating = shallowRef(false)
 const isCixiGuajianVisible = computed(() => !isExpanded.value && !isDragging.value && !isDropping.value && !isDropImporting.value)
+const dropTypeLabel = computed(() => ({
+  image: '正在收纳图片',
+  link: '正在收纳链接',
+  file: '正在收纳文件',
+})[dropNeirongType.value])
 let isPassthrough = true
 let islandMoveContext = null
 let tapePastingTimer = 0
@@ -195,12 +207,6 @@ let collapseShapeTimer = 0
 let isIslandStateChanging = false
 let shouldIgnoreIslandClick = false
 let islandStateQingqiuVersion = 0
-
-const dropFeedbackInfo = computed(() => {
-  if (isDropping.value) return { title: '正在接收', detail: dropNeirongSummary.value }
-  if (isDropImporting.value) return { title: '正在整理', detail: '完成后打开资料库' }
-  return { title: '松开以收纳', detail: `${dropNeirongSummary.value}将自动归档` }
-})
 
 const {
   toastState,
@@ -494,21 +500,38 @@ function baohanDragContent(event) {
   return types.some((type) => ['Files', 'text/uri-list', 'text/plain'].includes(type))
 }
 
-// 仅反馈投放内容类型与数量，不暴露文件名。
-function huoquDragContentSummary(dataTransfer) {
-  const fileItems = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
-  const fileCount = Math.max(fileItems.length, dataTransfer?.files?.length ?? 0)
-  if (fileCount) return `${fileCount} 个文件`
+const TUPIAN_FILE_EXTENSION_RE = /\.(?:avif|bmp|gif|heic|jpe?g|png|svg|webp)$/i
 
+function panduanTupianDragItem(item) {
+  const dragFile = item?.kind === 'file' ? item.getAsFile?.() : item
+  const mimeType = String(item?.type || dragFile?.type || '').toLowerCase()
+  if (mimeType.startsWith('image/')) return true
+  return TUPIAN_FILE_EXTENSION_RE.test(String(dragFile?.name ?? ''))
+}
+
+// 实体文件优先，全为图片时单独反馈图片类型。
+function huoquDragContentType(dataTransfer) {
+  const fileItems = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
+  const files = Array.from(dataTransfer?.files ?? [])
   const types = Array.from(dataTransfer?.types ?? [])
-  return types.includes('text/uri-list') ? '网页链接' : '文字内容'
+  const dragFiles = files.length ? files : fileItems
+
+  if (fileItems.length || files.length || types.includes('Files')) {
+    return dragFiles.length && dragFiles.every(panduanTupianDragItem) ? 'image' : 'file'
+  }
+  if (types.includes('text/uri-list')) return 'link'
+
+  const rawText = dataTransfer?.getData('text/uri-list')
+    || dataTransfer?.getData('text/plain')
+    || ''
+  return /^https?:\/\//i.test(rawText.trim()) ? 'link' : 'file'
 }
 
 function chuliDragEnter(event) {
   if (isMovingIsland.value || isDropping.value || isDropImporting.value || !baohanDragContent(event)) return
   event.preventDefault()
   if (isDragging.value) return
-  dropNeirongSummary.value = huoquDragContentSummary(event.dataTransfer)
+  dropNeirongType.value = huoquDragContentType(event.dataTransfer)
   isDragging.value = true
   isExpanded.value = false
   isLibraryContentVisible.value = false
@@ -517,6 +540,7 @@ function chuliDragEnter(event) {
 function chuliDragOver(event) {
   if (isMovingIsland.value || !baohanDragContent(event)) return
   event.preventDefault()
+  dropNeirongType.value = huoquDragContentType(event.dataTransfer)
   event.dataTransfer.dropEffect = 'copy'
 }
 
@@ -529,6 +553,7 @@ function chuliDragLeave(event) {
 async function chuliDrop(event) {
   if (isMovingIsland.value || isDropping.value || isDropImporting.value || !baohanDragContent(event)) return
   event.preventDefault()
+  dropNeirongType.value = huoquDragContentType(event.dataTransfer)
   isDropping.value = true
   isDropImporting.value = true
   isDragging.value = true
@@ -904,6 +929,10 @@ function shezhiMousePassthrough(passthrough, force = false) {
 }
 
 .drop-hint {
+  --drop-icon-color: #171a19;
+  --drop-pulse-color: #171a19;
+  --drop-pulse-soft: rgba(23, 26, 25, .34);
+  --drop-pulse-faint: rgba(23, 26, 25, .14);
   position: absolute;
   z-index: 2;
   top: var(--drop-hint-y);
@@ -914,7 +943,6 @@ function shezhiMousePassthrough(passthrough, force = false) {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  color: rgba(246, 248, 246, .94);
   isolation: isolate;
   opacity: 0;
   pointer-events: none;
@@ -922,39 +950,22 @@ function shezhiMousePassthrough(passthrough, force = false) {
   transition: opacity 150ms ease, transform 220ms var(--motion-easing);
 }
 
-.drop-copy {
+.drop-type-icon {
   position: relative;
   z-index: 1;
   display: grid;
-  font-family: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  justify-items: center;
-  gap: 3px;
-  text-align: center;
-  text-rendering: geometricPrecision;
-  -webkit-font-smoothing: antialiased;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  color: var(--drop-icon-color);
+  filter:
+    drop-shadow(0 0 1px rgba(255, 255, 255, .96))
+    drop-shadow(0 1px 2px rgba(255, 255, 255, .78));
+  place-items: center;
 }
 
-.drop-copy strong {
-  color: rgba(153, 160, 155, .98);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.45;
-  letter-spacing: .015em;
-  text-shadow: 0 1px 1px rgba(8, 11, 9, .54);
-  white-space: nowrap;
-}
-
-.drop-copy small {
-  overflow: hidden;
-  max-width: 154px;
-  color: rgba(147, 154, 149, .96);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.55;
-  letter-spacing: .012em;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 1px rgba(8, 11, 9, .48);
-  white-space: nowrap;
+.drop-type-icon svg {
+  display: block;
 }
 
 .drop-motion {
@@ -962,22 +973,40 @@ function shezhiMousePassthrough(passthrough, force = false) {
   z-index: 1;
   width: 64px;
   height: var(--drop-motion-height);
-  margin-top: 7px;
+  margin-top: 5px;
+  filter:
+    drop-shadow(0 0 1px rgba(255, 255, 255, .92))
+    drop-shadow(0 1px 2px rgba(255, 255, 255, .68));
 }
 
-/* 数据抵达宠物前以收纳刻线反馈。 */
+/* 接收槽与扩散波同步反馈每一批数据抵达。 */
+.drop-motion::before {
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  width: 22px;
+  height: 8px;
+  border: 1px solid var(--drop-pulse-color);
+  border-radius: 50%;
+  content: '';
+  opacity: 0;
+  transform: translate3d(-50%, 0, 0) scale(.45);
+  will-change: transform, opacity;
+}
+
 .drop-motion::after {
   position: absolute;
   bottom: 0;
   left: 50%;
-  width: 15px;
-  height: 1px;
-  background: rgba(137, 144, 139, .72);
-  box-shadow: 0 1px rgba(248, 249, 248, .44), 0 -1px rgba(8, 11, 9, .18);
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--drop-pulse-color);
   content: '';
-  opacity: .48;
+  opacity: .54;
   transform: translate3d(-50%, 0, 0) scaleX(.42);
   transform-origin: center;
+  will-change: transform, opacity;
 }
 
 .drop-particles {
@@ -995,8 +1024,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   left: -3px;
   width: 6px;
   height: 1px;
-  background: rgba(117, 124, 119, .74);
-  box-shadow: 0 1px rgba(248, 249, 248, .58);
+  background: var(--drop-pulse-color);
   transform: translate3d(var(--drop-particle-x), 0, 0);
   will-change: transform, opacity;
 }
@@ -1022,8 +1050,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   width: 1px;
   height: var(--drop-stream-height);
   overflow: hidden;
-  background: linear-gradient(180deg, transparent, rgba(137, 144, 139, .34) 12%, rgba(137, 144, 139, .26) 86%, transparent);
-  box-shadow: 1px 0 rgba(248, 249, 248, .26), -1px 0 rgba(8, 11, 9, .12);
+  background: linear-gradient(180deg, transparent, var(--drop-pulse-soft) 12%, var(--drop-pulse-faint) 86%, transparent);
   transform: translateX(-50%);
 }
 
@@ -1033,8 +1060,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   left: -1px;
   width: 3px;
   height: 12px;
-  background: linear-gradient(180deg, transparent, rgba(124, 132, 126, .96) 52%, transparent);
-  box-shadow: 1px 0 rgba(248, 249, 248, .48), -1px 0 rgba(8, 11, 9, .24);
+  background: linear-gradient(180deg, transparent, var(--drop-pulse-color) 52%, transparent);
   will-change: transform, opacity;
 }
 
@@ -1045,41 +1071,52 @@ function shezhiMousePassthrough(passthrough, force = false) {
 
 @media (prefers-reduced-motion: no-preference) {
   .lingdongchuangkou--drop:not(.lingdongchuangkou--dropping):not(.lingdongchuangkou--importing) .drop-particles > span {
-    animation: drop-particle-converge 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+    animation: drop-particle-converge 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
   }
 
-  .lingdongchuangkou--drop .drop-particles > span:nth-child(2) { animation-delay: -500ms; }
-  .lingdongchuangkou--drop .drop-particles > span:nth-child(3) { animation-delay: -1000ms; }
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(2) { animation-delay: -450ms; }
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(3) { animation-delay: -900ms; }
 
   .lingdongchuangkou--drop .drop-stream > span {
-    animation: drop-stream-fall 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+    animation: drop-stream-fall 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
   }
 
-  .lingdongchuangkou--drop .drop-stream > span:nth-child(2) { animation-delay: -500ms; }
-  .lingdongchuangkou--drop .drop-stream > span:nth-child(3) { animation-delay: -1000ms; }
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(2) { animation-delay: -450ms; }
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(3) { animation-delay: -900ms; }
 
   .lingdongchuangkou--drop .drop-motion::after {
-    animation: drop-intake-receive 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+    animation: drop-intake-receive 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
+  }
+
+  .lingdongchuangkou--drop .drop-motion::before {
+    animation: drop-pulse-wave 1.35s cubic-bezier(.16, 1, .3, 1) infinite;
   }
 }
 
 @keyframes drop-particle-converge {
   0% { opacity: 0; transform: translate3d(var(--drop-particle-x), 0, 0) scaleX(1); }
-  20% { opacity: .82; }
-  68% { opacity: .58; }
+  18% { opacity: .96; }
+  66% { opacity: .72; }
   100% { opacity: 0; transform: translate3d(0, 24px, 0) scaleX(.48); }
 }
 
 @keyframes drop-stream-fall {
   0% { opacity: 0; transform: translate3d(0, 0, 0) scaleY(.6); }
-  16% { opacity: .94; }
-  72% { opacity: .82; }
+  14% { opacity: 1; }
+  70% { opacity: .9; }
   100% { opacity: 0; transform: translate3d(0, var(--drop-stream-distance), 0) scaleY(1); }
 }
 
 @keyframes drop-intake-receive {
-  0%, 58%, 100% { opacity: .42; transform: translate3d(-50%, 0, 0) scaleX(.42); }
-  76% { opacity: .9; transform: translate3d(-50%, 0, 0) scaleX(1); }
+  0%, 50%, 100% { opacity: .46; transform: translate3d(-50%, 0, 0) scaleX(.42); }
+  66% { opacity: 1; transform: translate3d(-50%, 0, 0) scaleX(1.18); }
+  82% { opacity: .68; transform: translate3d(-50%, 0, 0) scaleX(.72); }
+}
+
+@keyframes drop-pulse-wave {
+  0%, 54% { opacity: 0; transform: translate3d(-50%, 0, 0) scale(.45); }
+  66% { opacity: .62; transform: translate3d(-50%, 0, 0) scale(.58); }
+  100% { opacity: 0; transform: translate3d(-50%, 0, 0) scale(1.72); }
 }
 
 @keyframes cixi-body-settle {
@@ -1108,13 +1145,19 @@ function shezhiMousePassthrough(passthrough, force = false) {
 
   .drop-particles > span,
   .drop-stream > span,
+  .drop-motion::before,
   .drop-motion::after { animation: none; transition-duration: 0ms; }
 
   .drop-stream > span { opacity: 0; }
 
   .drop-motion::after {
-    opacity: .68;
+    opacity: .82;
     transform: translate3d(-50%, 0, 0) scaleX(.76);
+  }
+
+  .drop-motion::before {
+    opacity: .32;
+    transform: translate3d(-50%, 0, 0) scale(.78);
   }
 
   .lingdongchuangkou--moving .island-shell { transform: none; }

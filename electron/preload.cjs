@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld('aetherDock', {
           sourceUrl: typeof resource.sourceUrl === 'string' ? resource.sourceUrl : candidates[0],
           referer: typeof resource.referer === 'string' ? resource.referer : '',
           candidates,
+          isXiazaiPreferred: resource.isXiazaiPreferred === true,
         }]
       }).slice(0, 20),
     })

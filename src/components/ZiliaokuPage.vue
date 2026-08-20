@@ -119,6 +119,14 @@
                 <img
                   v-else-if="cardInfo.icon"
                   class="library-shelf-icon"
+                  :class="{
+                    'box-border rounded-xl border border-white/80 bg-white p-2 shadow-lg': item.type === 'url',
+                    'box-border rounded-xl border p-2 shadow-lg': item.type === 'document',
+                    'border-red-200/80 bg-red-50': item.type === 'document' && cardInfo.type === 'PDF',
+                    'border-blue-200/80 bg-blue-50': item.type === 'document' && cardInfo.type === 'DOC',
+                    'border-green-200/80 bg-green-50': item.type === 'document' && cardInfo.type === 'XLS',
+                    'border-slate-200/80 bg-slate-50': item.type === 'document' && cardInfo.type === 'FILE',
+                  }"
                   :src="cardInfo.icon"
                   alt=""
                   draggable="false"
