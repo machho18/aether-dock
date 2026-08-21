@@ -1,5 +1,5 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net: electronNet, protocol, screen, session, shell, Tray } = require('electron')
-const { execFile } = require('node:child_process')
+const { execFile, spawn } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const dns = require('node:dns/promises')
 const fs = require('node:fs')
@@ -26,10 +26,16 @@ let yingyongSyncPromise = null
 let managedReconcilePromise = null
 let managedReconcileKey = ''
 let managedReconcileTimer = null
+let isManagedReconcilePending = false
 let libraryRootMigrationPromise = null
 let yingyongIconCacheDir = ''
+let yingyongIconCleanupPromise = null
+let yingyongIconCleanupTimer = null
+let isYingyongIconCleanupPending = false
 const yingyongIconPromiseMap = new Map()
 const yingyongIconRenwuQueue = []
+const mediaCacheYanzhengVersionMap = new Map()
+const mediaCacheYanzhengMaxSize = 4096
 let yingyongIconHuodongRenwu = 0
 let yingyongIconRenwuXuhao = 0
 let tupianThumbnailCacheDir = ''
@@ -41,6 +47,7 @@ let isHeavyTasksPaused = false
 let isXuanfuqiuMoshi = false
 let isGengxinDialogShowing = false
 let isAutoUpdaterInitialized = false
+let jiantiebanWindowsClipboardHelper = null
 let zhengzaiGithubGengxinJianchaPromise = null
 let gengxinJianchaStateReadyPromise = null
 let appGengxinInfo = {
@@ -83,7 +90,9 @@ const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
 const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
+const jiantiebanImageExts = new Set([...remoteImageExts, '.svg'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
+const textPreviewExts = new Set(['.txt', '.md', '.csv'])
 const websiteIconMimeTypes = new Set([
   'image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon',
   'image/svg+xml', 'image/webp', 'image/gif',
@@ -369,6 +378,9 @@ function shezhiMainIslandWindowShape(state = 'collapsed', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return null
 
   const targetState = ['collapsed', 'moving', 'expanded', 'drop'].includes(state) ? state : 'collapsed'
+  // 窗口展开、拖动和接收投放时必须直接接收鼠标，不能等待渲染层异步解除穿透。
+  const shouldPassthrough = targetState === 'collapsed'
+  mainWindow.setIgnoreMouseEvents(shouldPassthrough, { forward: shouldPassthrough })
   const [currentX, currentY] = mainWindow.getPosition()
   const optimizedPosition = options?.optimizeAnchor
     ? youhuaMainIslandAnchor({ x: currentX, y: currentY })
@@ -498,36 +510,345 @@ function loadXuanfuqiuWindow(win) {
   win.loadFile(path.join(__dirname, '..', 'dist', 'floating.html'))
 }
 
-// 将剪贴板内容先落入系统临时目录，再复用资料库既有的受管文件导入流程。
-async function buhuoJiantiebanContent() {
-  const screenshot = clipboard.readImage()
-  let temporaryPath = ''
-  let captureType = ''
-  try {
-    if (!screenshot.isEmpty()) {
-      temporaryPath = path.join(os.tmpdir(), `aetherdock-clipboard-${Date.now()}-${process.pid}.png`)
-      await fsp.writeFile(temporaryPath, screenshot.toPNG())
-      captureType = '截图'
-    } else {
-      const content = clipboard.readText().trim()
-      if (!content) return { added: [], xiaoxi: '剪贴板中没有可捕获的内容' }
-      if (/^https?:\/\//i.test(content)) {
-        const result = await library.importContent({ file: [], url: [content] })
-        yureWebsiteIcons([...result.added.map(({ id }) => id), ...result.duplicates])
-        return { ...result, captureType: '链接' }
-      }
-      temporaryPath = path.join(os.tmpdir(), `aetherdock-note-${Date.now()}-${process.pid}.txt`)
-      await fsp.writeFile(temporaryPath, content.slice(0, 200000), 'utf8')
-      captureType = '笔记'
-    }
-    const result = await library.importContent({
-      file: [{ path: temporaryPath, name: path.basename(temporaryPath), type: captureType === '截图' ? 'image/png' : 'text/plain' }],
-      url: [],
-    })
-    return { ...result, captureType }
-  } finally {
-    if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+// 将标准位图与文件引用图片统一为 PNG，收集箱与归档流程始终只处理一种图片格式。
+function chuangjianJiantiebanTupianJieguo(image, title, captureTimestamp, captureType) {
+  if (!image || image.isEmpty()) return null
+  const imageData = image.toPNG()
+  if (!imageData.length) return null
+  const imageSize = image.getSize()
+  const imagePreviewData = imageSize.width > 560
+    ? image.resize({ width: 560, quality: 'good' }).toPNG()
+    : imageData
+  const result = library.tianjiaJiantiebanItem({
+    type: 'image',
+    title: `${title} · ${geshiJiantiebanBuhuoShijian(captureTimestamp)}`,
+    imageData,
+    imagePreviewData,
+    contentHash: huoquNeirongZhizhen(imageData),
+  })
+  return { ...result, captureType }
+}
+
+function guifanJiantiebanFilePaths(rawPaths) {
+  return [...new Set(rawPaths
+    .flatMap((rawPath) => String(rawPath ?? '').split('\0'))
+    .map((rawPath) => rawPath.trim())
+    .filter((rawPath) => path.isAbsolute(rawPath)))]
+}
+
+// 仅在剪贴板声明了文件引用时查询 Windows DataObject，避免普通文本捕获额外创建原生进程。
+// 解析 Windows 的 DROPFILES 二进制结构，优先在 Electron 主进程内获得真实文件路径。
+function jiexiWindowsFileDropBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 20) return []
+  const pathOffset = buffer.readUInt32LE(0)
+  const isWideChar = buffer.readUInt32LE(16) !== 0
+  if (pathOffset < 20 || pathOffset >= buffer.length) return []
+  const encoding = isWideChar ? 'utf16le' : 'latin1'
+  return buffer.subarray(pathOffset).toString(encoding).split('\0')
+}
+
+// Electron 可直接读取的 Windows 文件引用路径。
+function huoquElectronJiantiebanFilePaths() {
+  const formats = clipboard.availableFormats()
+  const fileDropFormat = formats.find((format) => /^FileDrop$/i.test(format))
+  const filenameFormat = formats.find((format) => /^FileNameW$/i.test(format))
+    ?? formats.find((format) => /^FileName$/i.test(format))
+  if (!fileDropFormat && !filenameFormat) return []
+
+  const rawPaths = []
+  if (fileDropFormat) {
+    try {
+      rawPaths.push(...jiexiWindowsFileDropBuffer(clipboard.readBuffer(fileDropFormat)))
+    } catch {}
   }
+  // FileNameW 是部分聊天软件提供的兼容格式，仅在 FileDrop 不可用时作为补充。
+  if (!filenameFormat) return guifanJiantiebanFilePaths(rawPaths)
+  try {
+    const encoding = /W$/i.test(filenameFormat) ? 'utf16le' : 'latin1'
+    rawPaths.push(clipboard.readBuffer(filenameFormat).toString(encoding))
+  } catch {}
+  try {
+    rawPaths.push(clipboard.read(filenameFormat))
+  } catch {}
+
+  return guifanJiantiebanFilePaths(rawPaths)
+}
+
+// 常驻 STA 进程读取 Windows DataObject，避免每次捕获都启动 PowerShell。
+function chushihuaWindowsJiantiebanHelper() {
+  if (process.platform !== 'win32' || jiantiebanWindowsClipboardHelper) return jiantiebanWindowsClipboardHelper
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    'while (($command = [Console]::In.ReadLine()) -ne $null) {',
+    '  if ($command -ne "read-file-paths") { continue }',
+    '  try {',
+    '    $clipboardData = [System.Windows.Forms.Clipboard]::GetDataObject()',
+    '    $paths = @()',
+    '    foreach ($format in @("FileDrop", "FileNameW", "FileName")) {',
+    '      $value = $clipboardData.GetData($format, $true)',
+    '      if ($value -is [System.Array]) { $paths += $value }',
+    '      elseif ($value -is [string]) { $paths += $value }',
+    '    }',
+    '    $result = @{ paths = @($paths | Where-Object { $_ -is [string] }) }',
+    '  } catch { $result = @{ paths = @() } }',
+    '  [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))',
+    '  [Console]::Out.Flush()',
+    '}',
+  ].join('\n')
+  const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-Command', script], {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  })
+  const helper = { child, output: '', pending: null }
+  jiantiebanWindowsClipboardHelper = helper
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk) => chuliWindowsJiantiebanHelperOutput(helper, chunk))
+  child.once('error', () => guanbiWindowsJiantiebanHelper(helper))
+  child.once('exit', () => guanbiWindowsJiantiebanHelper(helper))
+  return helper
+}
+
+function chuliWindowsJiantiebanHelperOutput(helper, chunk) {
+  helper.output += chunk
+  const lineBreakIndex = helper.output.indexOf('\n')
+  if (lineBreakIndex < 0 || !helper.pending) return
+  const line = helper.output.slice(0, lineBreakIndex).trim()
+  helper.output = helper.output.slice(lineBreakIndex + 1)
+  const pending = helper.pending
+  helper.pending = null
+  clearTimeout(pending.timeout)
+  try {
+    const result = JSON.parse(line || '{}')
+    pending.resolve(guifanJiantiebanFilePaths(result.paths ?? []))
+  } catch {
+    pending.resolve([])
+  }
+}
+
+function guanbiWindowsJiantiebanHelper(helper = jiantiebanWindowsClipboardHelper) {
+  if (!helper) return
+  if (helper.pending) {
+    clearTimeout(helper.pending.timeout)
+    helper.pending.resolve([])
+    helper.pending = null
+  }
+  if (jiantiebanWindowsClipboardHelper === helper) jiantiebanWindowsClipboardHelper = null
+}
+
+function tingzhiWindowsJiantiebanHelper() {
+  const helper = jiantiebanWindowsClipboardHelper
+  guanbiWindowsJiantiebanHelper(helper)
+  helper?.child.kill()
+}
+
+// Electron 未暴露 FileDrop 时，从已预热的 Windows STA 剪贴板助手获取虚拟文件路径。
+async function huoquWindowsJiantiebanFilePaths() {
+  const helper = chushihuaWindowsJiantiebanHelper()
+  if (!helper || helper.pending) return []
+  return new Promise((resolve) => {
+    const pending = {
+      resolve,
+      timeout: setTimeout(() => {
+        if (helper.pending !== pending) return
+        guanbiWindowsJiantiebanHelper(helper)
+        helper.child.kill()
+      }, 600),
+    }
+    helper.pending = pending
+    try {
+      helper.child.stdin.write('read-file-paths\n')
+    } catch {
+      guanbiWindowsJiantiebanHelper(helper)
+    }
+  })
+}
+
+// 优先使用 Electron 接口，只有无法取得路径时才调用 Windows 原生回退读取。
+async function huoquJiantiebanFilePaths(allowWindowsFallback = false) {
+  const electronPaths = huoquElectronJiantiebanFilePaths()
+  return electronPaths.length || !allowWindowsFallback ? electronPaths : huoquWindowsJiantiebanFilePaths()
+}
+
+// 文件引用只接受普通本地图片，避免虚拟对象或超大文件占用常驻进程内存。
+async function buhuoJiantiebanFileImage(captureTimestamp, allowWindowsFallback = false) {
+  const maxImageFileBytes = 100 * 1024 * 1024
+  for (const filePath of await huoquJiantiebanFilePaths(allowWindowsFallback)) {
+    if (!jiantiebanImageExts.has(path.extname(filePath).toLowerCase())) continue
+    try {
+      const fileStat = await fsp.lstat(filePath)
+      if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > maxImageFileBytes) continue
+      const image = nativeImage.createFromPath(filePath)
+      const title = path.basename(filePath, path.extname(filePath)).trim() || '剪贴板图片'
+      const result = chuangjianJiantiebanTupianJieguo(image, title, captureTimestamp, '图片文件')
+      if (result) return result
+    } catch {}
+  }
+  return null
+}
+
+// 单次图片读取统一处理位图和 Windows 文件引用两种剪贴板格式。
+async function buhuoJiantiebanTupian(captureTimestamp, allowWindowsFallback = false) {
+  const screenshotResult = chuangjianJiantiebanTupianJieguo(
+    clipboard.readImage(),
+    '剪贴板截图',
+    captureTimestamp,
+    '截图',
+  )
+  if (screenshotResult) return screenshotResult
+  return buhuoJiantiebanFileImage(captureTimestamp, allowWindowsFallback)
+}
+
+function chuangjianJiantiebanWenbenJieguo(content, captureTimestamp) {
+  const maxClipboardNoteLength = 200000
+  if (/^https?:\/\//i.test(content)) {
+    const result = library.tianjiaJiantiebanItem({
+      type: 'url',
+      title: huoquJiantiebanLianjieBiaoti(content, captureTimestamp),
+      sourceUrl: content,
+      contentHash: huoquNeirongZhizhen(content),
+    })
+    return { ...result, captureType: '链接' }
+  }
+
+  const savedContent = content.slice(0, maxClipboardNoteLength)
+  const result = library.tianjiaJiantiebanItem({
+    type: 'text',
+    title: huoquJiantiebanBijiBiaoti(savedContent, captureTimestamp),
+    textContent: savedContent,
+    contentHash: huoquNeirongZhizhen(savedContent),
+  })
+  return {
+    ...result,
+    captureType: '笔记',
+    wasTruncated: content.length > maxClipboardNoteLength,
+  }
+}
+
+function dengdaiJiantiebanBuhuo(waitMs) {
+  return new Promise((resolve) => setTimeout(resolve, waitMs))
+}
+
+// 捕获内容先进入收集箱，由用户确认后再归档到资料库。
+async function buhuoJiantiebanContent() {
+  const captureTimestamp = Date.now()
+  const imageResult = await buhuoJiantiebanTupian(captureTimestamp)
+  if (imageResult) return imageResult
+
+  const content = clipboard.readText().trim()
+  if (content) return chuangjianJiantiebanWenbenJieguo(content, captureTimestamp)
+
+  const windowsImageResult = await buhuoJiantiebanTupian(captureTimestamp, true)
+  if (windowsImageResult) return windowsImageResult
+
+  // Windows 在复制虚拟图片文件时会短暂锁定 DataObject；一次点击内补一次短重试。
+  await dengdaiJiantiebanBuhuo(120)
+  const retryImageResult = await buhuoJiantiebanTupian(captureTimestamp, true)
+  if (retryImageResult) return retryImageResult
+
+  const retryContent = clipboard.readText().trim()
+  return retryContent
+    ? chuangjianJiantiebanWenbenJieguo(retryContent, captureTimestamp)
+    : { item: null, xiaoxi: '剪贴板中没有可捕获的内容' }
+}
+
+// 归档时才生成临时文件，复用资料库的文件分类、去重和缩略图流程。
+async function guidangJiantiebanItems(rawItemIds) {
+  const items = library.huoquJiantiebanItemsByIds(rawItemIds)
+  const added = []
+  const duplicates = []
+  const removedIds = []
+  const failedIds = []
+
+  for (const item of items) {
+    let temporaryPath = ''
+    try {
+      let result
+      if (item.type === 'url') {
+        result = await library.importContent({ file: [], url: [item.sourceUrl] })
+      } else {
+        const extension = item.type === 'image' ? '.png' : '.txt'
+        const content = item.type === 'image' ? item.imageData : item.textContent
+        temporaryPath = path.join(os.tmpdir(), `aetherdock-clipboard-archive-${item.id}${extension}`)
+        await fsp.writeFile(temporaryPath, content)
+        result = await library.importContent({
+          file: [{
+            path: temporaryPath,
+            name: path.basename(temporaryPath),
+            title: item.title,
+            type: item.type === 'image' ? 'image/png' : 'text/plain',
+            contentHash: item.contentHash,
+          }],
+          url: [],
+        })
+      }
+      added.push(...(result?.added ?? []))
+      duplicates.push(...(result?.duplicates ?? []))
+      if ((result?.added?.length ?? 0) || (result?.duplicates?.length ?? 0)) removedIds.push(item.id)
+    } catch {
+      failedIds.push(item.id)
+    } finally {
+      if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+    }
+  }
+
+  if (removedIds.length) library.shanchuJiantiebanItems(removedIds)
+  const websiteIds = [...added.filter(({ type }) => type === 'url').map(({ id }) => id), ...duplicates]
+  if (websiteIds.length) yureWebsiteIcons(websiteIds)
+  const imageIds = added.filter(({ type }) => type === 'image').map(({ id }) => id)
+  if (imageIds.length) {
+    setTimeout(() => {
+      for (const itemId of imageIds) {
+        const item = library.getItemDetail(itemId)
+        if (item) void huoquImageThumbnailKey(item, 2).catch(() => {})
+      }
+    }, 500)
+  }
+  return { added, duplicates, removedIds, failedIds }
+}
+
+function fuzhiJiantiebanItem(itemId) {
+  const item = library.huoquJiantiebanItemsByIds([itemId])[0]
+  if (!item) return { chenggong: false, xiaoxi: '该剪贴板内容已不存在' }
+  if (item.type === 'image') {
+    clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(item.imageData)))
+  } else {
+    clipboard.writeText(item.type === 'url' ? item.sourceUrl : item.textContent)
+  }
+  return { chenggong: true, xiaoxi: item.type === 'image' ? '截图已复制到剪贴板' : '内容已复制到剪贴板' }
+}
+
+// 剪贴板内容仅以摘要命名，避免将完整敏感文本写入资料标题。
+function huoquJiantiebanBijiBiaoti(content, timestamp) {
+  const firstLine = String(content ?? '')
+    .split(/\r?\n/)
+    .find((line) => line.trim())
+    ?.replace(/[\u0000-\u001f<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 36)
+  const prefix = firstLine || '剪贴板笔记'
+  return `${prefix} · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+}
+
+function huoquJiantiebanLianjieBiaoti(content, timestamp) {
+  try {
+    return `${new URL(content).hostname} · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+  } catch {
+    return `剪贴板链接 · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+  }
+}
+
+function geshiJiantiebanBuhuoShijian(timestamp) {
+  const date = new Date(timestamp)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function huoquNeirongZhizhen(content) {
+  return createHash('sha256').update(content).digest('hex')
 }
 
 // 计算两次采样间的 CPU 使用率
@@ -1427,15 +1748,26 @@ function tishengYingyongIconRenwuPriority(taskKey, priority) {
 }
 
 function zhixingNextYingyongIconRenwu() {
+  if (isHeavyTasksPaused) return
   while (yingyongIconHuodongRenwu < 2 && yingyongIconRenwuQueue.length) {
     const task = yingyongIconRenwuQueue.shift()
     yingyongIconHuodongRenwu += 1
-    Promise.resolve(task.action())
-      .then(task.resolve, task.reject)
-      .finally(() => {
+    // 让出当前事件循环，避免 IPC 内连续启动原生图像任务挤占窗口交互。
+    setImmediate(() => {
+      if (isHeavyTasksPaused) {
         yingyongIconHuodongRenwu -= 1
-        zhixingNextYingyongIconRenwu()
-      })
+        yingyongIconRenwuQueue.push(task)
+        yingyongIconRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+        return
+      }
+      Promise.resolve()
+        .then(task.action)
+        .then(task.resolve, task.reject)
+        .finally(() => {
+          yingyongIconHuodongRenwu -= 1
+          zhixingNextYingyongIconRenwu()
+        })
+    })
   }
 }
 
@@ -1483,18 +1815,48 @@ function chuangjianYingyongIconUrl(cacheKey) {
   return `aetherdock-icon://${cacheKey}`
 }
 
-function huoquReadyIconCacheUrl(cacheKey) {
-  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
-  if (!fs.existsSync(iconPath)) return ''
-  try {
-    if (nativeImage.createFromPath(iconPath).isEmpty()) {
-      fs.rmSync(iconPath, { force: true })
-      return ''
-    }
-    return `${chuangjianYingyongIconUrl(cacheKey)}?v=${fs.statSync(iconPath).mtimeMs}`
-  } catch {
-    return ''
+function huoquMediaCacheVersion(stats) {
+  return `${stats.size}\0${stats.mtimeMs}`
+}
+
+function jiluMediaCacheVersion(filePath, cacheVersion) {
+  mediaCacheYanzhengVersionMap.delete(filePath)
+  mediaCacheYanzhengVersionMap.set(filePath, cacheVersion)
+  while (mediaCacheYanzhengVersionMap.size > mediaCacheYanzhengMaxSize) {
+    mediaCacheYanzhengVersionMap.delete(mediaCacheYanzhengVersionMap.keys().next().value)
   }
+}
+
+// PNG 缓存每个版本只解码验证一次，后续命中仅走异步文件状态检查。
+async function huoquValidPngCacheStats(filePath) {
+  try {
+    const stats = await fsp.stat(filePath)
+    if (!stats.isFile() || !stats.size) throw new Error('PNG 缓存为空')
+    const cacheVersion = huoquMediaCacheVersion(stats)
+    if (mediaCacheYanzhengVersionMap.get(filePath) !== cacheVersion) {
+      const pngBuffer = await fsp.readFile(filePath)
+      if (nativeImage.createFromBuffer(pngBuffer).isEmpty()) throw new Error('PNG 缓存损坏')
+    }
+    jiluMediaCacheVersion(filePath, cacheVersion)
+    return stats
+  } catch {
+    mediaCacheYanzhengVersionMap.delete(filePath)
+    await fsp.rm(filePath, { force: true }).catch(() => {})
+    return null
+  }
+}
+
+async function biaojiMediaCachePathsValid(filePaths) {
+  const statsList = await Promise.all(filePaths.map((filePath) => fsp.stat(filePath)))
+  filePaths.forEach((filePath, index) => {
+    jiluMediaCacheVersion(filePath, huoquMediaCacheVersion(statsList[index]))
+  })
+}
+
+async function huoquReadyIconCacheUrl(cacheKey) {
+  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
+  const iconStats = await huoquValidPngCacheStats(iconPath)
+  return iconStats ? `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}` : ''
 }
 
 async function shengchengYingyongIconCache(item, cacheKey) {
@@ -1517,6 +1879,7 @@ async function baocunNativeIconCache(nativeIcon, cacheKey) {
       return fsp.writeFile(tempPath, png)
     }))
     await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    await biaojiMediaCachePathsValid(outputPaths.map(({ finalPath }) => finalPath))
     return true
   } catch {
     await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
@@ -1531,6 +1894,7 @@ async function baocunWebsiteIconCache(iconResource, cacheKey) {
     try {
       await fsp.writeFile(tempPath, iconResource.buffer, { flag: 'wx' })
       await fsp.rename(tempPath, finalPath)
+      await biaojiMediaCachePathsValid([finalPath])
       const stalePaths = [
         ...[64, 128].map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
         ...websiteBrowserIconExtensions
@@ -1746,21 +2110,23 @@ function chuangjianWebsiteRequestSignal(parentSignal, timeoutMs) {
   }
 }
 
-function huoquReadyWebsiteIconCacheUrl(cacheKey) {
-  const rasterIconUrl = huoquReadyIconCacheUrl(cacheKey)
+async function huoquReadyWebsiteIconCacheUrl(cacheKey) {
+  const rasterIconUrl = await huoquReadyIconCacheUrl(cacheKey)
   if (rasterIconUrl) return rasterIconUrl
 
   for (const extension of websiteBrowserIconExtensions) {
     const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)
-    if (!fs.existsSync(iconPath)) continue
     try {
-      const browserIcon = chuangjianSafeWebsiteBrowserIcon(fs.readFileSync(iconPath))
+      const [iconBuffer, iconStats] = await Promise.all([fsp.readFile(iconPath), fsp.stat(iconPath)])
+      const browserIcon = chuangjianSafeWebsiteBrowserIcon(iconBuffer)
       if (!browserIcon || browserIcon.extension !== extension) {
-        fs.rmSync(iconPath, { force: true })
+        await fsp.rm(iconPath, { force: true })
         continue
       }
-      return `${chuangjianYingyongIconUrl(cacheKey)}?v=${fs.statSync(iconPath).mtimeMs}`
-    } catch {
+      jiluMediaCacheVersion(iconPath, huoquMediaCacheVersion(iconStats))
+      return `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}`
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue
       return ''
     }
   }
@@ -2062,7 +2428,7 @@ async function huoquWebsiteIconUrl(item, priority) {
   if (item.type !== 'url') return ''
   const cacheKey = huoquWebsiteIconCacheKey(item)
   if (!cacheKey) return ''
-  const cachedIconUrl = huoquReadyWebsiteIconCacheUrl(cacheKey)
+  const cachedIconUrl = await huoquReadyWebsiteIconCacheUrl(cacheKey)
   if (cachedIconUrl) {
     if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') library.setWebsiteIconCache(item.id, cacheKey, 'ready')
     return cachedIconUrl
@@ -2108,7 +2474,7 @@ function yureWebsiteIcons(itemIds) {
 async function huoquApplicationIconUrl(item, priority) {
   if (item.type !== 'application') return ''
   const cacheKey = huoquYingyongIconCacheKey(item)
-  const cachedIconUrl = huoquReadyIconCacheUrl(cacheKey)
+  const cachedIconUrl = await huoquReadyIconCacheUrl(cacheKey)
   if (cachedIconUrl) {
     if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') {
       library.setApplicationIconCache(item.id, cacheKey, 'ready')
@@ -2144,17 +2510,66 @@ async function huoquYingyongIconMap(itemIds) {
   return Object.fromEntries(iconEntries)
 }
 
-// 同步仅删除已无数据库记录引用的指纹文件，未变化程序永久复用原缓存。
-async function qingliYingyongIconCache() {
-  const validKeys = new Set(library.getIconCacheItems().map(({ iconCacheKey }) => iconCacheKey).filter(Boolean))
-  let filenames = []
-  try { filenames = await fsp.readdir(yingyongIconCacheDir) } catch { return }
-  await Promise.all(filenames.map(async (filename) => {
-    const match = /^([a-f\d]{64})-(?:64|128)\.(?:png|svg|webp|gif)$/i.exec(filename)
-    if (match && !validKeys.has(match[1].toLowerCase())) {
-      await fsp.rm(path.join(yingyongIconCacheDir, filename), { force: true })
-    }
+async function shanchuYingyongIconCacheBatch(cacheItems) {
+  if (isHeavyTasksPaused || !library) {
+    isYingyongIconCleanupPending = true
+    return false
+  }
+  await Promise.all(cacheItems.map(({ cacheKey, cachePath }) => {
+    // 删除前复检，避免后台清理与刚完成的图标生成互相覆盖。
+    if (mediaCacheYanzhengVersionMap.has(cachePath) || library.hasIconCacheKey(cacheKey)) return undefined
+    return fsp.rm(cachePath, { force: true })
   }))
+  await new Promise((resolve) => setImmediate(resolve))
+  return true
+}
+
+// 目录与数据库均流式逐项检查，十万级程序也不会一次构造全量数组和 Set。
+async function qingliYingyongIconCache() {
+  let cacheDirectory
+  try { cacheDirectory = await fsp.opendir(yingyongIconCacheDir) } catch { return }
+  let staleCacheItems = []
+  let scannedCount = 0
+  for await (const entry of cacheDirectory) {
+    if (isHeavyTasksPaused || !library) {
+      isYingyongIconCleanupPending = true
+      return
+    }
+    scannedCount += 1
+    if (scannedCount % 128 === 0) {
+      await new Promise((resolve) => setImmediate(resolve))
+      if (isHeavyTasksPaused || !library) {
+        isYingyongIconCleanupPending = true
+        return
+      }
+    }
+    if (!entry.isFile()) continue
+    const match = /^([a-f\d]{64})-(?:64|128)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
+    if (!match) continue
+    const cacheKey = match[1].toLowerCase()
+    const cachePath = path.join(yingyongIconCacheDir, entry.name)
+    if (mediaCacheYanzhengVersionMap.has(cachePath) || library.hasIconCacheKey(cacheKey)) continue
+    staleCacheItems.push({ cacheKey, cachePath })
+    if (staleCacheItems.length < 64) continue
+    if (!(await shanchuYingyongIconCacheBatch(staleCacheItems))) return
+    staleCacheItems = []
+  }
+  if (staleCacheItems.length) await shanchuYingyongIconCacheBatch(staleCacheItems)
+}
+
+function qingqiuYingyongIconCacheCleanup() {
+  if (!library) return
+  if (isHeavyTasksPaused || yingyongIconCleanupPromise) {
+    isYingyongIconCleanupPending = true
+    return
+  }
+  isYingyongIconCleanupPending = false
+  yingyongIconCleanupPromise = qingliYingyongIconCache()
+    .catch(() => {})
+    .finally(() => {
+      yingyongIconCleanupPromise = null
+      if (isYingyongIconCleanupPending && !isHeavyTasksPaused) setImmediate(qingqiuYingyongIconCacheCleanup)
+    })
 }
 
 function xianxingZhixingThumbnailRenwu(action, priority = 2) {
@@ -2169,12 +2584,22 @@ function zhixingNextThumbnailRenwu() {
   if (isHeavyTasksPaused || tupianThumbnailHuodongRenwu || !tupianThumbnailRenwuQueue.length) return
   const task = tupianThumbnailRenwuQueue.shift()
   tupianThumbnailHuodongRenwu = 1
-  Promise.resolve(task.action())
-    .then(task.resolve, task.reject)
-    .finally(() => {
+  // 缩略图解码和编码是同步原生操作，至少先让窗口事件获得一次处理机会。
+  setImmediate(() => {
+    if (isHeavyTasksPaused) {
       tupianThumbnailHuodongRenwu = 0
-      zhixingNextThumbnailRenwu()
-    })
+      tupianThumbnailRenwuQueue.push(task)
+      tupianThumbnailRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+      return
+    }
+    Promise.resolve()
+      .then(task.action)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        tupianThumbnailHuodongRenwu = 0
+        zhixingNextThumbnailRenwu()
+      })
+  })
 }
 
 function huoquThumbnailCacheKey(item) {
@@ -2218,6 +2643,7 @@ async function shengchengThumbnailCache(item, cacheKey) {
       return fsp.writeFile(tempPath, png)
     }))
     await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    await biaojiMediaCachePathsValid(outputPaths.map(({ finalPath }) => finalPath))
     return true
   } catch {
     await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
@@ -2229,9 +2655,8 @@ async function huoquImageThumbnailKey(item, priority) {
   if (item.type !== 'image') return ''
   const cacheKey = huoquThumbnailCacheKey(item)
   const cachePaths = [320, 640].map((width) => path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`))
-  const hasCache = cachePaths.every((cachePath) => (
-    fs.existsSync(cachePath) && !nativeImage.createFromPath(cachePath).isEmpty()
-  ))
+  const cacheStats = await Promise.all(cachePaths.map(huoquValidPngCacheStats))
+  const hasCache = cacheStats.every(Boolean)
   if (hasCache) {
     if (item.thumbnailCacheKey !== cacheKey || item.thumbnailStatus !== 'ready') {
       if (!library.setImageThumbnailCache(item, cacheKey, 'ready')) return ''
@@ -2277,9 +2702,11 @@ async function huoquImageThumbnailMap(itemIds, priority = 0) {
 async function shanchuThumbnailCache(cacheKey) {
   if (!/^[a-f\d]{64}$/i.test(cacheKey || '')) return
   await tupianThumbnailPromiseMap.get(cacheKey.toLowerCase())?.catch(() => {})
-  await Promise.all([320, 640].map((width) => (
-    fsp.rm(path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`), { force: true })
-  )))
+  await Promise.all([320, 640].map((width) => {
+    const cachePath = path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`)
+    mediaCacheYanzhengVersionMap.delete(cachePath)
+    return fsp.rm(cachePath, { force: true })
+  }))
 }
 
 async function tongbuManagedLibraryFiles() {
@@ -2314,6 +2741,17 @@ async function tongbuManagedFilesAndNotify() {
     mainWindow.webContents.send(ipcTongdao.libraryChanged)
   }
   return result
+}
+
+// 动画期间只记录目录变更，待关键帧结束后再执行全量对账。
+function qingqiuManagedFilesReconcile() {
+  if (!library) return
+  if (isHeavyTasksPaused) {
+    isManagedReconcilePending = true
+    return
+  }
+  isManagedReconcilePending = false
+  void tongbuManagedFilesAndNotify().catch(() => {})
 }
 
 // 创建应用主窗口
@@ -2406,17 +2844,18 @@ function jihuoYiyouLingdongdaoWindow() {
 }
 
 async function chushihuaYingyong() {
+  // 后台预热 Windows STA 剪贴板读取，图片捕获时无需等待 PowerShell 冷启动。
+  chushihuaWindowsJiantiebanHelper()
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   // 开发与生产使用独立数据库，调试数据不会影响已安装应用的资料库。
   library = createLibrary(path.join(app.getPath('userData'), ziliaokuDbFilename))
   library.onManagedFilesDirty(() => {
-    void tongbuManagedFilesAndNotify().catch(() => {})
+    qingqiuManagedFilesReconcile()
   })
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
   await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
-  await qingliYingyongIconCache()
   protocol.handle('aetherdock-icon', async (request) => {
     try {
       const cacheKey = new URL(request.url).hostname.toLowerCase()
@@ -2469,6 +2908,29 @@ async function chushihuaYingyong() {
         headers: {
           'Content-Type': 'image/png',
           'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    } catch (error) {
+      return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
+    }
+  })
+  // PDF 预览始终按资料 ID 在主进程重新校验路径，渲染层无法借此读取任意本地文件。
+  protocol.handle('aetherdock-preview', async (request) => {
+    try {
+      const itemId = new URL(request.url).hostname
+      if (!/^[\da-f-]{36}$/i.test(itemId)) return new Response('invalid preview', { status: 400 })
+      const item = library.getItemDetail(itemId)
+      if (!item || path.extname(item.title || item.sourcePath || '').toLowerCase() !== '.pdf') {
+        return new Response('not found', { status: 404 })
+      }
+      const localPath = await library.getValidatedItemLocalPath(item)
+      if (!localPath) return new Response('not found', { status: 404 })
+      const buffer = await fsp.readFile(localPath)
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Security-Policy': "default-src 'none'; frame-src 'none'; object-src 'none'",
+          'X-Content-Type-Options': 'nosniff',
         },
       })
     } catch (error) {
@@ -2629,9 +3091,34 @@ async function chushihuaYingyong() {
     return result
   })
   ipcMain.handle(ipcTongdao.captureClipboardContent, buhuoJiantiebanContent)
+  ipcMain.handle(ipcTongdao.getClipboardItems, () => ({ items: library.huoquJiantiebanItems() }))
+  ipcMain.handle(ipcTongdao.archiveClipboardItems, (_, itemIds) => guidangJiantiebanItems(itemIds))
+  ipcMain.handle(ipcTongdao.deleteClipboardItems, async (_, itemIds) => {
+    let lastError = null
+    // SQLite 短暂忙碌时重试，确保点击移除不会被后台索引任务打断。
+    for (let cishu = 0; cishu < 3; cishu += 1) {
+      try {
+        return { chenggong: true, ...library.shanchuJiantiebanItems(itemIds) }
+      } catch (error) {
+        lastError = error
+        await new Promise((resolve) => setTimeout(resolve, 60 * (cishu + 1)))
+      }
+    }
+    console.warn('剪贴板收集箱移除失败', lastError)
+    return { chenggong: false, removedIds: [], xiaoxi: '收集箱暂时繁忙，请稍后再试' }
+  })
+  ipcMain.handle(ipcTongdao.clearClipboardItems, () => library.qingkongJiantiebanItems())
+  ipcMain.handle(ipcTongdao.copyClipboardItem, (_, itemId) => fuzhiJiantiebanItem(itemId))
   ipcMain.handle(ipcTongdao.setHeavyTasksPaused, (_, paused) => {
     isHeavyTasksPaused = Boolean(paused)
-    if (!isHeavyTasksPaused) zhixingNextThumbnailRenwu()
+    if (isHeavyTasksPaused) return
+    setImmediate(() => {
+      if (isHeavyTasksPaused) return
+      zhixingNextYingyongIconRenwu()
+      zhixingNextThumbnailRenwu()
+      if (isManagedReconcilePending) qingqiuManagedFilesReconcile()
+      if (isYingyongIconCleanupPending) qingqiuYingyongIconCacheCleanup()
+    })
   })
   ipcMain.handle(ipcTongdao.tongbuDesktopApplications, async () => {
     if (!yingyongSyncPromise) {
@@ -2659,6 +3146,40 @@ async function chushihuaYingyong() {
   })
   ipcMain.handle(ipcTongdao.getLibraryPage, (_, options) => library.getLibraryPage(options))
   ipcMain.handle(ipcTongdao.searchLibrary, (_, options) => library.searchLibrary(options))
+  ipcMain.handle(ipcTongdao.getLibraryItemDetails, async (_, itemId) => {
+    const item = library.getItemDetail(itemId)
+    const notesDetail = library.getItemNotes(itemId)
+    if (!item || !notesDetail) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+
+    const extension = path.extname(item.title || item.sourcePath || '').toLowerCase()
+    const localPath = await library.getValidatedItemLocalPath(item)
+    const detail = {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      status: item.status,
+      source: item.sourceUrl || item.relativePath || item.sourcePath || '',
+      byteSize: Number(item.byteSize ?? 0),
+      ...notesDetail,
+      preview: { type: 'none', content: '' },
+    }
+    if (item.type === 'image') {
+      const thumbnailKey = await huoquImageThumbnailKey(item, 0).catch(() => '')
+      if (thumbnailKey) detail.preview = { type: 'image', content: `aetherdock-thumb://${thumbnailKey}/640` }
+    } else if (extension === '.pdf' && localPath) {
+      detail.preview = { type: 'pdf', content: `aetherdock-preview://${item.id}` }
+    } else if (textPreviewExts.has(extension) && localPath) {
+      const stat = await fsp.stat(localPath).catch(() => null)
+      if (stat?.isFile() && stat.size <= 256 * 1024) {
+        detail.preview = { type: 'text', content: await fsp.readFile(localPath, 'utf8') }
+      }
+    }
+    return { chenggong: true, detail }
+  })
+  ipcMain.handle(ipcTongdao.updateLibraryItemNotes, (_, itemId, notes) => {
+    const result = library.setItemNotes(itemId, notes)
+    return result ? { chenggong: true, ...result } : { chenggong: false, xiaoxi: '未找到该资料库条目' }
+  })
   ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
   ipcMain.handle(ipcTongdao.getWebsiteIcons, (_, itemIds) => huoquWebsiteIconMap(itemIds))
   ipcMain.handle(ipcTongdao.getImageThumbnails, (_, itemIds) => huoquImageThumbnailMap(itemIds))
@@ -2668,12 +3189,12 @@ async function chushihuaYingyong() {
       if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
       if (item?.storageMode === 'bookmark' && item.sourceUrl) {
         await shell.openExternal(item.sourceUrl)
-        return { chenggong: true }
+        return { chenggong: true, usage: library.recordItemOpened(itemId) }
       }
       const localPath = await library.getValidatedItemLocalPath(item)
       if (localPath) {
         const error = await shell.openPath(localPath)
-        return error ? { chenggong: false, xiaoxi: error } : { chenggong: true }
+        return error ? { chenggong: false, xiaoxi: error } : { chenggong: true, usage: library.recordItemOpened(itemId) }
       }
       return { chenggong: false, xiaoxi: '条目缺少可打开的来源' }
     } catch {
@@ -2721,7 +3242,7 @@ async function chushihuaYingyong() {
     }
   })
   managedReconcileTimer = setInterval(() => {
-    void tongbuManagedFilesAndNotify().catch(() => {})
+    qingqiuManagedFilesReconcile()
   }, 5 * 60 * 1000)
   managedReconcileTimer.unref()
   createTuopan()
@@ -2729,6 +3250,8 @@ async function chushihuaYingyong() {
   createXuanfuqiuWindow()
   createStartupWindow()
   chushihuaAutoUpdater()
+  yingyongIconCleanupTimer = setTimeout(qingqiuYingyongIconCacheCleanup, 2500)
+  yingyongIconCleanupTimer.unref()
   setTimeout(() => { void jianchaGithubAppGengxin({ shiShoudong: false }) }, 5000).unref()
 
   app.on('activate', () => {
@@ -2754,8 +3277,13 @@ app.on('window-all-closed', () => {
 })
 
 app.once('will-quit', () => {
+  tingzhiWindowsJiantiebanHelper()
   if (managedReconcileTimer) clearInterval(managedReconcileTimer)
   managedReconcileTimer = null
+  isManagedReconcilePending = false
+  if (yingyongIconCleanupTimer) clearTimeout(yingyongIconCleanupTimer)
+  yingyongIconCleanupTimer = null
+  isYingyongIconCleanupPending = false
   library?.close()
   library = null
 })
