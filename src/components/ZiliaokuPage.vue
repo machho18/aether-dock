@@ -26,10 +26,6 @@
           </button>
           <Transition name="more-menu">
             <div v-if="isGengduoVisible" class="expanded-more-menu" @click.stop>
-              <button type="button" @click="chuliGengduoCaozuo('float-window')">
-                <span class="expanded-more-icon" aria-hidden="true"><span class="expanded-dock-mark"><i></i></span></span>
-                <span title="收起到右侧胶囊">收起</span>
-              </button>
               <button type="button" @click="kaishiPiliangShanchu">
                 <span class="expanded-more-icon expanded-more-icon--select" aria-hidden="true"></span>
                 <span>批量选择</span>
@@ -347,7 +343,7 @@ const props = defineProps({
   clipboardCount: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['open-settings', 'float-window', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
+const emit = defineEmits(['open-settings', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
 const gengduoCaozuo = useTemplateRef('gengduoCaozuo')
 const paixuCaozuo = useTemplateRef('paixuCaozuo')
 const cardCaozuoCaidan = useTemplateRef('cardCaozuoCaidan')
@@ -491,6 +487,15 @@ function huoquJianyaoCardInfo(item) {
   }, yulanFailedKeys)
 }
 
+function panduanYingyongIconUrl(url) {
+  try {
+    const iconUrl = new URL(url)
+    return iconUrl.protocol === 'aetherdock-icon:' && /^[a-f\d]{64}$/i.test(iconUrl.hostname)
+  } catch {
+    return false
+  }
+}
+
 function geshiZiyuanSize(byteSize) {
   const size = Number(byteSize ?? 0)
   if (!size) return '未知'
@@ -626,9 +631,10 @@ const carouselCards = computed(() => {
     const offset = index - carouselIndex.value
     const iconRequestKey = item.iconCacheKey || item.id
     const mappedIcon = yingyongIconMap.value[item.id]
+    // 主进程会按最新快捷方式指纹重建缓存，返回地址可能比当前列表的旧键更新。
     const validMappedIcon = mappedIcon
       && yingyongIconRequestKeyMap.value[item.id] === iconRequestKey
-      && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))
+      && panduanYingyongIconUrl(mappedIcon)
       ? mappedIcon
       : ''
     const mappedWebsiteIcon = wangzhiIconMap.value[item.id]
@@ -1092,7 +1098,9 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
       if (item.type !== 'application') return false
       const mappedIcon = yingyongIconMap.value[item.id]
       // 数据库状态无法证明缓存文件仍存在，始终通过主进程确认并按需重建。
-      if (mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))) return false
+      if (mappedIcon
+        && yingyongIconRequestKeyMap.value[item.id] === (item.iconCacheKey || item.id)
+        && panduanYingyongIconUrl(mappedIcon)) return false
       return true
     })
     .map(({ item, offset }) => ({
@@ -1516,11 +1524,6 @@ onKeyStroke('Escape', () => {
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
-
-.expanded-dock-mark { position: relative; display: block; width: 16px; height: 16px; color: #376b35; }
-.expanded-dock-mark::before { position: absolute; right: 1px; bottom: 1px; left: 1px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, #63fe13, #3f9a38); box-shadow: 0 1px 3px rgba(70, 156, 57, .22); content: ""; }
-.expanded-dock-mark::after { position: absolute; top: 1px; right: 1px; width: 9px; height: 9px; border: 1.4px solid currentColor; border-radius: 3px; background: rgba(255, 255, 255, .72); box-shadow: inset 0 1px rgba(255, 255, 255, .84); content: ""; }
-.expanded-dock-mark i { position: absolute; z-index: 1; right: 4px; bottom: 4px; width: 4px; height: 4px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
 
 /* 捕获与收集箱采用成组操作，引导用户先暂存再决定是否归档。 */
 .expanded-capture { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; padding: 0; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); color: var(--ink-soft); cursor: pointer; font: 600 11px var(--font-body); letter-spacing: .04em; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }

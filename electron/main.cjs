@@ -103,6 +103,10 @@ const websiteDataIconMimeTypes = new Set([
   'image/svg+xml', 'image/webp', 'image/gif',
 ])
 const websiteBrowserIconExtensions = ['svg', 'webp', 'gif']
+const yingyongIconCacheSizes = [64, 128, 256]
+// 图标缓存版本：升级时让异常图标重新生成
+const yingyongIconCacheVersion = 'v3'
+const windowsIconResourceExts = new Set(['.dll', '.exe', '.ico'])
 const websiteIconMaxCandidates = 10
 const websiteIconTotalTimeoutMs = 15000
 const websiteIconPageTimeoutMs = 7000
@@ -1619,10 +1623,43 @@ async function changshiDownloadRemoteResource(rawResource, batchSignal) {
   return { added: [], duplicates: [], bookmark: true, sourceUrl: resource.sourceUrl }
 }
 
-function chuangjianShortcutFingerprint(details, shortcutPath) {
+// 快捷方式图标可能带有资源索引，缓存与提取时都需保留这部分信息。
+function jiexiShortcutIconInfo(rawIcon) {
+  const iconValue = String(rawIcon ?? '').trim().replace(/^"|"$/g, '')
+  if (fs.existsSync(iconValue)) return { filePath: iconValue, iconIndex: 0 }
+  const withIndex = /^(.*),\s*-?\d+$/.exec(iconValue)
+  return {
+    filePath: withIndex?.[1]?.trim() || iconValue,
+    iconIndex: withIndex ? Number(withIndex[0].slice(withIndex[1].length + 1).trim()) : 0,
+  }
+}
+
+function jiexiShortcutIconPath(rawIcon) {
+  return jiexiShortcutIconInfo(rawIcon).filePath
+}
+
+async function huoquShortcutFileVersion(filePath) {
+  if (!filePath || !path.isAbsolute(filePath)) return ''
+  try {
+    const stats = await fsp.stat(filePath)
+    return `${stats.size}\0${Math.round(stats.mtimeMs)}`
+  } catch {
+    return ''
+  }
+}
+
+async function chuangjianShortcutFingerprint(details, shortcutPath) {
   const parts = [details.target, details.args, details.cwd, details.appUserModelId, details.icon]
     .map((value) => String(value ?? '').trim().toLowerCase())
-  const content = parts.some(Boolean) ? parts.join('\0') : `unreadable\0${shortcutPath.toLowerCase()}`
+  const iconPath = jiexiShortcutIconPath(details.icon)
+  const fileVersions = await Promise.all([
+    huoquShortcutFileVersion(shortcutPath),
+    huoquShortcutFileVersion(details.target),
+    huoquShortcutFileVersion(iconPath),
+  ])
+  const content = parts.some(Boolean)
+    ? [...parts, ...fileVersions].join('\0')
+    : `unreadable\0${shortcutPath.toLowerCase()}\0${fileVersions[0]}`
   return createHash('sha256').update(content).digest('hex')
 }
 
@@ -1672,7 +1709,7 @@ async function saomiaoDesktopShortcuts() {
           targetPath,
           launchArgs: String(details.args ?? ''),
           workingDirectory: String(details.cwd ?? ''),
-          shortcutFingerprint: chuangjianShortcutFingerprint(details, shortcutPath),
+          shortcutFingerprint: await chuangjianShortcutFingerprint(details, shortcutPath),
           sourceScope: source.scope,
           status: panduanShortcutTargetStatus(targetPath),
         })
@@ -1683,7 +1720,7 @@ async function saomiaoDesktopShortcuts() {
           targetPath: '',
           launchArgs: '',
           workingDirectory: '',
-          shortcutFingerprint: chuangjianShortcutFingerprint({}, shortcutPath),
+          shortcutFingerprint: await chuangjianShortcutFingerprint({}, shortcutPath),
           sourceScope: source.scope,
           status: 'unreadable',
         })
@@ -1693,22 +1730,41 @@ async function saomiaoDesktopShortcuts() {
   return { shortcuts, scannedScopes, unsupported: false }
 }
 
-// 使用 Windows 原生关联图标接口，补足 Electron 对部分 EXE 图标资源的解析缺失。
-async function huoquWindowsShellIconData(filePath) {
-  if (process.platform !== 'win32' || path.extname(filePath).toLowerCase() !== '.exe') return ''
+// Electron 在 Windows 最多返回 32px 图标，使用原生接口按 256px 提取程序资源。
+async function huoquWindowsShellIconData(filePath, iconIndex = 0) {
+  if (process.platform !== 'win32' || !windowsIconResourceExts.has(path.extname(filePath).toLowerCase())) return ''
+  const safeIconIndex = Number.isInteger(iconIndex) && iconIndex >= -10000 && iconIndex <= 10000 ? iconIndex : 0
   const script = [
     'Add-Type -AssemblyName System.Drawing',
-    '$icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:AETHERDOCK_ICON_PATH)',
-    'if ($null -eq $icon) { exit 2 }',
-    '$bitmap = $icon.ToBitmap()',
+    "Add-Type -TypeDefinition @'",
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class AetherDockShellIcon {',
+    '  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+    '  public static extern uint PrivateExtractIcons(string fileName, int iconIndex, int width, int height, IntPtr[] icons, uint[] iconIds, uint iconCount, uint flags);',
+    '  [DllImport("user32.dll", SetLastError = true)]',
+    '  [return: MarshalAs(UnmanagedType.Bool)]',
+    '  public static extern bool DestroyIcon(IntPtr icon);',
+    '}',
+    "'@",
+    '$iconHandles = [System.IntPtr[]]::new(1)',
+    '$iconIds = [uint32[]]::new(1)',
+    '$count = [AetherDockShellIcon]::PrivateExtractIcons($env:AETHERDOCK_ICON_PATH, [int]$env:AETHERDOCK_ICON_INDEX, 256, 256, $iconHandles, $iconIds, 1, 0)',
+    'if ($count -lt 1 -or $iconHandles[0] -eq [System.IntPtr]::Zero) { exit 2 }',
     '$stream = [System.IO.MemoryStream]::new()',
     'try {',
-    '  $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)',
-    '  [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))',
+    '  $icon = [System.Drawing.Icon]::FromHandle($iconHandles[0])',
+    '  $bitmap = $icon.ToBitmap()',
+    '  try {',
+    '    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)',
+    '    [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))',
+    '  } finally {',
+    '    $bitmap.Dispose(); $icon.Dispose()',
+    '  }',
     '} finally {',
-    '  $stream.Dispose(); $bitmap.Dispose(); $icon.Dispose()',
+    '  $stream.Dispose(); [AetherDockShellIcon]::DestroyIcon($iconHandles[0]) | Out-Null',
     '}',
-  ].join('; ')
+  ].join('\n')
 
   try {
     const { stdout } = await zhixingFileAsync('powershell.exe', [
@@ -1717,18 +1773,17 @@ async function huoquWindowsShellIconData(filePath) {
       windowsHide: true,
       timeout: 5000,
       maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, AETHERDOCK_ICON_PATH: filePath },
+      env: {
+        ...process.env,
+        AETHERDOCK_ICON_PATH: filePath,
+        AETHERDOCK_ICON_INDEX: String(safeIconIndex),
+      },
     })
     const base64 = stdout.trim()
     return base64 ? `data:image/png;base64,${base64}` : ''
   } catch {
     return ''
   }
-}
-
-function panduanMaybeGenericIcon(nativeIcon, iconData) {
-  const size = nativeIcon.getSize()
-  return size.width <= 32 && size.height <= 32 && iconData.length <= 1000
 }
 
 // 图标读取可能触发原生接口或 PowerShell，固定并发数避免占满主进程资源。
@@ -1772,10 +1827,11 @@ function zhixingNextYingyongIconRenwu() {
 }
 
 function huoquYingyongIconCacheKey(item) {
-  const existingKey = item.iconCacheKey || item.shortcutFingerprint
-  if (/^[a-f\d]{64}$/i.test(existingKey || '')) return existingKey.toLowerCase()
+  const sourceKey = /^[a-f\d]{64}$/i.test(item.shortcutFingerprint || '')
+    ? item.shortcutFingerprint.toLowerCase()
+    : [item.targetPath, item.sourcePath, item.id].map((value) => String(value ?? '').toLowerCase()).join('\0')
   return createHash('sha256')
-    .update([item.targetPath, item.sourcePath, item.id].map((value) => String(value ?? '').toLowerCase()).join('\0'))
+    .update(`${yingyongIconCacheVersion}\0${sourceKey}`)
     .digest('hex')
 }
 
@@ -1784,28 +1840,25 @@ async function tiquApplicationNativeIcon(item) {
   if (item.sourcePath && fs.existsSync(item.sourcePath)) {
     try {
       const shortcutDetails = shell.readShortcutLink(item.sourcePath)
-      iconSources.push(shortcutDetails.icon, shortcutDetails.target)
+      iconSources.push(jiexiShortcutIconInfo(shortcutDetails.icon), { filePath: shortcutDetails.target, iconIndex: 0 })
     } catch {}
   }
-  iconSources.push(item.targetPath, item.sourcePath)
+  iconSources.push({ filePath: item.targetPath, iconIndex: 0 }, { filePath: item.sourcePath, iconIndex: 0 })
 
   // 优先读取快捷方式显式图标和目标程序，最后才使用 Windows 的通用 .lnk 图标。
-  const uniqueIconSources = [...new Set(iconSources.filter((source) => source && fs.existsSync(source)))]
-  for (const iconSource of uniqueIconSources) {
+  const uniqueIconSources = [...new Map(iconSources
+    .filter(({ filePath }) => filePath && fs.existsSync(filePath))
+    .map((source) => [`${source.filePath}\0${source.iconIndex}`, source])).values()]
+  for (const { filePath, iconIndex } of uniqueIconSources) {
     try {
-      const nativeIcon = path.extname(iconSource).toLowerCase() === '.ico'
-        ? nativeImage.createFromPath(iconSource)
-        : await app.getFileIcon(iconSource, { size: 'large' })
+      const windowsIconData = await huoquWindowsShellIconData(filePath, iconIndex)
+      const nativeIcon = windowsIconData
+        ? nativeImage.createFromDataURL(windowsIconData)
+        : path.extname(filePath).toLowerCase() === '.ico'
+          ? nativeImage.createFromPath(filePath)
+          : await app.getFileIcon(filePath, { size: 'large' })
       if (nativeIcon.isEmpty()) continue
-      const iconData = nativeIcon.toDataURL()
-      if (!iconData) continue
-
-      // Electron 会把无法解析的 EXE 返回为小尺寸通用图标，此时改由 Windows 原生接口提取。
-      const windowsIconData = panduanMaybeGenericIcon(nativeIcon, iconData)
-        ? await huoquWindowsShellIconData(iconSource)
-        : ''
-      const resolvedIcon = windowsIconData ? nativeImage.createFromDataURL(windowsIconData) : nativeIcon
-      if (!resolvedIcon.isEmpty()) return resolvedIcon
+      return nativeIcon
     } catch {}
   }
   return null
@@ -1854,9 +1907,12 @@ async function biaojiMediaCachePathsValid(filePaths) {
 }
 
 async function huoquReadyIconCacheUrl(cacheKey) {
-  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
-  const iconStats = await huoquValidPngCacheStats(iconPath)
-  return iconStats ? `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}` : ''
+  for (const size of [256, 128]) {
+    const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)
+    const iconStats = await huoquValidPngCacheStats(iconPath)
+    if (iconStats) return `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}`
+  }
+  return ''
 }
 
 async function shengchengYingyongIconCache(item, cacheKey) {
@@ -1867,7 +1923,7 @@ async function shengchengYingyongIconCache(item, cacheKey) {
 }
 
 async function baocunNativeIconCache(nativeIcon, cacheKey) {
-  const outputPaths = [64, 128].map((size) => ({
+  const outputPaths = yingyongIconCacheSizes.map((size) => ({
     size,
     finalPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`),
     tempPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.${process.pid}.${Date.now()}.tmp`),
@@ -1896,7 +1952,7 @@ async function baocunWebsiteIconCache(iconResource, cacheKey) {
       await fsp.rename(tempPath, finalPath)
       await biaojiMediaCachePathsValid([finalPath])
       const stalePaths = [
-        ...[64, 128].map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
+        ...yingyongIconCacheSizes.map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
         ...websiteBrowserIconExtensions
           .filter((extension) => extension !== iconResource.extension)
           .map((extension) => path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)),
@@ -2544,7 +2600,7 @@ async function qingliYingyongIconCache() {
       }
     }
     if (!entry.isFile()) continue
-    const match = /^([a-f\d]{64})-(?:64|128)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
+    const match = /^([a-f\d]{64})-(?:64|128|256)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
     if (!match) continue
     const cacheKey = match[1].toLowerCase()
     const cachePath = path.join(yingyongIconCacheDir, entry.name)
@@ -2862,10 +2918,15 @@ async function chushihuaYingyong() {
       if (!/^[a-f\d]{64}$/.test(cacheKey)) return new Response('invalid key', { status: 400 })
       let buffer
       let contentType = 'image/png'
-      try {
-        buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.png`))
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
+      for (const size of [256, 128]) {
+        try {
+          buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`))
+          break
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error
+        }
+      }
+      if (!buffer) {
         for (const extension of websiteBrowserIconExtensions) {
           try {
             const browserIcon = chuangjianSafeWebsiteBrowserIcon(

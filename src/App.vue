@@ -133,7 +133,6 @@
               @capture-clipboard="chuliJiantiebanBuhuo"
               @open-clipboard="dakaiJiantiebanShoujixiang"
               @open-settings="qiehuanSettings"
-              @float-window="shouqiDaoYouceCapsule"
               @select-category="xuanzeZiliaokuCategory"
               @refresh-library="shuaxinLibraryIndex(true)"
               @search="sousuoLibrary"
@@ -464,12 +463,6 @@ function fanhuiLibrary() {
   void guanbiMousePassthrough(true)
   currentPage.value = 'library'
   isLibraryContentVisible.value = true
-}
-
-// 展开面板收回右侧胶囊，避免切换至第二个入口窗口造成位置跳变。
-function shouqiDaoYouceCapsule() {
-  if (isDragging.value || isDropImporting.value || confirmState.value.visible) return
-  qiehuanIslandState(false)
 }
 
 function chuliIslandEnter() {
