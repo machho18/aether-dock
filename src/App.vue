@@ -95,6 +95,18 @@
               </span>
               <span class="drop-stream">
                 <span></span>
+              <span></span>
+              <span></span>
+            </span>
+            </span>
+            <span class="drop-motion" aria-hidden="true">
+              <span class="drop-particles">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+              <span class="drop-stream">
+                <span></span>
                 <span></span>
                 <span></span>
               </span>
@@ -1155,6 +1167,8 @@ function shezhiMousePassthrough(passthrough, force = false) {
 }
 
 .drop-copy {
+  position: relative;
+  z-index: 1;
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -1293,6 +1307,87 @@ function shezhiMousePassthrough(passthrough, force = false) {
 .lingdongchuangkou--importing .drop-motion::before {
   opacity: .28;
   transform: translate3d(-50%, 0, 0) scale(.72);
+}
+
+.drop-motion {
+  position: relative;
+  z-index: 1;
+  width: 64px;
+  height: var(--drop-motion-height);
+  margin-top: 7px;
+}
+
+/* 数据抵达宠物前以收纳刻线反馈。 */
+.drop-motion::after {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 15px;
+  height: 1px;
+  background: rgba(137, 144, 139, .72);
+  box-shadow: 0 1px rgba(248, 249, 248, .44), 0 -1px rgba(8, 11, 9, .18);
+  content: '';
+  opacity: .48;
+  transform: translate3d(-50%, 0, 0) scaleX(.42);
+  transform-origin: center;
+}
+
+.drop-particles {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 28px;
+}
+
+.drop-particles > span {
+  --drop-particle-x: 0px;
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 1px;
+  background: rgba(117, 124, 119, .74);
+  box-shadow: 0 1px rgba(248, 249, 248, .58);
+  transform: translate3d(var(--drop-particle-x), 0, 0);
+  will-change: transform, opacity;
+}
+
+.drop-particles > span:first-child { --drop-particle-x: -18px; }
+.drop-particles > span:last-child { --drop-particle-x: 18px; }
+
+.lingdongchuangkou--dropping .drop-particles > span {
+  animation: none;
+  opacity: 0;
+  transform: translate3d(0, 25px, 0) scaleX(.45);
+  transition: opacity 150ms ease, transform 180ms cubic-bezier(.4, 0, 1, 1);
+}
+
+.lingdongchuangkou--importing .drop-particles {
+  opacity: 0;
+}
+
+.drop-stream {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  width: 1px;
+  height: var(--drop-stream-height);
+  overflow: hidden;
+  background: linear-gradient(180deg, transparent, rgba(137, 144, 139, .34) 12%, rgba(137, 144, 139, .26) 86%, transparent);
+  box-shadow: 1px 0 rgba(248, 249, 248, .26), -1px 0 rgba(8, 11, 9, .12);
+  transform: translateX(-50%);
+}
+
+.drop-stream > span {
+  position: absolute;
+  top: -12px;
+  left: -1px;
+  width: 3px;
+  height: 12px;
+  background: linear-gradient(180deg, transparent, rgba(124, 132, 126, .96) 52%, transparent);
+  box-shadow: 1px 0 rgba(248, 249, 248, .48), -1px 0 rgba(8, 11, 9, .24);
+  will-change: transform, opacity;
 }
 
 .lingdongchuangkou--drop .drop-hint {
