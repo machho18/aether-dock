@@ -31,7 +31,7 @@
     "win": {
       "target": "nsis",
       "artifactName": "${productName}-Setup-${version}.${ext}",
-      "icon": "electron/assets/tray-icon.ico"
+      "icon": "electron/assets/aetherdock-icon-brand.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -40,6 +40,7 @@
     }
   },
   "dependencies": {
+    "@phosphor-icons/vue": "^2.2.1",
     "@tailwindcss/vite": "^4.1.12",
     "@vueuse/core": "^13.7.0",
     "electron-updater": "^6.8.9",

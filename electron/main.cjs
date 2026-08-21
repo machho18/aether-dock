@@ -1,5 +1,5 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } = require('electron')
-const { execFile } = require('node:child_process')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net: electronNet, protocol, screen, session, shell, Tray } = require('electron')
+const { execFile, spawn } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const dns = require('node:dns/promises')
 const fs = require('node:fs')
@@ -26,10 +26,16 @@ let yingyongSyncPromise = null
 let managedReconcilePromise = null
 let managedReconcileKey = ''
 let managedReconcileTimer = null
+let isManagedReconcilePending = false
 let libraryRootMigrationPromise = null
 let yingyongIconCacheDir = ''
+let yingyongIconCleanupPromise = null
+let yingyongIconCleanupTimer = null
+let isYingyongIconCleanupPending = false
 const yingyongIconPromiseMap = new Map()
 const yingyongIconRenwuQueue = []
+const mediaCacheYanzhengVersionMap = new Map()
+const mediaCacheYanzhengMaxSize = 4096
 let yingyongIconHuodongRenwu = 0
 let yingyongIconRenwuXuhao = 0
 let tupianThumbnailCacheDir = ''
@@ -41,6 +47,7 @@ let isHeavyTasksPaused = false
 let isXuanfuqiuMoshi = false
 let isGengxinDialogShowing = false
 let isAutoUpdaterInitialized = false
+let jiantiebanWindowsClipboardHelper = null
 let zhengzaiGithubGengxinJianchaPromise = null
 let gengxinJianchaStateReadyPromise = null
 let appGengxinInfo = {
@@ -66,7 +73,7 @@ const mainIslandCharmShapeMargin = { horizontal: 14, top: 16, bottom: 18 }
 const mainIslandCixiShapeMargin = { horizontal: 28, top: 30, bottom: 28 }
 // 拖动边界只约束宠物本体，允许外围磁场自然延伸至屏幕之外。
 const mainIslandCharmBoundaryMargin = { horizontal: 6, top: 4, bottom: 6 }
-let mainIslandAnchor = { horizontal: 'right', vertical: 'center' }
+let mainIslandAnchor = { horizontal: 'right', vertical: 'bottom' }
 let mainIslandMoveTimer = null
 let mainIslandMoveContext = null
 let isMainIslandShapeReady = false
@@ -83,8 +90,30 @@ const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
 const ziliaokuDbFilename = isKaifaHuanjing ? 'aether-dock.dev.db' : 'aether-dock.db'
 const remoteImageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.png', '.webp'])
+const jiantiebanImageExts = new Set([...remoteImageExts, '.svg'])
 const remoteDocumentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
-const websiteIconMimeTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon', 'application/octet-stream'])
+const textPreviewExts = new Set(['.txt', '.md', '.csv'])
+const websiteIconMimeTypes = new Set([
+  'image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon',
+  'image/svg+xml', 'image/webp', 'image/gif',
+  'application/xml', 'text/xml', 'text/plain', 'application/octet-stream',
+])
+const websiteDataIconMimeTypes = new Set([
+  'image/png', 'image/jpeg', 'image/jpg', 'image/x-icon', 'image/vnd.microsoft.icon',
+  'image/svg+xml', 'image/webp', 'image/gif',
+])
+const websiteBrowserIconExtensions = ['svg', 'webp', 'gif']
+const websiteIconMaxCandidates = 10
+const websiteIconTotalTimeoutMs = 15000
+const websiteIconPageTimeoutMs = 7000
+const websiteIconCandidateTimeoutMs = 4000
+const websiteSvgIconMaxBytes = 256 * 1024
+const websiteBrowserIconMaxBytes = 1024 * 1024
+const websiteSvgAllowedElements = new Set([
+  'svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon',
+  'defs', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask',
+  'symbol', 'use', 'title', 'desc', 'text', 'tspan',
+])
 const remoteMimeExtensions = new Map([
   ['image/avif', '.avif'], ['image/bmp', '.bmp'], ['image/gif', '.gif'],
   ['image/heic', '.heic'], ['image/jpeg', '.jpg'], ['image/png', '.png'],
@@ -139,7 +168,7 @@ function createWindowOptions(size) {
   return {
     ...size,
     // 统一窗口、任务栏和安装包的品牌图标。
-    icon: path.join(__dirname, 'assets', 'tray-icon.ico'),
+    icon: path.join(__dirname, 'assets', 'aetherdock-icon-brand.ico'),
     minWidth: size.width,
     minHeight: size.height,
     maxWidth: size.width,
@@ -165,11 +194,13 @@ function createWindowOptions(size) {
 function positionMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const workArea = screen.getPrimaryDisplay().workArea
-  const { charmOriginX } = huoquMainIslandLayout()
+  const { charmOriginX, charmOriginY } = huoquMainIslandLayout()
   const coordX = Math.round(
     workArea.x + workArea.width - mainIslandChushiScreenMargin - charmOriginX - mainIslandCharmSize.width,
   )
-  const coordY = Math.round(workArea.y + (workArea.height - mainWindowSize.height) / 2)
+  const coordY = Math.round(
+    workArea.y + workArea.height - mainIslandChushiScreenMargin - charmOriginY - mainIslandCharmSize.height,
+  )
   mainWindow.setPosition(coordX, coordY)
 }
 
@@ -347,6 +378,9 @@ function shezhiMainIslandWindowShape(state = 'collapsed', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return null
 
   const targetState = ['collapsed', 'moving', 'expanded', 'drop'].includes(state) ? state : 'collapsed'
+  // 窗口展开、拖动和接收投放时必须直接接收鼠标，不能等待渲染层异步解除穿透。
+  const shouldPassthrough = targetState === 'collapsed'
+  mainWindow.setIgnoreMouseEvents(shouldPassthrough, { forward: shouldPassthrough })
   const [currentX, currentY] = mainWindow.getPosition()
   const optimizedPosition = options?.optimizeAnchor
     ? youhuaMainIslandAnchor({ x: currentX, y: currentY })
@@ -476,34 +510,345 @@ function loadXuanfuqiuWindow(win) {
   win.loadFile(path.join(__dirname, '..', 'dist', 'floating.html'))
 }
 
-// 将剪贴板内容先落入系统临时目录，再复用资料库既有的受管文件导入流程。
-async function buhuoJiantiebanContent() {
-  const screenshot = clipboard.readImage()
-  let temporaryPath = ''
-  let captureType = ''
-  try {
-    if (!screenshot.isEmpty()) {
-      temporaryPath = path.join(os.tmpdir(), `aetherdock-clipboard-${Date.now()}-${process.pid}.png`)
-      await fsp.writeFile(temporaryPath, screenshot.toPNG())
-      captureType = '截图'
-    } else {
-      const content = clipboard.readText().trim()
-      if (!content) return { added: [], xiaoxi: '剪贴板中没有可捕获的内容' }
-      if (/^https?:\/\//i.test(content)) {
-        return { ...(await library.importContent({ file: [], url: [content] })), captureType: '链接' }
-      }
-      temporaryPath = path.join(os.tmpdir(), `aetherdock-note-${Date.now()}-${process.pid}.txt`)
-      await fsp.writeFile(temporaryPath, content.slice(0, 200000), 'utf8')
-      captureType = '笔记'
-    }
-    const result = await library.importContent({
-      file: [{ path: temporaryPath, name: path.basename(temporaryPath), type: captureType === '截图' ? 'image/png' : 'text/plain' }],
-      url: [],
-    })
-    return { ...result, captureType }
-  } finally {
-    if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+// 将标准位图与文件引用图片统一为 PNG，收集箱与归档流程始终只处理一种图片格式。
+function chuangjianJiantiebanTupianJieguo(image, title, captureTimestamp, captureType) {
+  if (!image || image.isEmpty()) return null
+  const imageData = image.toPNG()
+  if (!imageData.length) return null
+  const imageSize = image.getSize()
+  const imagePreviewData = imageSize.width > 560
+    ? image.resize({ width: 560, quality: 'good' }).toPNG()
+    : imageData
+  const result = library.tianjiaJiantiebanItem({
+    type: 'image',
+    title: `${title} · ${geshiJiantiebanBuhuoShijian(captureTimestamp)}`,
+    imageData,
+    imagePreviewData,
+    contentHash: huoquNeirongZhizhen(imageData),
+  })
+  return { ...result, captureType }
+}
+
+function guifanJiantiebanFilePaths(rawPaths) {
+  return [...new Set(rawPaths
+    .flatMap((rawPath) => String(rawPath ?? '').split('\0'))
+    .map((rawPath) => rawPath.trim())
+    .filter((rawPath) => path.isAbsolute(rawPath)))]
+}
+
+// 仅在剪贴板声明了文件引用时查询 Windows DataObject，避免普通文本捕获额外创建原生进程。
+// 解析 Windows 的 DROPFILES 二进制结构，优先在 Electron 主进程内获得真实文件路径。
+function jiexiWindowsFileDropBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 20) return []
+  const pathOffset = buffer.readUInt32LE(0)
+  const isWideChar = buffer.readUInt32LE(16) !== 0
+  if (pathOffset < 20 || pathOffset >= buffer.length) return []
+  const encoding = isWideChar ? 'utf16le' : 'latin1'
+  return buffer.subarray(pathOffset).toString(encoding).split('\0')
+}
+
+// Electron 可直接读取的 Windows 文件引用路径。
+function huoquElectronJiantiebanFilePaths() {
+  const formats = clipboard.availableFormats()
+  const fileDropFormat = formats.find((format) => /^FileDrop$/i.test(format))
+  const filenameFormat = formats.find((format) => /^FileNameW$/i.test(format))
+    ?? formats.find((format) => /^FileName$/i.test(format))
+  if (!fileDropFormat && !filenameFormat) return []
+
+  const rawPaths = []
+  if (fileDropFormat) {
+    try {
+      rawPaths.push(...jiexiWindowsFileDropBuffer(clipboard.readBuffer(fileDropFormat)))
+    } catch {}
   }
+  // FileNameW 是部分聊天软件提供的兼容格式，仅在 FileDrop 不可用时作为补充。
+  if (!filenameFormat) return guifanJiantiebanFilePaths(rawPaths)
+  try {
+    const encoding = /W$/i.test(filenameFormat) ? 'utf16le' : 'latin1'
+    rawPaths.push(clipboard.readBuffer(filenameFormat).toString(encoding))
+  } catch {}
+  try {
+    rawPaths.push(clipboard.read(filenameFormat))
+  } catch {}
+
+  return guifanJiantiebanFilePaths(rawPaths)
+}
+
+// 常驻 STA 进程读取 Windows DataObject，避免每次捕获都启动 PowerShell。
+function chushihuaWindowsJiantiebanHelper() {
+  if (process.platform !== 'win32' || jiantiebanWindowsClipboardHelper) return jiantiebanWindowsClipboardHelper
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    'while (($command = [Console]::In.ReadLine()) -ne $null) {',
+    '  if ($command -ne "read-file-paths") { continue }',
+    '  try {',
+    '    $clipboardData = [System.Windows.Forms.Clipboard]::GetDataObject()',
+    '    $paths = @()',
+    '    foreach ($format in @("FileDrop", "FileNameW", "FileName")) {',
+    '      $value = $clipboardData.GetData($format, $true)',
+    '      if ($value -is [System.Array]) { $paths += $value }',
+    '      elseif ($value -is [string]) { $paths += $value }',
+    '    }',
+    '    $result = @{ paths = @($paths | Where-Object { $_ -is [string] }) }',
+    '  } catch { $result = @{ paths = @() } }',
+    '  [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))',
+    '  [Console]::Out.Flush()',
+    '}',
+  ].join('\n')
+  const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-Command', script], {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  })
+  const helper = { child, output: '', pending: null }
+  jiantiebanWindowsClipboardHelper = helper
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk) => chuliWindowsJiantiebanHelperOutput(helper, chunk))
+  child.once('error', () => guanbiWindowsJiantiebanHelper(helper))
+  child.once('exit', () => guanbiWindowsJiantiebanHelper(helper))
+  return helper
+}
+
+function chuliWindowsJiantiebanHelperOutput(helper, chunk) {
+  helper.output += chunk
+  const lineBreakIndex = helper.output.indexOf('\n')
+  if (lineBreakIndex < 0 || !helper.pending) return
+  const line = helper.output.slice(0, lineBreakIndex).trim()
+  helper.output = helper.output.slice(lineBreakIndex + 1)
+  const pending = helper.pending
+  helper.pending = null
+  clearTimeout(pending.timeout)
+  try {
+    const result = JSON.parse(line || '{}')
+    pending.resolve(guifanJiantiebanFilePaths(result.paths ?? []))
+  } catch {
+    pending.resolve([])
+  }
+}
+
+function guanbiWindowsJiantiebanHelper(helper = jiantiebanWindowsClipboardHelper) {
+  if (!helper) return
+  if (helper.pending) {
+    clearTimeout(helper.pending.timeout)
+    helper.pending.resolve([])
+    helper.pending = null
+  }
+  if (jiantiebanWindowsClipboardHelper === helper) jiantiebanWindowsClipboardHelper = null
+}
+
+function tingzhiWindowsJiantiebanHelper() {
+  const helper = jiantiebanWindowsClipboardHelper
+  guanbiWindowsJiantiebanHelper(helper)
+  helper?.child.kill()
+}
+
+// Electron 未暴露 FileDrop 时，从已预热的 Windows STA 剪贴板助手获取虚拟文件路径。
+async function huoquWindowsJiantiebanFilePaths() {
+  const helper = chushihuaWindowsJiantiebanHelper()
+  if (!helper || helper.pending) return []
+  return new Promise((resolve) => {
+    const pending = {
+      resolve,
+      timeout: setTimeout(() => {
+        if (helper.pending !== pending) return
+        guanbiWindowsJiantiebanHelper(helper)
+        helper.child.kill()
+      }, 600),
+    }
+    helper.pending = pending
+    try {
+      helper.child.stdin.write('read-file-paths\n')
+    } catch {
+      guanbiWindowsJiantiebanHelper(helper)
+    }
+  })
+}
+
+// 优先使用 Electron 接口，只有无法取得路径时才调用 Windows 原生回退读取。
+async function huoquJiantiebanFilePaths(allowWindowsFallback = false) {
+  const electronPaths = huoquElectronJiantiebanFilePaths()
+  return electronPaths.length || !allowWindowsFallback ? electronPaths : huoquWindowsJiantiebanFilePaths()
+}
+
+// 文件引用只接受普通本地图片，避免虚拟对象或超大文件占用常驻进程内存。
+async function buhuoJiantiebanFileImage(captureTimestamp, allowWindowsFallback = false) {
+  const maxImageFileBytes = 100 * 1024 * 1024
+  for (const filePath of await huoquJiantiebanFilePaths(allowWindowsFallback)) {
+    if (!jiantiebanImageExts.has(path.extname(filePath).toLowerCase())) continue
+    try {
+      const fileStat = await fsp.lstat(filePath)
+      if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > maxImageFileBytes) continue
+      const image = nativeImage.createFromPath(filePath)
+      const title = path.basename(filePath, path.extname(filePath)).trim() || '剪贴板图片'
+      const result = chuangjianJiantiebanTupianJieguo(image, title, captureTimestamp, '图片文件')
+      if (result) return result
+    } catch {}
+  }
+  return null
+}
+
+// 单次图片读取统一处理位图和 Windows 文件引用两种剪贴板格式。
+async function buhuoJiantiebanTupian(captureTimestamp, allowWindowsFallback = false) {
+  const screenshotResult = chuangjianJiantiebanTupianJieguo(
+    clipboard.readImage(),
+    '剪贴板截图',
+    captureTimestamp,
+    '截图',
+  )
+  if (screenshotResult) return screenshotResult
+  return buhuoJiantiebanFileImage(captureTimestamp, allowWindowsFallback)
+}
+
+function chuangjianJiantiebanWenbenJieguo(content, captureTimestamp) {
+  const maxClipboardNoteLength = 200000
+  if (/^https?:\/\//i.test(content)) {
+    const result = library.tianjiaJiantiebanItem({
+      type: 'url',
+      title: huoquJiantiebanLianjieBiaoti(content, captureTimestamp),
+      sourceUrl: content,
+      contentHash: huoquNeirongZhizhen(content),
+    })
+    return { ...result, captureType: '链接' }
+  }
+
+  const savedContent = content.slice(0, maxClipboardNoteLength)
+  const result = library.tianjiaJiantiebanItem({
+    type: 'text',
+    title: huoquJiantiebanBijiBiaoti(savedContent, captureTimestamp),
+    textContent: savedContent,
+    contentHash: huoquNeirongZhizhen(savedContent),
+  })
+  return {
+    ...result,
+    captureType: '笔记',
+    wasTruncated: content.length > maxClipboardNoteLength,
+  }
+}
+
+function dengdaiJiantiebanBuhuo(waitMs) {
+  return new Promise((resolve) => setTimeout(resolve, waitMs))
+}
+
+// 捕获内容先进入收集箱，由用户确认后再归档到资料库。
+async function buhuoJiantiebanContent() {
+  const captureTimestamp = Date.now()
+  const imageResult = await buhuoJiantiebanTupian(captureTimestamp)
+  if (imageResult) return imageResult
+
+  const content = clipboard.readText().trim()
+  if (content) return chuangjianJiantiebanWenbenJieguo(content, captureTimestamp)
+
+  const windowsImageResult = await buhuoJiantiebanTupian(captureTimestamp, true)
+  if (windowsImageResult) return windowsImageResult
+
+  // Windows 在复制虚拟图片文件时会短暂锁定 DataObject；一次点击内补一次短重试。
+  await dengdaiJiantiebanBuhuo(120)
+  const retryImageResult = await buhuoJiantiebanTupian(captureTimestamp, true)
+  if (retryImageResult) return retryImageResult
+
+  const retryContent = clipboard.readText().trim()
+  return retryContent
+    ? chuangjianJiantiebanWenbenJieguo(retryContent, captureTimestamp)
+    : { item: null, xiaoxi: '剪贴板中没有可捕获的内容' }
+}
+
+// 归档时才生成临时文件，复用资料库的文件分类、去重和缩略图流程。
+async function guidangJiantiebanItems(rawItemIds) {
+  const items = library.huoquJiantiebanItemsByIds(rawItemIds)
+  const added = []
+  const duplicates = []
+  const removedIds = []
+  const failedIds = []
+
+  for (const item of items) {
+    let temporaryPath = ''
+    try {
+      let result
+      if (item.type === 'url') {
+        result = await library.importContent({ file: [], url: [item.sourceUrl] })
+      } else {
+        const extension = item.type === 'image' ? '.png' : '.txt'
+        const content = item.type === 'image' ? item.imageData : item.textContent
+        temporaryPath = path.join(os.tmpdir(), `aetherdock-clipboard-archive-${item.id}${extension}`)
+        await fsp.writeFile(temporaryPath, content)
+        result = await library.importContent({
+          file: [{
+            path: temporaryPath,
+            name: path.basename(temporaryPath),
+            title: item.title,
+            type: item.type === 'image' ? 'image/png' : 'text/plain',
+            contentHash: item.contentHash,
+          }],
+          url: [],
+        })
+      }
+      added.push(...(result?.added ?? []))
+      duplicates.push(...(result?.duplicates ?? []))
+      if ((result?.added?.length ?? 0) || (result?.duplicates?.length ?? 0)) removedIds.push(item.id)
+    } catch {
+      failedIds.push(item.id)
+    } finally {
+      if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+    }
+  }
+
+  if (removedIds.length) library.shanchuJiantiebanItems(removedIds)
+  const websiteIds = [...added.filter(({ type }) => type === 'url').map(({ id }) => id), ...duplicates]
+  if (websiteIds.length) yureWebsiteIcons(websiteIds)
+  const imageIds = added.filter(({ type }) => type === 'image').map(({ id }) => id)
+  if (imageIds.length) {
+    setTimeout(() => {
+      for (const itemId of imageIds) {
+        const item = library.getItemDetail(itemId)
+        if (item) void huoquImageThumbnailKey(item, 2).catch(() => {})
+      }
+    }, 500)
+  }
+  return { added, duplicates, removedIds, failedIds }
+}
+
+function fuzhiJiantiebanItem(itemId) {
+  const item = library.huoquJiantiebanItemsByIds([itemId])[0]
+  if (!item) return { chenggong: false, xiaoxi: '该剪贴板内容已不存在' }
+  if (item.type === 'image') {
+    clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(item.imageData)))
+  } else {
+    clipboard.writeText(item.type === 'url' ? item.sourceUrl : item.textContent)
+  }
+  return { chenggong: true, xiaoxi: item.type === 'image' ? '截图已复制到剪贴板' : '内容已复制到剪贴板' }
+}
+
+// 剪贴板内容仅以摘要命名，避免将完整敏感文本写入资料标题。
+function huoquJiantiebanBijiBiaoti(content, timestamp) {
+  const firstLine = String(content ?? '')
+    .split(/\r?\n/)
+    .find((line) => line.trim())
+    ?.replace(/[\u0000-\u001f<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 36)
+  const prefix = firstLine || '剪贴板笔记'
+  return `${prefix} · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+}
+
+function huoquJiantiebanLianjieBiaoti(content, timestamp) {
+  try {
+    return `${new URL(content).hostname} · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+  } catch {
+    return `剪贴板链接 · ${geshiJiantiebanBuhuoShijian(timestamp)}`
+  }
+}
+
+function geshiJiantiebanBuhuoShijian(timestamp) {
+  const date = new Date(timestamp)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function huoquNeirongZhizhen(content) {
+  return createHash('sha256').update(content).digest('hex')
 }
 
 // 计算两次采样间的 CPU 使用率
@@ -595,7 +940,7 @@ function huoquRemoteReferer(currentUrl, requestContext = {}) {
     const refererHostname = refererUrl.hostname.toLowerCase()
     const trustedSiteGroups = [
       ['baidu.com', 'bdstatic.com', 'bcebos.com'],
-      ['github.com', 'githubusercontent.com'],
+      ['github.com', 'githubusercontent.com', 'githubassets.com'],
       ['taobao.com', 'tmall.com', 'alicdn.com'],
     ]
     const belongsToDomain = (hostnameValue, domain) => hostnameValue === domain || hostnameValue.endsWith(`.${domain}`)
@@ -615,7 +960,7 @@ function huoquRemoteReferer(currentUrl, requestContext = {}) {
 
 // 创建常驻托盘入口，窗口不在任务栏出现时仍可让用户退出程序。
 function createTuopan() {
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.ico')
+  const iconPath = path.join(__dirname, 'assets', 'aetherdock-icon-brand.ico')
   const icon = nativeImage.createFromPath(iconPath)
   if (icon.isEmpty()) throw new Error('托盘图标加载失败')
   tuopan = new Tray(icon)
@@ -931,41 +1276,82 @@ function chushihuaAutoUpdater() {
   autoUpdater.on('error', () => gengxinAppGengxinInfo({ isDownloading: false, errorMessage: '下载失败，请检查网络后重试' }))
 }
 
-async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
-  let currentTarget = await jiaoyanRemoteUrl(rawUrl, signal)
+function chuangjianRemoteRequestHeaders(currentUrl, requestContext = {}) {
+  const referer = huoquRemoteReferer(currentUrl, requestContext)
+  return {
+    Accept: requestContext.accept || 'image/*,application/pdf,text/plain,application/octet-stream;q=0.8,*/*;q=0.5',
+    'Accept-Encoding': 'identity',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+    'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/${process.versions.chrome} Safari/537.36`,
+    ...(referer ? { Referer: referer } : {}),
+  }
+}
+
+async function qingqiuPinnedRemoteResponse(currentUrl, addresses, signal, requestContext) {
+  let lastError
+  for (const address of addresses) {
+    if (signal?.aborted) throw new Error('网络请求已取消')
+    try {
+      return await new Promise((resolve, reject) => {
+        const request = (currentUrl.protocol === 'https:' ? https : http).request(currentUrl, {
+          method: 'GET',
+          signal,
+          headers: chuangjianRemoteRequestHeaders(currentUrl, requestContext),
+          lookup: (hostname, options, callback) => {
+            if (options.all) {
+              callback(null, [address])
+              return
+            }
+            callback(null, address.address, address.family)
+          },
+        }, resolve)
+        if (requestContext.addressTimeoutMs) {
+          request.setTimeout(requestContext.addressTimeoutMs, () => request.destroy(new Error('网络连接超时')))
+        }
+        request.on('error', reject)
+        request.end()
+      })
+    } catch (error) {
+      if (signal?.aborted) throw error
+      lastError = error
+    }
+  }
+  throw lastError || new Error('网络连接失败')
+}
+
+function zhuangpeiNodeRemoteResponse(response) {
+  response.status = response.statusCode ?? 0
+  response.ok = response.status >= 200 && response.status < 300
+  response.body = response
+  response.header = (name) => {
+    const value = response.headers[name.toLowerCase()]
+    return Array.isArray(value) ? value[0] : value || ''
+  }
+  return response
+}
+
+function zhuangpeiSessionRemoteResponse(fetchResponse) {
+  const body = fetchResponse.body
+  return {
+    status: fetchResponse.status,
+    ok: fetchResponse.ok,
+    body,
+    header: (name) => fetchResponse.headers.get(name) || '',
+    destroy: () => { void body?.cancel().catch(() => {}) },
+    async *[Symbol.asyncIterator]() {
+      if (!body) return
+      for await (const chunk of body) yield chunk
+    },
+  }
+}
+
+async function qingqiuRemoteResourceDirect(initialTarget, signal, requestContext) {
+  let currentTarget = initialTarget
   for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
     const { url: currentUrl, addresses } = currentTarget
-    const referer = huoquRemoteReferer(currentUrl, requestContext)
-    const response = await new Promise((resolve, reject) => {
-      const request = (currentUrl.protocol === 'https:' ? https : http).request(currentUrl, {
-        method: 'GET',
-        signal,
-        headers: {
-          Accept: 'image/*,application/pdf,text/plain,application/octet-stream;q=0.8,*/*;q=0.5',
-          'Accept-Encoding': 'identity',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
-          'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/${process.versions.chrome} Safari/537.36`,
-          ...(referer ? { Referer: referer } : {}),
-        },
-        lookup: (hostname, options, callback) => {
-          if (options.all) {
-            callback(null, addresses)
-            return
-          }
-          const selectedAddress = addresses.find(({ family }) => !options.family || family === options.family) ?? addresses[0]
-          callback(null, selectedAddress.address, selectedAddress.family)
-        },
-      }, resolve)
-      request.on('error', reject)
-      request.end()
-    })
-    response.status = response.statusCode ?? 0
-    response.ok = response.status >= 200 && response.status < 300
-    response.body = response
-    response.header = (name) => {
-      const value = response.headers[name.toLowerCase()]
-      return Array.isArray(value) ? value[0] : value || ''
-    }
+    const response = zhuangpeiNodeRemoteResponse(
+      await qingqiuPinnedRemoteResponse(currentUrl, addresses, signal, requestContext),
+    )
     if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: currentUrl }
     const location = response.header('location')
     response.destroy()
@@ -973,6 +1359,51 @@ async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
     currentTarget = await jiaoyanRemoteUrl(new URL(location, currentUrl).toString(), signal)
   }
   throw new Error('网络资源重定向失败')
+}
+
+function panduanSessionProxyAvailable(proxyRules) {
+  return String(proxyRules ?? '').split(';').some((rule) => /^(?:PROXY|HTTPS|SOCKS(?:4|5)?)\s+/i.test(rule.trim()))
+}
+
+async function qingqiuRemoteResourceWithSession(initialTarget, signal, requestContext) {
+  let currentTarget = initialTarget
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    const currentUrl = currentTarget.url
+    const fetchResponse = await electronNet.fetch(currentUrl.toString(), {
+      method: 'GET',
+      signal,
+      redirect: 'manual',
+      credentials: 'omit',
+      headers: chuangjianRemoteRequestHeaders(currentUrl, requestContext),
+    })
+    const response = zhuangpeiSessionRemoteResponse(fetchResponse)
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: currentUrl }
+    const location = response.header('location')
+    response.destroy()
+    if (!location || redirectCount === 5) throw new Error('网络资源重定向过多')
+    currentTarget = await jiaoyanRemoteUrl(new URL(location, currentUrl).toString(), signal)
+  }
+  throw new Error('网络资源重定向失败')
+}
+
+async function qingqiuRemoteResource(rawUrl, signal, requestContext = {}) {
+  const initialTarget = await jiaoyanRemoteUrl(rawUrl, signal)
+  let canUseSessionNetwork = false
+  if (requestContext.useSessionNetwork) {
+    try {
+      const proxyRules = await session.defaultSession.resolveProxy(initialTarget.url.toString())
+      canUseSessionNetwork = panduanSessionProxyAvailable(proxyRules)
+    } catch {}
+  }
+
+  if (canUseSessionNetwork) {
+    try {
+      return await qingqiuRemoteResourceWithSession(initialTarget, signal, requestContext)
+    } catch (error) {
+      if (signal?.aborted) throw error
+    }
+  }
+  return qingqiuRemoteResourceDirect(initialTarget, signal, requestContext)
 }
 
 function tiquRemoteFilename(response, finalUrl, mimeType) {
@@ -1007,13 +1438,23 @@ function panduanRemoteResource(filename, mimeType) {
   return remoteImageExts.has(extension) || remoteDocumentExts.has(extension)
 }
 
+function panduanRemoteFileUrl(rawUrl) {
+  try {
+    const extension = path.extname(decodeURIComponent(new URL(rawUrl).pathname)).toLowerCase()
+    return remoteImageExts.has(extension) || remoteDocumentExts.has(extension)
+  } catch {
+    return false
+  }
+}
+
 function normalizeRemoteResource(rawResource) {
   const isHttpUrl = (value) => typeof value === 'string' && /^https?:\/\//i.test(value)
   const rawCandidates = Array.isArray(rawResource?.candidates) ? rawResource.candidates : []
   const candidates = [...new Set(rawCandidates.filter(isHttpUrl))].slice(0, 8)
   const sourceUrl = isHttpUrl(rawResource?.sourceUrl) ? rawResource.sourceUrl : candidates[0] || ''
   const referer = isHttpUrl(rawResource?.referer) ? rawResource.referer : ''
-  return { sourceUrl, referer, candidates }
+  const isXiazaiPreferred = rawResource?.isXiazaiPreferred === true
+  return { sourceUrl, referer, candidates, isXiazaiPreferred }
 }
 
 function decodeUrlRepeatedly(value) {
@@ -1161,7 +1602,15 @@ async function changshiDownloadRemoteCandidate(rawUrl, requestContext, batchSign
 }
 
 async function changshiDownloadRemoteResource(rawResource, batchSignal) {
-  const resource = await jiexiRemoteResource(rawResource, batchSignal)
+  const normalizedResource = normalizeRemoteResource(rawResource)
+  const shouldChangshiDownload = normalizedResource.isXiazaiPreferred
+    || normalizedResource.candidates.some(panduanRemoteFileUrl)
+  // 普通网页直接保存为书签，只有图片拖拽或明确的文件地址才进入网络下载链路。
+  if (!shouldChangshiDownload) {
+    return { added: [], duplicates: [], bookmark: true, sourceUrl: normalizedResource.sourceUrl }
+  }
+
+  const resource = await jiexiRemoteResource(normalizedResource, batchSignal)
   for (const candidate of resource.candidates) {
     if (batchSignal?.aborted) break
     const result = await changshiDownloadRemoteCandidate(candidate, resource, batchSignal)
@@ -1283,24 +1732,42 @@ function panduanMaybeGenericIcon(nativeIcon, iconData) {
 }
 
 // 图标读取可能触发原生接口或 PowerShell，固定并发数避免占满主进程资源。
-function xianxingZhixingYingyongIconRenwu(action, priority = 2) {
+function xianxingZhixingYingyongIconRenwu(action, priority = 2, taskKey = '') {
   return new Promise((resolve, reject) => {
-    yingyongIconRenwuQueue.push({ action, priority, sequence: yingyongIconRenwuXuhao++, resolve, reject })
+    yingyongIconRenwuQueue.push({ action, priority, taskKey, sequence: yingyongIconRenwuXuhao++, resolve, reject })
     yingyongIconRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
     zhixingNextYingyongIconRenwu()
   })
 }
 
+function tishengYingyongIconRenwuPriority(taskKey, priority) {
+  const task = yingyongIconRenwuQueue.find((currentTask) => currentTask.taskKey === taskKey)
+  if (!task || task.priority <= priority) return
+  task.priority = priority
+  yingyongIconRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+}
+
 function zhixingNextYingyongIconRenwu() {
+  if (isHeavyTasksPaused) return
   while (yingyongIconHuodongRenwu < 2 && yingyongIconRenwuQueue.length) {
     const task = yingyongIconRenwuQueue.shift()
     yingyongIconHuodongRenwu += 1
-    Promise.resolve(task.action())
-      .then(task.resolve, task.reject)
-      .finally(() => {
+    // 让出当前事件循环，避免 IPC 内连续启动原生图像任务挤占窗口交互。
+    setImmediate(() => {
+      if (isHeavyTasksPaused) {
         yingyongIconHuodongRenwu -= 1
-        zhixingNextYingyongIconRenwu()
-      })
+        yingyongIconRenwuQueue.push(task)
+        yingyongIconRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+        return
+      }
+      Promise.resolve()
+        .then(task.action)
+        .then(task.resolve, task.reject)
+        .finally(() => {
+          yingyongIconHuodongRenwu -= 1
+          zhixingNextYingyongIconRenwu()
+        })
+    })
   }
 }
 
@@ -1348,18 +1815,48 @@ function chuangjianYingyongIconUrl(cacheKey) {
   return `aetherdock-icon://${cacheKey}`
 }
 
-function huoquReadyIconCacheUrl(cacheKey) {
-  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
-  if (!fs.existsSync(iconPath)) return ''
-  try {
-    if (nativeImage.createFromPath(iconPath).isEmpty()) {
-      fs.rmSync(iconPath, { force: true })
-      return ''
-    }
-    return `${chuangjianYingyongIconUrl(cacheKey)}?v=${fs.statSync(iconPath).mtimeMs}`
-  } catch {
-    return ''
+function huoquMediaCacheVersion(stats) {
+  return `${stats.size}\0${stats.mtimeMs}`
+}
+
+function jiluMediaCacheVersion(filePath, cacheVersion) {
+  mediaCacheYanzhengVersionMap.delete(filePath)
+  mediaCacheYanzhengVersionMap.set(filePath, cacheVersion)
+  while (mediaCacheYanzhengVersionMap.size > mediaCacheYanzhengMaxSize) {
+    mediaCacheYanzhengVersionMap.delete(mediaCacheYanzhengVersionMap.keys().next().value)
   }
+}
+
+// PNG 缓存每个版本只解码验证一次，后续命中仅走异步文件状态检查。
+async function huoquValidPngCacheStats(filePath) {
+  try {
+    const stats = await fsp.stat(filePath)
+    if (!stats.isFile() || !stats.size) throw new Error('PNG 缓存为空')
+    const cacheVersion = huoquMediaCacheVersion(stats)
+    if (mediaCacheYanzhengVersionMap.get(filePath) !== cacheVersion) {
+      const pngBuffer = await fsp.readFile(filePath)
+      if (nativeImage.createFromBuffer(pngBuffer).isEmpty()) throw new Error('PNG 缓存损坏')
+    }
+    jiluMediaCacheVersion(filePath, cacheVersion)
+    return stats
+  } catch {
+    mediaCacheYanzhengVersionMap.delete(filePath)
+    await fsp.rm(filePath, { force: true }).catch(() => {})
+    return null
+  }
+}
+
+async function biaojiMediaCachePathsValid(filePaths) {
+  const statsList = await Promise.all(filePaths.map((filePath) => fsp.stat(filePath)))
+  filePaths.forEach((filePath, index) => {
+    jiluMediaCacheVersion(filePath, huoquMediaCacheVersion(statsList[index]))
+  })
+}
+
+async function huoquReadyIconCacheUrl(cacheKey) {
+  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
+  const iconStats = await huoquValidPngCacheStats(iconPath)
+  return iconStats ? `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}` : ''
 }
 
 async function shengchengYingyongIconCache(item, cacheKey) {
@@ -1382,11 +1879,43 @@ async function baocunNativeIconCache(nativeIcon, cacheKey) {
       return fsp.writeFile(tempPath, png)
     }))
     await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    await biaojiMediaCachePathsValid(outputPaths.map(({ finalPath }) => finalPath))
     return true
   } catch {
     await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
     return false
   }
+}
+
+async function baocunWebsiteIconCache(iconResource, cacheKey) {
+  if (iconResource.type === 'browser') {
+    const finalPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.${iconResource.extension}`)
+    const tempPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.${process.pid}.${Date.now()}.tmp`)
+    try {
+      await fsp.writeFile(tempPath, iconResource.buffer, { flag: 'wx' })
+      await fsp.rename(tempPath, finalPath)
+      await biaojiMediaCachePathsValid([finalPath])
+      const stalePaths = [
+        ...[64, 128].map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
+        ...websiteBrowserIconExtensions
+          .filter((extension) => extension !== iconResource.extension)
+          .map((extension) => path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)),
+      ]
+      await Promise.all(stalePaths.map((stalePath) => fsp.rm(stalePath, { force: true })))
+      return true
+    } catch {
+      await fsp.rm(tempPath, { force: true }).catch(() => {})
+      return false
+    }
+  }
+
+  const saved = await baocunNativeIconCache(iconResource.image, cacheKey)
+  if (saved) {
+    await Promise.all(websiteBrowserIconExtensions.map((extension) => (
+      fsp.rm(path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`), { force: true })
+    )))
+  }
+  return saved
 }
 
 function huoquWebsiteIconCacheKey(item) {
@@ -1410,19 +1939,198 @@ function duquHtmlAttribute(tag, name) {
   return jiemaHtmlAttribute(match?.[1] ?? match?.[2] ?? match?.[3] ?? '')
 }
 
-function tiquWebsiteIconCandidates(html, pageUrl) {
+function jiemaWebsiteDataIcon(dataUrl) {
+  if (typeof dataUrl !== 'string' || dataUrl.length > websiteBrowserIconMaxBytes * 1.5) return null
+  const match = /^data:([^;,]+)((?:;[^,]*)?),(.*)$/is.exec(dataUrl)
+  const mimeType = match?.[1]?.trim().toLowerCase()
+  if (!mimeType || !websiteDataIconMimeTypes.has(mimeType)) return null
+  try {
+    const isBase64 = /(?:^|;)base64(?:;|$)/i.test(match[2])
+    const buffer = isBase64
+      ? Buffer.from(match[3].replace(/\s+/g, ''), 'base64')
+      : Buffer.from(decodeURIComponent(match[3]), 'utf8')
+    return buffer.length && buffer.length <= websiteBrowserIconMaxBytes ? buffer : null
+  } catch {
+    return null
+  }
+}
+
+function guifanWebsiteIconUrl(rawUrl, baseUrl) {
+  try {
+    const iconUrl = new URL(rawUrl, baseUrl)
+    if (['http:', 'https:'].includes(iconUrl.protocol)) return iconUrl
+    if (iconUrl.protocol === 'data:' && jiemaWebsiteDataIcon(iconUrl.toString())) return iconUrl
+  } catch {}
+  return null
+}
+
+function tiquWebsiteHeaderIconCandidates(linkHeader, pageUrl) {
   const candidates = []
+  for (const match of String(linkHeader ?? '').matchAll(/<([^>]+)>\s*((?:;[^,]*)*)/g)) {
+    const relValue = /(?:^|;)\s*rel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]+))/i.exec(match[2])
+    const rel = (relValue?.[1] ?? relValue?.[2] ?? relValue?.[3] ?? '').toLowerCase().split(/\s+/)
+    if (!rel.some((value) => ['icon', 'apple-touch-icon', 'mask-icon', 'fluid-icon'].includes(value))) continue
+    const iconUrl = guifanWebsiteIconUrl(match[1], pageUrl)
+    if (iconUrl) candidates.push(iconUrl.toString())
+  }
+  return [...new Set(candidates)].slice(0, 4)
+}
+
+function tiquWebsiteFallbackIconUrls(pageUrl) {
+  return ['/favicon.ico', '/favicon.svg', '/favicon.png', '/apple-touch-icon.png'].flatMap((pathname) => {
+    try { return [new URL(pathname, pageUrl).toString()] } catch { return [] }
+  })
+}
+
+function huoquWebsiteBaseUrl(html, pageUrl) {
+  const baseTag = html.match(/<base\b[^>]*>/i)?.[0]
+  if (!baseTag) return pageUrl
+  try {
+    const baseUrl = new URL(duquHtmlAttribute(baseTag, 'href'), pageUrl)
+    return ['http:', 'https:'].includes(baseUrl.protocol) ? baseUrl : pageUrl
+  } catch {
+    return pageUrl
+  }
+}
+
+function tiquWebsiteManifestUrls(html, pageUrl) {
+  const baseUrl = huoquWebsiteBaseUrl(html, pageUrl)
+  const manifestUrls = []
   for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
     const rel = duquHtmlAttribute(tag, 'rel').toLowerCase().split(/\s+/)
-    if (!rel.some((value) => value === 'icon' || value === 'shortcut' || value === 'apple-touch-icon')) continue
-    const href = duquHtmlAttribute(tag, 'href')
+    if (!rel.includes('manifest')) continue
     try {
-      const iconUrl = new URL(href, pageUrl)
-      if (['http:', 'https:'].includes(iconUrl.protocol)) candidates.push(iconUrl.toString())
+      const manifestUrl = new URL(duquHtmlAttribute(tag, 'href'), baseUrl)
+      if (['http:', 'https:'].includes(manifestUrl.protocol)) manifestUrls.push(manifestUrl.toString())
     } catch {}
   }
-  try { candidates.push(new URL('/favicon.ico', pageUrl).toString()) } catch {}
-  return [...new Set(candidates)].slice(0, 8)
+  return [...new Set(manifestUrls)].slice(0, 2)
+}
+
+function tiquManifestIconCandidates(manifestText, manifestUrl) {
+  let manifest
+  try { manifest = JSON.parse(String(manifestText ?? '').replace(/^\uFEFF/, '')) } catch { return [] }
+  if (!Array.isArray(manifest?.icons)) return []
+  return manifest.icons.flatMap((icon, sequence) => {
+    if (!icon || typeof icon.src !== 'string') return []
+    try {
+      const iconUrl = guifanWebsiteIconUrl(icon.src, manifestUrl)
+      if (!iconUrl) return []
+      const sizes = [...String(icon.sizes ?? '').matchAll(/(\d{1,4})x(\d{1,4})/gi)]
+        .map((match) => Math.min(Number(match[1]), Number(match[2])))
+        .filter((size) => size > 0 && size <= 2048)
+      const declaredSize = sizes.length ? Math.max(...sizes) : 0
+      const declaredType = String(icon.type ?? '').toLowerCase()
+      if (declaredType && !websiteIconMimeTypes.has(declaredType)) return []
+      return [{
+        url: iconUrl.toString(),
+        score: Math.min(declaredSize, 512) * 2
+          + (declaredType === 'image/svg+xml' || iconUrl.pathname.toLowerCase().endsWith('.svg') ? 64 : 0)
+          + (declaredType === 'image/png' ? 24 : 0),
+        sequence,
+      }]
+    } catch {
+      return []
+    }
+  })
+    .sort((first, second) => second.score - first.score || first.sequence - second.sequence)
+    .slice(0, 4)
+    .map(({ url }) => url)
+}
+
+function tiquWebsiteIconCandidates(html, pageUrl) {
+  const baseUrl = huoquWebsiteBaseUrl(html, pageUrl)
+
+  const candidates = []
+  let sequence = 0
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = duquHtmlAttribute(tag, 'rel').toLowerCase().split(/\s+/)
+    const isDeclaredIcon = rel.some((value) => [
+      'icon', 'shortcut', 'apple-touch-icon', 'apple-touch-icon-precomposed', 'mask-icon', 'fluid-icon',
+    ].includes(value))
+    if (!isDeclaredIcon) continue
+    const href = duquHtmlAttribute(tag, 'href')
+    try {
+      const iconUrl = guifanWebsiteIconUrl(href, baseUrl)
+      if (!iconUrl) continue
+      const declaredSizes = [...duquHtmlAttribute(tag, 'sizes').matchAll(/(\d{1,4})x(\d{1,4})/gi)]
+        .map((match) => Math.min(Number(match[1]), Number(match[2])))
+        .filter((size) => size > 0 && size <= 2048)
+      const declaredSize = declaredSizes.length ? Math.max(...declaredSizes) : 0
+      const declaredType = duquHtmlAttribute(tag, 'type').toLowerCase()
+      if (declaredType && !websiteIconMimeTypes.has(declaredType)) continue
+      const score = 1000
+        + Math.min(declaredSize, 512) * 2
+        + (rel.some((value) => value.startsWith('apple-touch-icon')) ? 48 : 0)
+        + (declaredType === 'image/svg+xml' || iconUrl.pathname.toLowerCase().endsWith('.svg') ? 64 : 0)
+        + (declaredType === 'image/png' ? 24 : 0)
+      candidates.push({ url: iconUrl.toString(), score, sequence: sequence++ })
+    } catch {}
+  }
+  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+    const name = duquHtmlAttribute(tag, 'name').toLowerCase()
+    if (!/^msapplication-(?:tileimage|square\d+x\d+logo)$/.test(name)) continue
+    const iconUrl = guifanWebsiteIconUrl(duquHtmlAttribute(tag, 'content'), baseUrl)
+    if (iconUrl) candidates.push({ url: iconUrl.toString(), score: 1000, sequence: sequence++ })
+  }
+  const fallbackUrls = tiquWebsiteFallbackIconUrls(pageUrl)
+  for (const [index, fallbackUrl] of fallbackUrls.entries()) {
+    candidates.push({ url: fallbackUrl, score: 100 - index, sequence: sequence++ })
+  }
+
+  // 同一地址仅保留最高质量声明，优先下载矢量、大尺寸 PNG 与触控图标。
+  const uniqueCandidates = new Map()
+  for (const candidate of candidates) {
+    const existing = uniqueCandidates.get(candidate.url)
+    if (!existing || candidate.score > existing.score) uniqueCandidates.set(candidate.url, candidate)
+  }
+  const preferredUrls = [...uniqueCandidates.values()]
+    .sort((first, second) => second.score - first.score || first.sequence - second.sequence)
+    .filter(({ score }) => score >= 1000)
+    .slice(0, websiteIconMaxCandidates - fallbackUrls.length)
+    .map(({ url }) => url)
+  for (const fallbackUrl of fallbackUrls) {
+    if (!preferredUrls.includes(fallbackUrl)) preferredUrls.push(fallbackUrl)
+  }
+  return preferredUrls.slice(0, websiteIconMaxCandidates)
+}
+
+function chuangjianWebsiteRequestSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController()
+  const abortRequest = () => controller.abort()
+  if (parentSignal.aborted) abortRequest()
+  else parentSignal.addEventListener('abort', abortRequest, { once: true })
+  const timeout = setTimeout(abortRequest, timeoutMs)
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeout)
+      parentSignal.removeEventListener('abort', abortRequest)
+    },
+  }
+}
+
+async function huoquReadyWebsiteIconCacheUrl(cacheKey) {
+  const rasterIconUrl = await huoquReadyIconCacheUrl(cacheKey)
+  if (rasterIconUrl) return rasterIconUrl
+
+  for (const extension of websiteBrowserIconExtensions) {
+    const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)
+    try {
+      const [iconBuffer, iconStats] = await Promise.all([fsp.readFile(iconPath), fsp.stat(iconPath)])
+      const browserIcon = chuangjianSafeWebsiteBrowserIcon(iconBuffer)
+      if (!browserIcon || browserIcon.extension !== extension) {
+        await fsp.rm(iconPath, { force: true })
+        continue
+      }
+      jiluMediaCacheVersion(iconPath, huoquMediaCacheVersion(iconStats))
+      return `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}`
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue
+      return ''
+    }
+  }
+  return ''
 }
 
 async function duquRemoteBuffer(response, maxBytes) {
@@ -1505,66 +2213,213 @@ function panduanSafeIco(buffer) {
   return true
 }
 
+// SVG 作为图片展示前仅保留无脚本、无外链、复杂度受限的静态图形。
+function chuangjianSafeWebsiteSvgIcon(iconBuffer) {
+  if (!Buffer.isBuffer(iconBuffer) || !iconBuffer.length || iconBuffer.length > websiteSvgIconMaxBytes) return null
+  let svg = iconBuffer.toString('utf8').replace(/^\uFEFF/, '').trim()
+  if (/<!doctype[^>]*\[/i.test(svg) || /<!entity\b/i.test(svg)) return null
+  svg = svg
+    .replace(/<\?xml[\s\S]*?\?>/gi, '')
+    .replace(/<!doctype[^>]*>/gi, '')
+    .trim()
+  if (!/^<svg\b/i.test(svg) || !/<\/svg>\s*$/i.test(svg)) return null
+  if (/\son[a-z][\w:-]*\s*=/i.test(svg) || /\b(?:javascript|file):/i.test(svg)) return null
+  if (/<\s*(?:script|foreignobject|iframe|object|embed|image|audio|video|canvas|style)\b/i.test(svg)) return null
+  if (/@import\b|expression\s*\(/i.test(svg)) return null
+
+  for (const match of svg.matchAll(/\b(?:href|xlink:href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const href = (match[1] ?? match[2] ?? match[3] ?? '').trim()
+    if (href && !href.startsWith('#')) return null
+  }
+  for (const match of svg.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
+    if (!match[2].trim().startsWith('#')) return null
+  }
+
+  const elementMatches = [...svg.matchAll(/<\s*\/?\s*([a-z][\w:-]*)\b/gi)]
+  if (!elementMatches.length || elementMatches.length > 1200) return null
+  if (elementMatches.some((match) => !websiteSvgAllowedElements.has(match[1].toLowerCase()))) return null
+  return Buffer.from(svg, 'utf8')
+}
+
+function huoquGifImageSize(buffer) {
+  if (buffer.length < 10 || !['GIF87a', 'GIF89a'].includes(buffer.toString('ascii', 0, 6))) return null
+  return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) }
+}
+
+function huoquWebpImageSize(buffer) {
+  if (buffer.length < 30 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WEBP') return null
+  const chunkType = buffer.toString('ascii', 12, 16)
+  if (chunkType === 'VP8X') {
+    return { width: buffer.readUIntLE(24, 3) + 1, height: buffer.readUIntLE(27, 3) + 1 }
+  }
+  if (chunkType === 'VP8L' && buffer[20] === 0x2f) {
+    return {
+      width: 1 + ((buffer[21] | (buffer[22] << 8)) & 0x3fff),
+      height: 1 + (((buffer[22] >> 6) | (buffer[23] << 2) | (buffer[24] << 10)) & 0x3fff),
+    }
+  }
+  if (chunkType === 'VP8 ' && buffer[23] === 0x9d && buffer[24] === 0x01 && buffer[25] === 0x2a) {
+    return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff }
+  }
+  return null
+}
+
+function chuangjianSafeWebsiteBrowserIcon(iconBuffer) {
+  if (!Buffer.isBuffer(iconBuffer) || !iconBuffer.length || iconBuffer.length > websiteBrowserIconMaxBytes) return null
+  const svgBuffer = chuangjianSafeWebsiteSvgIcon(iconBuffer)
+  if (svgBuffer) return { type: 'browser', extension: 'svg', contentType: 'image/svg+xml', buffer: svgBuffer }
+
+  const gifSize = huoquGifImageSize(iconBuffer)
+  if (gifSize && panduanSafeImageSize(gifSize)) {
+    return { type: 'browser', extension: 'gif', contentType: 'image/gif', buffer: iconBuffer }
+  }
+  const webpSize = huoquWebpImageSize(iconBuffer)
+  if (webpSize && panduanSafeImageSize(webpSize)) {
+    return { type: 'browser', extension: 'webp', contentType: 'image/webp', buffer: iconBuffer }
+  }
+  return null
+}
+
 async function chuangjianSafeWebsiteIcon(iconBuffer, cacheKey) {
+  const browserIcon = chuangjianSafeWebsiteBrowserIcon(iconBuffer)
+  if (browserIcon) return browserIcon
+
   const rasterSize = huoquRasterImageSize(iconBuffer)
   if (rasterSize) {
     if (!panduanSafeImageSize(rasterSize)) return null
     const image = nativeImage.createFromBuffer(iconBuffer)
-    return image.isEmpty() ? null : image
+    return image.isEmpty() ? null : { type: 'raster', image }
   }
   if (process.platform !== 'win32' || !panduanSafeIco(iconBuffer)) return null
   const tempPath = path.join(yingyongIconCacheDir, `${cacheKey}.${process.pid}.${Date.now()}.ico`)
   try {
     await fsp.writeFile(tempPath, iconBuffer, { flag: 'wx' })
     const image = nativeImage.createFromPath(tempPath)
-    return image.isEmpty() ? null : image
+    return image.isEmpty() ? null : { type: 'raster', image }
   } finally {
     await fsp.rm(tempPath, { force: true }).catch(() => {})
   }
 }
 
+async function tiquWebsiteCandidateIcon(candidate, item, pageUrl, cacheKey, parentSignal) {
+  if (/^data:/i.test(candidate)) {
+    const iconBuffer = jiemaWebsiteDataIcon(candidate)
+    return iconBuffer ? chuangjianSafeWebsiteIcon(iconBuffer, cacheKey) : null
+  }
+  const requestSignal = chuangjianWebsiteRequestSignal(parentSignal, websiteIconCandidateTimeoutMs)
+  try {
+    const { response } = await qingqiuRemoteResource(candidate, requestSignal.signal, {
+      sourceUrl: pageUrl?.toString() || item.sourceUrl,
+      referer: pageUrl?.toString() || item.sourceUrl,
+      accept: 'image/svg+xml,image/webp,image/gif,image/png,image/jpeg,image/x-icon,image/vnd.microsoft.icon,application/octet-stream;q=0.8,*/*;q=0.2',
+      useSessionNetwork: true,
+      addressTimeoutMs: 3000,
+    })
+    const contentType = response.header('content-type').split(';')[0].trim().toLowerCase()
+    if (!response.ok || (contentType && !websiteIconMimeTypes.has(contentType))) {
+      response.destroy()
+      return null
+    }
+    const iconBuffer = await duquRemoteBuffer(response, 1024 * 1024)
+    return chuangjianSafeWebsiteIcon(iconBuffer, cacheKey)
+  } catch {
+    return null
+  } finally {
+    requestSignal.cleanup()
+  }
+}
+
+async function tiquWebsiteManifestIconUrls(manifestUrl, item, pageUrl, parentSignal) {
+  const requestSignal = chuangjianWebsiteRequestSignal(parentSignal, websiteIconCandidateTimeoutMs)
+  try {
+    const { response, finalUrl } = await qingqiuRemoteResource(manifestUrl, requestSignal.signal, {
+      sourceUrl: pageUrl?.toString() || item.sourceUrl,
+      referer: pageUrl?.toString() || item.sourceUrl,
+      accept: 'application/manifest+json,application/json,text/plain;q=0.8,*/*;q=0.2',
+      useSessionNetwork: true,
+      addressTimeoutMs: 3000,
+    })
+    if (!response.ok) {
+      response.destroy()
+      return []
+    }
+    const manifestBuffer = await duquRemoteBuffer(response, 512 * 1024)
+    return tiquManifestIconCandidates(manifestBuffer.toString('utf8'), finalUrl)
+  } catch {
+    return []
+  } finally {
+    requestSignal.cleanup()
+  }
+}
+
 async function tiquWebsiteNativeIcon(item) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 20000)
+  const timeout = setTimeout(() => controller.abort(), websiteIconTotalTimeoutMs)
+  const cacheKey = huoquWebsiteIconCacheKey(item)
   let pageUrl
   let candidates = []
+  let manifestUrls = []
   try {
-    const pageResult = await qingqiuRemoteResource(item.sourceUrl, controller.signal, { sourceUrl: item.sourceUrl })
-    pageUrl = pageResult.finalUrl
-    const contentType = pageResult.response.header('content-type').split(';')[0].trim().toLowerCase()
-    if (pageResult.response.ok && ['text/html', 'application/xhtml+xml'].includes(contentType)) {
-      const html = (await duquRemoteBuffer(pageResult.response, 2 * 1024 * 1024)).toString('utf8')
-      candidates = tiquWebsiteIconCandidates(html, pageUrl)
-    } else {
-      pageResult.response.destroy()
+    const pageSignal = chuangjianWebsiteRequestSignal(controller.signal, websiteIconPageTimeoutMs)
+    try {
+      const pageResult = await qingqiuRemoteResource(item.sourceUrl, pageSignal.signal, {
+        sourceUrl: item.sourceUrl,
+        accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.2',
+        useSessionNetwork: true,
+        addressTimeoutMs: 3000,
+      })
+      pageUrl = pageResult.finalUrl
+      const contentType = pageResult.response.header('content-type').split(';')[0].trim().toLowerCase()
+      if (pageResult.response.ok && ['text/html', 'application/xhtml+xml'].includes(contentType)) {
+        const linkHeader = pageResult.response.header('link')
+        const html = (await duquRemoteBuffer(pageResult.response, 2 * 1024 * 1024)).toString('utf8')
+        const fallbackUrls = tiquWebsiteFallbackIconUrls(pageUrl)
+        candidates = [...new Set([
+          ...tiquWebsiteIconCandidates(html, pageUrl).filter((candidate) => !fallbackUrls.includes(candidate)),
+          ...tiquWebsiteHeaderIconCandidates(linkHeader, pageUrl),
+          ...fallbackUrls,
+        ])].slice(0, websiteIconMaxCandidates)
+        manifestUrls = tiquWebsiteManifestUrls(html, pageUrl)
+      } else {
+        pageResult.response.destroy()
+      }
+    } finally {
+      pageSignal.cleanup()
     }
   } catch {
     try {
       pageUrl = new URL(item.sourceUrl)
-      candidates = [new URL('/favicon.ico', pageUrl).toString()]
     } catch {}
+  }
+  if (pageUrl) {
+    const fallbackUrls = tiquWebsiteFallbackIconUrls(pageUrl)
+    const declaredCandidates = candidates.filter((candidate) => !fallbackUrls.includes(candidate))
+    let manifestCandidates = []
+    if (!declaredCandidates.length && manifestUrls.length && !controller.signal.aborted) {
+      for (const manifestUrl of manifestUrls) {
+        manifestCandidates = await tiquWebsiteManifestIconUrls(manifestUrl, item, pageUrl, controller.signal)
+        if (manifestCandidates.length) break
+      }
+    }
+    candidates = [...new Set([...declaredCandidates, ...manifestCandidates, ...fallbackUrls])]
+      .slice(0, websiteIconMaxCandidates)
   }
 
   try {
-    for (const candidate of candidates) {
+    if (!cacheKey) return null
+    // 每批并行尝试两个候选，兼顾首屏速度与网络连接数量。
+    for (let index = 0; index < candidates.length && !controller.signal.aborted; index += 2) {
       try {
-        const { response } = await qingqiuRemoteResource(candidate, controller.signal, {
-          sourceUrl: pageUrl?.toString() || item.sourceUrl,
-          referer: pageUrl?.toString() || item.sourceUrl,
-        })
-        const contentType = response.header('content-type').split(';')[0].trim().toLowerCase()
-        if (!response.ok || !websiteIconMimeTypes.has(contentType)) {
-          response.destroy()
-          continue
-        }
-        const iconBuffer = await duquRemoteBuffer(response, 1024 * 1024)
-        const cacheKey = huoquWebsiteIconCacheKey(item)
-        const icon = cacheKey ? await chuangjianSafeWebsiteIcon(iconBuffer, cacheKey) : null
-        if (icon) return icon
+        return await Promise.any(candidates.slice(index, index + 2).map(async (candidate) => {
+          const icon = await tiquWebsiteCandidateIcon(candidate, item, pageUrl, cacheKey, controller.signal)
+          if (!icon) throw new Error('网址图标候选不可用')
+          return icon
+        }))
       } catch {}
     }
     return null
   } finally {
+    controller.abort()
     clearTimeout(timeout)
   }
 }
@@ -1573,7 +2428,7 @@ async function huoquWebsiteIconUrl(item, priority) {
   if (item.type !== 'url') return ''
   const cacheKey = huoquWebsiteIconCacheKey(item)
   if (!cacheKey) return ''
-  const cachedIconUrl = huoquReadyIconCacheUrl(cacheKey)
+  const cachedIconUrl = await huoquReadyWebsiteIconCacheUrl(cacheKey)
   if (cachedIconUrl) {
     if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') library.setWebsiteIconCache(item.id, cacheKey, 'ready')
     return cachedIconUrl
@@ -1583,14 +2438,14 @@ async function huoquWebsiteIconUrl(item, priority) {
   let cachePromise = yingyongIconPromiseMap.get(cacheKey)
   if (!cachePromise) {
     cachePromise = xianxingZhixingYingyongIconRenwu(async () => {
-      const nativeIcon = await tiquWebsiteNativeIcon(item)
-      return nativeIcon ? baocunNativeIconCache(nativeIcon, cacheKey) : false
-    }, priority).finally(() => yingyongIconPromiseMap.delete(cacheKey))
+      const iconResource = await tiquWebsiteNativeIcon(item)
+      return iconResource ? baocunWebsiteIconCache(iconResource, cacheKey) : false
+    }, priority, cacheKey).finally(() => yingyongIconPromiseMap.delete(cacheKey))
     yingyongIconPromiseMap.set(cacheKey, cachePromise)
-  }
+  } else tishengYingyongIconRenwuPriority(cacheKey, priority)
   const generated = await cachePromise
   library.setWebsiteIconCache(item.id, cacheKey, generated ? 'ready' : 'failed')
-  return generated ? huoquReadyIconCacheUrl(cacheKey) : ''
+  return generated ? huoquReadyWebsiteIconCacheUrl(cacheKey) : ''
 }
 
 async function huoquWebsiteIconMap(itemIds) {
@@ -1605,10 +2460,21 @@ async function huoquWebsiteIconMap(itemIds) {
   return Object.fromEntries(iconEntries)
 }
 
+// 链接归档成功后立即进入后台队列，打开资料库时通常可直接命中本地缓存。
+function yureWebsiteIcons(itemIds) {
+  const validIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])]
+    .filter((itemId) => typeof itemId === 'string')
+    .slice(0, 20)
+  for (const [index, itemId] of validIds.reverse().entries()) {
+    const item = library.getItemDetail(itemId)
+    if (item?.type === 'url') void huoquWebsiteIconUrl(item, index < 2 ? 0 : 1).catch(() => {})
+  }
+}
+
 async function huoquApplicationIconUrl(item, priority) {
   if (item.type !== 'application') return ''
   const cacheKey = huoquYingyongIconCacheKey(item)
-  const cachedIconUrl = huoquReadyIconCacheUrl(cacheKey)
+  const cachedIconUrl = await huoquReadyIconCacheUrl(cacheKey)
   if (cachedIconUrl) {
     if (item.iconCacheKey !== cacheKey || item.iconStatus !== 'ready') {
       library.setApplicationIconCache(item.id, cacheKey, 'ready')
@@ -1622,9 +2488,10 @@ async function huoquApplicationIconUrl(item, priority) {
     cachePromise = xianxingZhixingYingyongIconRenwu(
       () => shengchengYingyongIconCache(item, cacheKey),
       priority,
+      cacheKey,
     ).finally(() => yingyongIconPromiseMap.delete(cacheKey))
     yingyongIconPromiseMap.set(cacheKey, cachePromise)
-  }
+  } else tishengYingyongIconRenwuPriority(cacheKey, priority)
   const generated = await cachePromise
   library.setApplicationIconCache(item.id, cacheKey, generated ? 'ready' : 'failed')
   return generated ? huoquReadyIconCacheUrl(cacheKey) : ''
@@ -1643,17 +2510,66 @@ async function huoquYingyongIconMap(itemIds) {
   return Object.fromEntries(iconEntries)
 }
 
-// 同步仅删除已无数据库记录引用的指纹文件，未变化程序永久复用原缓存。
-async function qingliYingyongIconCache() {
-  const validKeys = new Set(library.getIconCacheItems().map(({ iconCacheKey }) => iconCacheKey).filter(Boolean))
-  let filenames = []
-  try { filenames = await fsp.readdir(yingyongIconCacheDir) } catch { return }
-  await Promise.all(filenames.map(async (filename) => {
-    const match = /^([a-f\d]{64})-(?:64|128)\.png$/i.exec(filename)
-    if (match && !validKeys.has(match[1].toLowerCase())) {
-      await fsp.rm(path.join(yingyongIconCacheDir, filename), { force: true })
-    }
+async function shanchuYingyongIconCacheBatch(cacheItems) {
+  if (isHeavyTasksPaused || !library) {
+    isYingyongIconCleanupPending = true
+    return false
+  }
+  await Promise.all(cacheItems.map(({ cacheKey, cachePath }) => {
+    // 删除前复检，避免后台清理与刚完成的图标生成互相覆盖。
+    if (mediaCacheYanzhengVersionMap.has(cachePath) || library.hasIconCacheKey(cacheKey)) return undefined
+    return fsp.rm(cachePath, { force: true })
   }))
+  await new Promise((resolve) => setImmediate(resolve))
+  return true
+}
+
+// 目录与数据库均流式逐项检查，十万级程序也不会一次构造全量数组和 Set。
+async function qingliYingyongIconCache() {
+  let cacheDirectory
+  try { cacheDirectory = await fsp.opendir(yingyongIconCacheDir) } catch { return }
+  let staleCacheItems = []
+  let scannedCount = 0
+  for await (const entry of cacheDirectory) {
+    if (isHeavyTasksPaused || !library) {
+      isYingyongIconCleanupPending = true
+      return
+    }
+    scannedCount += 1
+    if (scannedCount % 128 === 0) {
+      await new Promise((resolve) => setImmediate(resolve))
+      if (isHeavyTasksPaused || !library) {
+        isYingyongIconCleanupPending = true
+        return
+      }
+    }
+    if (!entry.isFile()) continue
+    const match = /^([a-f\d]{64})-(?:64|128)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
+    if (!match) continue
+    const cacheKey = match[1].toLowerCase()
+    const cachePath = path.join(yingyongIconCacheDir, entry.name)
+    if (mediaCacheYanzhengVersionMap.has(cachePath) || library.hasIconCacheKey(cacheKey)) continue
+    staleCacheItems.push({ cacheKey, cachePath })
+    if (staleCacheItems.length < 64) continue
+    if (!(await shanchuYingyongIconCacheBatch(staleCacheItems))) return
+    staleCacheItems = []
+  }
+  if (staleCacheItems.length) await shanchuYingyongIconCacheBatch(staleCacheItems)
+}
+
+function qingqiuYingyongIconCacheCleanup() {
+  if (!library) return
+  if (isHeavyTasksPaused || yingyongIconCleanupPromise) {
+    isYingyongIconCleanupPending = true
+    return
+  }
+  isYingyongIconCleanupPending = false
+  yingyongIconCleanupPromise = qingliYingyongIconCache()
+    .catch(() => {})
+    .finally(() => {
+      yingyongIconCleanupPromise = null
+      if (isYingyongIconCleanupPending && !isHeavyTasksPaused) setImmediate(qingqiuYingyongIconCacheCleanup)
+    })
 }
 
 function xianxingZhixingThumbnailRenwu(action, priority = 2) {
@@ -1668,12 +2584,22 @@ function zhixingNextThumbnailRenwu() {
   if (isHeavyTasksPaused || tupianThumbnailHuodongRenwu || !tupianThumbnailRenwuQueue.length) return
   const task = tupianThumbnailRenwuQueue.shift()
   tupianThumbnailHuodongRenwu = 1
-  Promise.resolve(task.action())
-    .then(task.resolve, task.reject)
-    .finally(() => {
+  // 缩略图解码和编码是同步原生操作，至少先让窗口事件获得一次处理机会。
+  setImmediate(() => {
+    if (isHeavyTasksPaused) {
       tupianThumbnailHuodongRenwu = 0
-      zhixingNextThumbnailRenwu()
-    })
+      tupianThumbnailRenwuQueue.push(task)
+      tupianThumbnailRenwuQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence)
+      return
+    }
+    Promise.resolve()
+      .then(task.action)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        tupianThumbnailHuodongRenwu = 0
+        zhixingNextThumbnailRenwu()
+      })
+  })
 }
 
 function huoquThumbnailCacheKey(item) {
@@ -1717,6 +2643,7 @@ async function shengchengThumbnailCache(item, cacheKey) {
       return fsp.writeFile(tempPath, png)
     }))
     await Promise.all(outputPaths.map(({ tempPath, finalPath }) => fsp.rename(tempPath, finalPath)))
+    await biaojiMediaCachePathsValid(outputPaths.map(({ finalPath }) => finalPath))
     return true
   } catch {
     await Promise.all(outputPaths.map(({ tempPath }) => fsp.rm(tempPath, { force: true }).catch(() => {})))
@@ -1728,9 +2655,8 @@ async function huoquImageThumbnailKey(item, priority) {
   if (item.type !== 'image') return ''
   const cacheKey = huoquThumbnailCacheKey(item)
   const cachePaths = [320, 640].map((width) => path.join(tupianThumbnailCacheDir, `${cacheKey}-${width}.png`))
-  const hasCache = cachePaths.every((cachePath) => (
-    fs.existsSync(cachePath) && !nativeImage.createFromPath(cachePath).isEmpty()
-  ))
+  const cacheStats = await Promise.all(cachePaths.map(huoquValidPngCacheStats))
+  const hasCache = cacheStats.every(Boolean)
   if (hasCache) {
     if (item.thumbnailCacheKey !== cacheKey || item.thumbnailStatus !== 'ready') {
       if (!library.setImageThumbnailCache(item, cacheKey, 'ready')) return ''
@@ -1776,9 +2702,11 @@ async function huoquImageThumbnailMap(itemIds, priority = 0) {
 async function shanchuThumbnailCache(cacheKey) {
   if (!/^[a-f\d]{64}$/i.test(cacheKey || '')) return
   await tupianThumbnailPromiseMap.get(cacheKey.toLowerCase())?.catch(() => {})
-  await Promise.all([320, 640].map((width) => (
-    fsp.rm(path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`), { force: true })
-  )))
+  await Promise.all([320, 640].map((width) => {
+    const cachePath = path.join(tupianThumbnailCacheDir, `${cacheKey.toLowerCase()}-${width}.png`)
+    mediaCacheYanzhengVersionMap.delete(cachePath)
+    return fsp.rm(cachePath, { force: true })
+  }))
 }
 
 async function tongbuManagedLibraryFiles() {
@@ -1815,12 +2743,23 @@ async function tongbuManagedFilesAndNotify() {
   return result
 }
 
+// 动画期间只记录目录变更，待关键帧结束后再执行全量对账。
+function qingqiuManagedFilesReconcile() {
+  if (!library) return
+  if (isHeavyTasksPaused) {
+    isManagedReconcilePending = true
+    return
+  }
+  isManagedReconcilePending = false
+  void tongbuManagedFilesAndNotify().catch(() => {})
+}
+
 // 创建应用主窗口
 function createMainWindow() {
   isMainIslandShapeReady = false
   mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
 
-  // 主灵动岛始终预加载在桌面右侧，等待开机动画结束后再显示
+  // 主灵动岛预加载在桌面右下角，等待开机动画结束后再显示。
   positionMainWindow()
   shezhiMainIslandWindowShape()
   mainWindow.once('ready-to-show', () => {
@@ -1905,25 +2844,52 @@ function jihuoYiyouLingdongdaoWindow() {
 }
 
 async function chushihuaYingyong() {
+  // 后台预热 Windows STA 剪贴板读取，图片捕获时无需等待 PowerShell 冷启动。
+  chushihuaWindowsJiantiebanHelper()
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   // 开发与生产使用独立数据库，调试数据不会影响已安装应用的资料库。
   library = createLibrary(path.join(app.getPath('userData'), ziliaokuDbFilename))
   library.onManagedFilesDirty(() => {
-    void tongbuManagedFilesAndNotify().catch(() => {})
+    qingqiuManagedFilesReconcile()
   })
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
   await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
-  await qingliYingyongIconCache()
   protocol.handle('aetherdock-icon', async (request) => {
     try {
       const cacheKey = new URL(request.url).hostname.toLowerCase()
       if (!/^[a-f\d]{64}$/.test(cacheKey)) return new Response('invalid key', { status: 400 })
-      const buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.png`))
+      let buffer
+      let contentType = 'image/png'
+      try {
+        buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.png`))
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+        for (const extension of websiteBrowserIconExtensions) {
+          try {
+            const browserIcon = chuangjianSafeWebsiteBrowserIcon(
+              await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)),
+            )
+            if (!browserIcon || browserIcon.extension !== extension) continue
+            buffer = browserIcon.buffer
+            contentType = browserIcon.contentType
+            break
+          } catch (browserIconError) {
+            if (browserIconError?.code !== 'ENOENT') throw browserIconError
+          }
+        }
+        if (!buffer) {
+          const missingIconError = new Error('网址浏览器图标缓存无效')
+          missingIconError.code = 'ENOENT'
+          throw missingIconError
+        }
+      }
       return new Response(buffer, {
         headers: {
-          'Content-Type': 'image/png',
+          'Content-Type': contentType,
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+          'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       })
@@ -1942,6 +2908,29 @@ async function chushihuaYingyong() {
         headers: {
           'Content-Type': 'image/png',
           'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    } catch (error) {
+      return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
+    }
+  })
+  // PDF 预览始终按资料 ID 在主进程重新校验路径，渲染层无法借此读取任意本地文件。
+  protocol.handle('aetherdock-preview', async (request) => {
+    try {
+      const itemId = new URL(request.url).hostname
+      if (!/^[\da-f-]{36}$/i.test(itemId)) return new Response('invalid preview', { status: 400 })
+      const item = library.getItemDetail(itemId)
+      if (!item || path.extname(item.title || item.sourcePath || '').toLowerCase() !== '.pdf') {
+        return new Response('not found', { status: 404 })
+      }
+      const localPath = await library.getValidatedItemLocalPath(item)
+      if (!localPath) return new Response('not found', { status: 404 })
+      const buffer = await fsp.readFile(localPath)
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Security-Policy': "default-src 'none'; frame-src 'none'; object-src 'none'",
+          'X-Content-Type-Options': 'nosniff',
         },
       })
     } catch (error) {
@@ -2085,6 +3074,11 @@ async function chushihuaYingyong() {
       duplicates: [...localResult.duplicates, ...remoteDuplicates, ...bookmarkResult.duplicates],
       downloaded: remoteAdded.length,
     }
+    const websiteIds = [
+      ...result.added.filter(({ type }) => type === 'url').map(({ id }) => id),
+      ...bookmarkResult.duplicates,
+    ]
+    if (websiteIds.length) yureWebsiteIcons(websiteIds)
     const imageIds = result.added.filter(({ type }) => type === 'image').map(({ id }) => id)
     if (imageIds.length) {
       setTimeout(() => {
@@ -2097,9 +3091,34 @@ async function chushihuaYingyong() {
     return result
   })
   ipcMain.handle(ipcTongdao.captureClipboardContent, buhuoJiantiebanContent)
+  ipcMain.handle(ipcTongdao.getClipboardItems, () => ({ items: library.huoquJiantiebanItems() }))
+  ipcMain.handle(ipcTongdao.archiveClipboardItems, (_, itemIds) => guidangJiantiebanItems(itemIds))
+  ipcMain.handle(ipcTongdao.deleteClipboardItems, async (_, itemIds) => {
+    let lastError = null
+    // SQLite 短暂忙碌时重试，确保点击移除不会被后台索引任务打断。
+    for (let cishu = 0; cishu < 3; cishu += 1) {
+      try {
+        return { chenggong: true, ...library.shanchuJiantiebanItems(itemIds) }
+      } catch (error) {
+        lastError = error
+        await new Promise((resolve) => setTimeout(resolve, 60 * (cishu + 1)))
+      }
+    }
+    console.warn('剪贴板收集箱移除失败', lastError)
+    return { chenggong: false, removedIds: [], xiaoxi: '收集箱暂时繁忙，请稍后再试' }
+  })
+  ipcMain.handle(ipcTongdao.clearClipboardItems, () => library.qingkongJiantiebanItems())
+  ipcMain.handle(ipcTongdao.copyClipboardItem, (_, itemId) => fuzhiJiantiebanItem(itemId))
   ipcMain.handle(ipcTongdao.setHeavyTasksPaused, (_, paused) => {
     isHeavyTasksPaused = Boolean(paused)
-    if (!isHeavyTasksPaused) zhixingNextThumbnailRenwu()
+    if (isHeavyTasksPaused) return
+    setImmediate(() => {
+      if (isHeavyTasksPaused) return
+      zhixingNextYingyongIconRenwu()
+      zhixingNextThumbnailRenwu()
+      if (isManagedReconcilePending) qingqiuManagedFilesReconcile()
+      if (isYingyongIconCleanupPending) qingqiuYingyongIconCacheCleanup()
+    })
   })
   ipcMain.handle(ipcTongdao.tongbuDesktopApplications, async () => {
     if (!yingyongSyncPromise) {
@@ -2127,6 +3146,40 @@ async function chushihuaYingyong() {
   })
   ipcMain.handle(ipcTongdao.getLibraryPage, (_, options) => library.getLibraryPage(options))
   ipcMain.handle(ipcTongdao.searchLibrary, (_, options) => library.searchLibrary(options))
+  ipcMain.handle(ipcTongdao.getLibraryItemDetails, async (_, itemId) => {
+    const item = library.getItemDetail(itemId)
+    const notesDetail = library.getItemNotes(itemId)
+    if (!item || !notesDetail) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+
+    const extension = path.extname(item.title || item.sourcePath || '').toLowerCase()
+    const localPath = await library.getValidatedItemLocalPath(item)
+    const detail = {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      status: item.status,
+      source: item.sourceUrl || item.relativePath || item.sourcePath || '',
+      byteSize: Number(item.byteSize ?? 0),
+      ...notesDetail,
+      preview: { type: 'none', content: '' },
+    }
+    if (item.type === 'image') {
+      const thumbnailKey = await huoquImageThumbnailKey(item, 0).catch(() => '')
+      if (thumbnailKey) detail.preview = { type: 'image', content: `aetherdock-thumb://${thumbnailKey}/640` }
+    } else if (extension === '.pdf' && localPath) {
+      detail.preview = { type: 'pdf', content: `aetherdock-preview://${item.id}` }
+    } else if (textPreviewExts.has(extension) && localPath) {
+      const stat = await fsp.stat(localPath).catch(() => null)
+      if (stat?.isFile() && stat.size <= 256 * 1024) {
+        detail.preview = { type: 'text', content: await fsp.readFile(localPath, 'utf8') }
+      }
+    }
+    return { chenggong: true, detail }
+  })
+  ipcMain.handle(ipcTongdao.updateLibraryItemNotes, (_, itemId, notes) => {
+    const result = library.setItemNotes(itemId, notes)
+    return result ? { chenggong: true, ...result } : { chenggong: false, xiaoxi: '未找到该资料库条目' }
+  })
   ipcMain.handle(ipcTongdao.getApplicationIcons, (_, itemIds) => huoquYingyongIconMap(itemIds))
   ipcMain.handle(ipcTongdao.getWebsiteIcons, (_, itemIds) => huoquWebsiteIconMap(itemIds))
   ipcMain.handle(ipcTongdao.getImageThumbnails, (_, itemIds) => huoquImageThumbnailMap(itemIds))
@@ -2136,12 +3189,12 @@ async function chushihuaYingyong() {
       if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
       if (item?.storageMode === 'bookmark' && item.sourceUrl) {
         await shell.openExternal(item.sourceUrl)
-        return { chenggong: true }
+        return { chenggong: true, usage: library.recordItemOpened(itemId) }
       }
       const localPath = await library.getValidatedItemLocalPath(item)
       if (localPath) {
         const error = await shell.openPath(localPath)
-        return error ? { chenggong: false, xiaoxi: error } : { chenggong: true }
+        return error ? { chenggong: false, xiaoxi: error } : { chenggong: true, usage: library.recordItemOpened(itemId) }
       }
       return { chenggong: false, xiaoxi: '条目缺少可打开的来源' }
     } catch {
@@ -2189,7 +3242,7 @@ async function chushihuaYingyong() {
     }
   })
   managedReconcileTimer = setInterval(() => {
-    void tongbuManagedFilesAndNotify().catch(() => {})
+    qingqiuManagedFilesReconcile()
   }, 5 * 60 * 1000)
   managedReconcileTimer.unref()
   createTuopan()
@@ -2197,6 +3250,8 @@ async function chushihuaYingyong() {
   createXuanfuqiuWindow()
   createStartupWindow()
   chushihuaAutoUpdater()
+  yingyongIconCleanupTimer = setTimeout(qingqiuYingyongIconCacheCleanup, 2500)
+  yingyongIconCleanupTimer.unref()
   setTimeout(() => { void jianchaGithubAppGengxin({ shiShoudong: false }) }, 5000).unref()
 
   app.on('activate', () => {
@@ -2222,8 +3277,13 @@ app.on('window-all-closed', () => {
 })
 
 app.once('will-quit', () => {
+  tingzhiWindowsJiantiebanHelper()
   if (managedReconcileTimer) clearInterval(managedReconcileTimer)
   managedReconcileTimer = null
+  isManagedReconcilePending = false
+  if (yingyongIconCleanupTimer) clearTimeout(yingyongIconCleanupTimer)
+  yingyongIconCleanupTimer = null
+  isYingyongIconCleanupPending = false
   library?.close()
   library = null
 })

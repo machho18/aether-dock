@@ -10,6 +10,13 @@ const fileIconRules = [
   { extensions: ['.xls', '.xlsx'], type: 'XLS', icon: xlsIcon },
   { extensions: ['.doc', '.docx'], type: 'DOC', icon: docIcon },
 ]
+const cardTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
 
 // 根据资料类型生成卡片预览信息，图片加载失败时自动回退到通用图标。
 export function huoquCardInfo(item, previewFailed) {
@@ -53,13 +60,7 @@ export function huoquCardName(item) {
 
 export function geshiCardTime(timestamp) {
   if (!timestamp) return ''
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date(timestamp))
+  return cardTimeFormatter.format(new Date(timestamp))
 }
 
 export function huoquApplicationStatus(item) {

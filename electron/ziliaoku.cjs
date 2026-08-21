@@ -10,10 +10,16 @@ const imageExts = new Set(['.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.
 const documentExts = new Set(['.csv', '.doc', '.docx', '.md', '.odp', '.ods', '.odt', '.pdf', '.ppt', '.pptx', '.rtf', '.txt', '.xls', '.xlsx'])
 const availableAnimations = new Set(['kulian', 'daxiao', 'aixin'])
 const itemTypes = ['document', 'image', 'url', 'application']
-const itemTypeSet = new Set(itemTypes)
+const zuijinCategoryId = 'recent'
+const defaultCategoryId = zuijinCategoryId
+const categoryIdSet = new Set([zuijinCategoryId, ...itemTypes])
 const managedCategoryDirs = Object.freeze({ image: 'images', document: 'documents' })
 const managedFullScanInterval = 5 * 60 * 1000
-const itemSummaryColumns = 'id, type, storageMode, title, sourcePath, relativePath, sourceUrl, libraryId, status, iconCacheKey, iconStatus, thumbnailCacheKey, thumbnailStatus, createdAt, updatedAt'
+const managedIncrementalKeyLimit = 256
+const managedReconcileBatchSize = 500
+const migrationReportItemLimit = 200
+const jiantiebanItemLimit = 50
+const itemSummaryColumns = 'id, type, storageMode, title, sourcePath, relativePath, sourceUrl, libraryId, status, iconCacheKey, iconStatus, thumbnailCacheKey, thumbnailStatus, lastOpenedAt, openCount, notes, createdAt, updatedAt'
 
 // 创建资料库持久层，所有数据库读写仅在主进程执行
 function createLibrary(dbPath) {
@@ -57,6 +63,7 @@ function createLibrary(dbPath) {
       libraryId TEXT,
       sourceUrl TEXT,
       normalizedUrl TEXT,
+      contentHash TEXT,
       mimeType TEXT,
       byteSize INTEGER,
       targetPath TEXT,
@@ -72,6 +79,10 @@ function createLibrary(dbPath) {
       lastCheckedAt INTEGER,
       missingReason TEXT,
       status TEXT NOT NULL DEFAULT 'ready',
+      isPinned INTEGER NOT NULL DEFAULT 0,
+      lastOpenedAt INTEGER,
+      openCount INTEGER NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
@@ -82,7 +93,7 @@ function createLibrary(dbPath) {
     const legacyZiduan = new Set(db.prepare('PRAGMA table_info(items)').all().map(({ name }) => name))
     const currentZiduan = [
       'id', 'type', 'storageMode', 'title', 'sourcePath', 'relativePath', 'libraryId', 'sourceUrl',
-      'normalizedUrl', 'mimeType', 'byteSize', 'status', 'createdAt', 'updatedAt',
+      'normalizedUrl', 'contentHash', 'mimeType', 'byteSize', 'status', 'createdAt', 'updatedAt',
     ].filter((column) => legacyZiduan.has(column))
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -112,25 +123,80 @@ function createLibrary(dbPath) {
   if (!itemsZiduan.has('libraryId')) {
     db.exec('ALTER TABLE items ADD COLUMN libraryId TEXT')
   }
-  db.exec("UPDATE items SET libraryId = (SELECT value FROM settings WHERE key = 'ziliaoKuId') WHERE storageMode = 'managed' AND libraryId IS NULL")
+  if (!itemsZiduan.has('isPinned')) db.exec('ALTER TABLE items ADD COLUMN isPinned INTEGER NOT NULL DEFAULT 0')
+  if (!itemsZiduan.has('lastOpenedAt')) db.exec('ALTER TABLE items ADD COLUMN lastOpenedAt INTEGER')
+  if (!itemsZiduan.has('openCount')) db.exec('ALTER TABLE items ADD COLUMN openCount INTEGER NOT NULL DEFAULT 0')
+  if (!itemsZiduan.has('notes')) db.exec("ALTER TABLE items ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+  if (!itemsZiduan.has('contentHash')) db.exec('ALTER TABLE items ADD COLUMN contentHash TEXT')
+
+  const currentSchemaVersion = Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0)
+  if (currentSchemaVersion < 1) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      db.exec(`
+        UPDATE items
+        SET libraryId = (SELECT value FROM settings WHERE key = 'ziliaoKuId')
+        WHERE storageMode = 'managed' AND libraryId IS NULL;
+        UPDATE items
+        SET iconCacheKey = shortcutFingerprint, iconStatus = 'pending'
+        WHERE type = 'application' AND shortcutFingerprint IS NOT NULL AND iconCacheKey IS NULL;
+        -- 书签全局去重，受管下载仅在各自资料库内去重。
+        UPDATE items SET normalizedUrl = NULL
+        WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL AND rowid NOT IN (
+          SELECT MIN(rowid) FROM items WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL GROUP BY normalizedUrl
+        );
+        UPDATE items SET normalizedUrl = NULL
+        WHERE storageMode = 'managed' AND normalizedUrl IS NOT NULL AND rowid NOT IN (
+          SELECT MIN(rowid) FROM items
+          WHERE storageMode = 'managed' AND normalizedUrl IS NOT NULL
+          GROUP BY normalizedUrl, libraryId
+        );
+        PRAGMA user_version = 1;
+      `)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  }
+  if (currentSchemaVersion < 2) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      // 移除已废弃的标签和集合数据，备注继续保留在资料条目中。
+      db.exec(`
+        DROP TABLE IF EXISTS item_tags;
+        DROP TABLE IF EXISTS collection_items;
+        DROP TABLE IF EXISTS tags;
+        DROP TABLE IF EXISTS collections;
+        PRAGMA user_version = 2;
+      `)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  // 收集箱独立于资料库目录，方便用户在归档前临时保留剪贴板内容。
   db.exec(`
-    UPDATE items
-    SET iconCacheKey = shortcutFingerprint, iconStatus = 'pending'
-    WHERE type = 'application' AND shortcutFingerprint IS NOT NULL AND iconCacheKey IS NULL
-  `)
-  // 书签全局去重，受管下载仅在各自资料库内去重。
-  db.exec(`
-    UPDATE items SET normalizedUrl = NULL
-    WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL AND rowid NOT IN (
-      SELECT MIN(rowid) FROM items WHERE storageMode = 'bookmark' AND normalizedUrl IS NOT NULL GROUP BY normalizedUrl
+    CREATE TABLE IF NOT EXISTS clipboard_items (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK(type IN ('text', 'url', 'image')),
+      title TEXT NOT NULL,
+      textContent TEXT NOT NULL DEFAULT '',
+      sourceUrl TEXT,
+      imageData BLOB,
+      imagePreviewData BLOB,
+      contentHash TEXT NOT NULL,
+      createdAt INTEGER NOT NULL
     );
-    UPDATE items SET normalizedUrl = NULL
-    WHERE storageMode = 'managed' AND normalizedUrl IS NOT NULL AND rowid NOT IN (
-      SELECT MIN(rowid) FROM items
-      WHERE storageMode = 'managed' AND normalizedUrl IS NOT NULL
-      GROUP BY normalizedUrl, libraryId
-    )
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_clipboard_items_content_hash
+      ON clipboard_items(contentHash);
+    CREATE INDEX IF NOT EXISTS idx_clipboard_items_created
+      ON clipboard_items(createdAt DESC, id DESC);
   `)
+  const jiantiebanZiduan = new Set(db.prepare('PRAGMA table_info(clipboard_items)').all().map(({ name }) => name))
+  if (!jiantiebanZiduan.has('imagePreviewData')) db.exec('ALTER TABLE clipboard_items ADD COLUMN imagePreviewData BLOB')
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_reference_source_path
@@ -143,14 +209,47 @@ function createLibrary(dbPath) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_managed_normalized_url
       ON items(normalizedUrl, libraryId)
       WHERE storageMode = 'managed' AND normalizedUrl IS NOT NULL AND libraryId IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_items_managed_content_hash
+      ON items(libraryId, contentHash)
+      WHERE storageMode = 'managed' AND contentHash IS NOT NULL AND libraryId IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_items_managed_library
       ON items(libraryId)
       WHERE storageMode = 'managed';
+    CREATE INDEX IF NOT EXISTS idx_items_managed_library_id
+      ON items(libraryId, id)
+      WHERE storageMode = 'managed';
+    CREATE INDEX IF NOT EXISTS idx_items_managed_relative_path
+      ON items(libraryId, relativePath COLLATE NOCASE)
+      WHERE storageMode = 'managed' AND relativePath IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_managed_source_path
+      ON items(libraryId, sourcePath)
+      WHERE storageMode = 'managed' AND sourcePath IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_items_shortcut_source_path
       ON items(sourcePath COLLATE NOCASE)
       WHERE storageMode = 'shortcut' AND sourcePath IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_shortcut_fingerprint
+      ON items(shortcutFingerprint)
+      WHERE storageMode = 'shortcut' AND shortcutFingerprint IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_shortcut_scope_seen
+      ON items(sourceScope, lastSeenAt)
+      WHERE storageMode = 'shortcut';
+    CREATE INDEX IF NOT EXISTS idx_items_icon_cache_key
+      ON items(iconCacheKey)
+      WHERE iconCacheKey IS NOT NULL AND type IN ('application', 'url');
     CREATE INDEX IF NOT EXISTS idx_items_type_created
       ON items(type, createdAt DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_items_global_type_created
+      ON items(type, createdAt DESC, id)
+      WHERE storageMode != 'managed';
+    CREATE INDEX IF NOT EXISTS idx_items_managed_type_created
+      ON items(libraryId, type, createdAt DESC, id)
+      WHERE storageMode = 'managed' AND status != 'missing';
+    CREATE INDEX IF NOT EXISTS idx_items_global_recent
+      ON items(lastOpenedAt DESC, id)
+      WHERE storageMode != 'managed' AND lastOpenedAt IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_managed_recent
+      ON items(libraryId, lastOpenedAt DESC, id)
+      WHERE storageMode = 'managed' AND status != 'missing' AND lastOpenedAt IS NOT NULL;
   `)
 
   const readSettingStmt = db.prepare('SELECT value FROM settings WHERE key = ?')
@@ -159,8 +258,10 @@ function createLibrary(dbPath) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
   `)
   const findItemBySourceStmt = db.prepare("SELECT * FROM items WHERE sourcePath = ? AND storageMode = 'managed' AND libraryId = ? LIMIT 1")
+  const findManagedItemByContentHashStmt = db.prepare("SELECT * FROM items WHERE storageMode = 'managed' AND libraryId = ? AND contentHash = ? LIMIT 1")
   const findManagedItemByRelativePathStmt = db.prepare("SELECT id FROM items WHERE storageMode = 'managed' AND libraryId = ? AND relativePath = ? COLLATE NOCASE LIMIT 1")
-  const findItemByUrlStmt = db.prepare("SELECT * FROM items WHERE normalizedUrl = ? AND (storageMode != 'managed' OR libraryId = ?) ORDER BY storageMode = 'bookmark' DESC LIMIT 1")
+  const findBookmarkByUrlStmt = db.prepare("SELECT * FROM items WHERE storageMode = 'bookmark' AND normalizedUrl = ? LIMIT 1")
+  const findManagedItemByUrlStmt = db.prepare("SELECT * FROM items WHERE storageMode = 'managed' AND normalizedUrl = ? AND libraryId = ? LIMIT 1")
   const insertItemStmt = db.prepare(`
     INSERT INTO items (id, type, storageMode, title, sourcePath, relativePath, libraryId, sourceUrl, normalizedUrl, mimeType, byteSize, status, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
@@ -192,10 +293,59 @@ function createLibrary(dbPath) {
     UPDATE items SET status = 'shortcut_missing', missingReason = 'shortcut_missing', lastCheckedAt = ?, updatedAt = ?
     WHERE storageMode = 'shortcut' AND sourceScope = ? AND (lastSeenAt IS NULL OR lastSeenAt < ?) AND status != 'shortcut_missing'
   `)
-  const visibleItemCondition = "(storageMode != 'managed' OR (libraryId = ? AND status != 'missing'))"
-  const readItemCountsStmt = db.prepare(`SELECT type, COUNT(*) AS count FROM items WHERE ${visibleItemCondition} GROUP BY type`)
-  const readLatestUpdateStmt = db.prepare(`SELECT MAX(updatedAt) AS updatedAt FROM items WHERE ${visibleItemCondition}`)
-  const readManagedItemsStmt = db.prepare("SELECT id, type, title, relativePath, status, thumbnailCacheKey FROM items WHERE storageMode = 'managed' AND libraryId = ?")
+  const updateItemContentHashStmt = db.prepare('UPDATE items SET contentHash = ? WHERE id = ?')
+  const readClipboardItemsStmt = db.prepare(`
+    SELECT id, type, title, textContent, sourceUrl,
+      COALESCE(imagePreviewData, imageData) AS imagePreviewData, createdAt
+    FROM clipboard_items
+    ORDER BY createdAt DESC, id DESC
+    LIMIT ?
+  `)
+  const readClipboardItemStmt = db.prepare(`
+    SELECT id, type, title, textContent, sourceUrl, imageData, imagePreviewData, contentHash, createdAt
+    FROM clipboard_items WHERE id = ?
+  `)
+  const findClipboardItemByHashStmt = db.prepare(`
+    SELECT id, type, title, textContent, sourceUrl, imageData, imagePreviewData, contentHash, createdAt
+    FROM clipboard_items WHERE contentHash = ?
+  `)
+  const insertClipboardItemStmt = db.prepare(`
+    INSERT INTO clipboard_items (id, type, title, textContent, sourceUrl, imageData, imagePreviewData, contentHash, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const readClipboardOverflowIdsStmt = db.prepare(`
+    SELECT id FROM clipboard_items
+    ORDER BY createdAt DESC, id DESC
+    LIMIT -1 OFFSET ?
+  `)
+  const deleteClipboardItemStmt = db.prepare('DELETE FROM clipboard_items WHERE id = ?')
+  const clearClipboardItemsStmt = db.prepare('DELETE FROM clipboard_items')
+  const readLibrarySummaryRowsStmt = db.prepare(`
+    SELECT type, COUNT(*) AS count, MAX(updatedAt) AS updatedAt
+    FROM items WHERE storageMode != 'managed' GROUP BY type
+    UNION ALL
+    SELECT type, COUNT(*) AS count, MAX(updatedAt) AS updatedAt
+    FROM items WHERE storageMode = 'managed' AND libraryId = ? AND status != 'missing' GROUP BY type
+  `)
+  const readRecentItemCountStmt = db.prepare(`
+    SELECT COUNT(*) AS count FROM items
+    WHERE (storageMode != 'managed' OR (storageMode = 'managed' AND libraryId = ? AND status != 'missing'))
+      AND lastOpenedAt IS NOT NULL
+  `)
+  const readTotalChangesStmt = db.prepare('SELECT total_changes() AS changes')
+  const readManagedItemsBatchStmt = db.prepare(`
+    SELECT id, type, title, relativePath, status, thumbnailCacheKey
+    FROM items
+    WHERE storageMode = 'managed' AND libraryId = ? AND id > ?
+    ORDER BY id
+    LIMIT ?
+  `)
+  const readManagedItemByRelativePathStmt = db.prepare(`
+    SELECT id, type, title, relativePath, status, thumbnailCacheKey
+    FROM items
+    WHERE storageMode = 'managed' AND libraryId = ? AND relativePath = ? COLLATE NOCASE
+    LIMIT 1
+  `)
   const countManagedItemsByLibraryStmt = db.prepare("SELECT COUNT(*) AS count FROM items WHERE storageMode = 'managed' AND libraryId = ?")
   const markManagedMissingStmt = db.prepare(`
     UPDATE items SET status = 'missing', missingReason = 'missing', lastCheckedAt = ?, updatedAt = ?,
@@ -212,7 +362,7 @@ function createLibrary(dbPath) {
     WHERE id = ? AND storageMode = 'managed' AND libraryId = ? AND relativePath = ? AND status = 'ready' AND type = 'image'
   `)
   const readApplicationCacheItemsStmt = db.prepare("SELECT id, type, iconCacheKey, iconStatus FROM items WHERE type = 'application'")
-  const readIconCacheItemsStmt = db.prepare("SELECT id, type, iconCacheKey, iconStatus FROM items WHERE type IN ('application', 'url')")
+  const hasIconCacheKeyStmt = db.prepare("SELECT 1 FROM items WHERE iconCacheKey = ? AND type IN ('application', 'url') LIMIT 1")
   const updateApplicationIconStmt = db.prepare(`
     UPDATE items SET iconCacheKey = ?, iconStatus = ?
     WHERE id = ? AND type = 'application'
@@ -227,6 +377,10 @@ function createLibrary(dbPath) {
       AND relativePath = ? AND updatedAt = ? AND status = 'ready'
   `)
   const readItemStmt = db.prepare('SELECT * FROM items WHERE id = ?')
+  const updateItemNotesStmt = db.prepare('UPDATE items SET notes = ? WHERE id = ?')
+  const recordItemOpenedStmt = db.prepare(`
+    UPDATE items SET lastOpenedAt = ?, openCount = openCount + 1 WHERE id = ?
+  `)
   const renameItemStmt = db.prepare(`
     UPDATE items SET title = ?, relativePath = ?, updatedAt = ?,
       status = CASE WHEN storageMode = 'managed' THEN 'ready' ELSE status END,
@@ -234,6 +388,8 @@ function createLibrary(dbPath) {
     WHERE id = ? AND type != 'application'
   `)
   const deleteItemStmt = db.prepare('DELETE FROM items WHERE id = ?')
+  let libraryConfigCache = null
+  let librarySummaryCache = null
 
   // 数据库写入统一使用事务包装，保证异常时始终回滚。
   function runTransaction(action) {
@@ -250,10 +406,27 @@ function createLibrary(dbPath) {
 
   // 读取资料库根目录与稳定标识
   function getConfig() {
-    return {
+    if (!libraryConfigCache) libraryConfigCache = Object.freeze({
       rootdir: readSettingStmt.get('ziliaoKuGenMulu')?.value ?? '',
       libraryId: readSettingStmt.get('ziliaoKuId')?.value ?? '',
-    }
+    })
+    return libraryConfigCache
+  }
+
+  function huancunLibraryConfig(config) {
+    libraryConfigCache = Object.freeze({
+      rootdir: config?.rootdir ?? '',
+      libraryId: config?.libraryId ?? '',
+    })
+    librarySummaryCache = null
+    return libraryConfigCache
+  }
+
+  // 书签优先于当前资料库的受管下载，分别命中各自的部分唯一索引。
+  function findItemByUrl(normalizedUrl, libraryId) {
+    return findBookmarkByUrlStmt.get(normalizedUrl)
+      ?? findManagedItemByUrlStmt.get(normalizedUrl, libraryId)
+      ?? null
   }
 
   // 读取收起态动画偏好，未设置时回退到哭泣猫咪
@@ -433,6 +606,7 @@ function createLibrary(dbPath) {
           )
         }
       })
+      huancunLibraryConfig(target.config)
       managedSnapshotDirty = true
       invalidateAllImageThumbnails = true
       startManagedWatchers(target.config)
@@ -473,6 +647,7 @@ function createLibrary(dbPath) {
             )
           }
         })
+        huancunLibraryConfig(target.config)
         if (saomiaoResult.items.length) {
           managedSnapshotDirty = true
           invalidateAllImageThumbnails = true
@@ -508,59 +683,66 @@ function createLibrary(dbPath) {
       managedRootGeneration += 1
       if (mode === 'new') return await qiehuanXinZiliaoku(targetRealPath)
       target = await prepareLibraryTarget(targetRealPath, sourceConfig.libraryId)
-      const items = readManagedItemsStmt.all(sourceConfig.libraryId)
       const migratedFiles = []
       let copied = 0
       let reused = 0
       let missing = 0
       const missingItems = []
 
-      for (const item of items) {
-        const relativeKey = managedRelativeKey(item.type, item.relativePath)
-        if (!relativeKey) throw createMigrationError('unsafe_file', '资料库文件路径无效', item.relativePath)
-        const sourcePath = resolveManagedPathForRoot(item, sourceConfig.rootdir)
-        const targetPath = resolveManagedPathForRoot(item, target.config.rootdir)
-        const [sourceFile, targetFile] = await Promise.all([
-          inspectMigrationFile(sourcePath),
-          inspectMigrationFile(targetPath),
-        ])
-        if (!sourceFile.exists && !targetFile.exists) {
-          missing += 1
-          missingItems.push({ id: item.id, title: item.title || path.basename(item.relativePath), relativePath: item.relativePath })
-          continue
-        }
-        if (sourceFile.exists && targetFile.exists) {
-          if (sourceFile.size !== targetFile.size || sourceFile.hash !== targetFile.hash) {
-            throw createMigrationError('file_conflict', '目标目录存在同名但内容不同的文件', targetPath)
+      let migrationItemCursor = ''
+      while (true) {
+        const itemBatch = readManagedItemsBatchStmt.all(sourceConfig.libraryId, migrationItemCursor, managedReconcileBatchSize)
+        for (const item of itemBatch) {
+          const relativeKey = managedRelativeKey(item.type, item.relativePath)
+          if (!relativeKey) throw createMigrationError('unsafe_file', '资料库文件路径无效', item.relativePath)
+          const sourcePath = resolveManagedPathForRoot(item, sourceConfig.rootdir)
+          const targetPath = resolveManagedPathForRoot(item, target.config.rootdir)
+          const [sourceFile, targetFile] = await Promise.all([
+            inspectMigrationFile(sourcePath),
+            inspectMigrationFile(targetPath),
+          ])
+          if (!sourceFile.exists && !targetFile.exists) {
+            missing += 1
+            if (missingItems.length < migrationReportItemLimit) {
+              missingItems.push({ id: item.id, title: item.title || path.basename(item.relativePath), relativePath: item.relativePath })
+            }
+            continue
           }
-          reused += 1
-          migratedFiles.push({ sourcePath, targetPath, size: targetFile.size, hash: targetFile.hash })
-          continue
-        }
-        if (targetFile.exists) {
-          throw createMigrationError('file_conflict', '源文件缺失，无法验证目标文件', targetPath)
-        }
+          if (sourceFile.exists && targetFile.exists) {
+            if (sourceFile.size !== targetFile.size || sourceFile.hash !== targetFile.hash) {
+              throw createMigrationError('file_conflict', '目标目录存在同名但内容不同的文件', targetPath)
+            }
+            reused += 1
+            migratedFiles.push({ sourcePath, targetPath, size: targetFile.size, hash: targetFile.hash })
+            continue
+          }
+          if (targetFile.exists) {
+            throw createMigrationError('file_conflict', '源文件缺失，无法验证目标文件', targetPath)
+          }
 
-        const stagingPath = path.join(target.config.rootdir, '.staging', `${item.id}.${randomUUID()}.migrate`)
-        try {
-          await fsp.copyFile(sourcePath, stagingPath, fs.constants.COPYFILE_EXCL)
-          const stagedFile = await inspectMigrationFile(stagingPath)
-          if (stagedFile.size !== sourceFile.size || stagedFile.hash !== sourceFile.hash) {
-            throw createMigrationError('copy_verification_failed', '资源复制校验失败', sourcePath)
+          const stagingPath = path.join(target.config.rootdir, '.staging', `${item.id}.${randomUUID()}.migrate`)
+          try {
+            await fsp.copyFile(sourcePath, stagingPath, fs.constants.COPYFILE_EXCL)
+            const stagedFile = await inspectMigrationFile(stagingPath)
+            if (stagedFile.size !== sourceFile.size || stagedFile.hash !== sourceFile.hash) {
+              throw createMigrationError('copy_verification_failed', '资源复制校验失败', sourcePath)
+            }
+            await syncFile(stagingPath)
+            await publishManagedFile(stagingPath, targetPath)
+            createdFiles.push({ path: targetPath, size: sourceFile.size, hash: sourceFile.hash })
+            await syncFile(targetPath)
+            const publishedFile = await inspectMigrationFile(targetPath)
+            if (publishedFile.size !== sourceFile.size || publishedFile.hash !== sourceFile.hash) {
+              throw createMigrationError('copy_verification_failed', '目标资源校验失败', targetPath)
+            }
+          } finally {
+            await fsp.rm(stagingPath, { force: true }).catch(() => {})
           }
-          await syncFile(stagingPath)
-          await publishManagedFile(stagingPath, targetPath)
-          createdFiles.push({ path: targetPath, size: sourceFile.size, hash: sourceFile.hash })
-          await syncFile(targetPath)
-          const publishedFile = await inspectMigrationFile(targetPath)
-          if (publishedFile.size !== sourceFile.size || publishedFile.hash !== sourceFile.hash) {
-            throw createMigrationError('copy_verification_failed', '目标资源校验失败', targetPath)
-          }
-        } finally {
-          await fsp.rm(stagingPath, { force: true }).catch(() => {})
+          migratedFiles.push({ sourcePath, targetPath, size: sourceFile.size, hash: sourceFile.hash })
+          copied += 1
         }
-        migratedFiles.push({ sourcePath, targetPath, size: sourceFile.size, hash: sourceFile.hash })
-        copied += 1
+        if (itemBatch.length < managedReconcileBatchSize) break
+        migrationItemCursor = itemBatch.at(-1).id
       }
 
       if (!(await validateLibraryConfig(sourceConfig)) || !(await validateLibraryConfig(target.config))) {
@@ -576,6 +758,7 @@ function createLibrary(dbPath) {
         writeSettingStmt.run('ziliaoKuGenMulu', target.config.rootdir, timestamp)
         writeSettingStmt.run('ziliaoKuId', sourceConfig.libraryId, timestamp)
       })
+      huancunLibraryConfig({ rootdir: target.config.rootdir, libraryId: sourceConfig.libraryId })
       startManagedWatchers(target.config)
 
       let cleanupWarnings = 0
@@ -1012,6 +1195,70 @@ function createLibrary(dbPath) {
     return snapshots
   }
 
+  function huoquDaoruContentHash(file) {
+    const contentHash = String(file?.contentHash ?? '')
+    return /^[a-f0-9]{64}$/i.test(contentHash) ? contentHash.toLowerCase() : ''
+  }
+
+  function huoquDaoruBiaoti(file, realPath) {
+    const title = String(file?.title ?? file?.name ?? path.basename(realPath))
+      .replace(/\u0000/g, '')
+      .trim()
+      .slice(0, 120)
+    return title || path.basename(realPath)
+  }
+
+  function yingyongManagedReconcileOperations(operations, config, timestamp, summary) {
+    if (!operations.length) return
+    runTransaction(() => {
+      for (const { kind, item } of operations) {
+        if (kind !== 'invalidate-thumbnail') {
+          const updateResult = kind === 'missing'
+            ? markManagedMissingStmt.run(timestamp, timestamp, item.id, config.libraryId, item.relativePath, item.status)
+            : markManagedReadyStmt.run(timestamp, timestamp, item.id, config.libraryId, item.relativePath, item.status)
+          if (!updateResult.changes) continue
+          if (item.thumbnailCacheKey) summary.staleThumbnailKeys.push(item.thumbnailCacheKey)
+          if (kind === 'missing') summary.missing += 1
+          else summary.recovered += 1
+          continue
+        }
+        const updateResult = invalidateManagedImageThumbnailStmt.run(timestamp, item.id, config.libraryId, item.relativePath)
+        if (!updateResult.changes) continue
+        if (item.thumbnailCacheKey) summary.staleThumbnailKeys.push(item.thumbnailCacheKey)
+        summary.updated += 1
+      }
+    })
+  }
+
+  // 健康监听器提供明确文件名时只检查变更项，避免单文件事件触发全库扫描。
+  async function readChangedManagedOperations(config, changedKeys) {
+    const operations = []
+    const typeByCategoryDir = Object.fromEntries(
+      Object.entries(managedCategoryDirs).map(([type, categoryDir]) => [categoryDir, type]),
+    )
+    for (const relativeKey of changedKeys) {
+      const [categoryDir, filename, ...extraParts] = relativeKey.split('/')
+      const type = typeByCategoryDir[categoryDir]
+      if (!type || !filename || extraParts.length) return null
+      const relativePath = path.join(categoryDir, filename)
+      const item = readManagedItemByRelativePathStmt.get(config.libraryId, relativePath)
+      if (!item) continue
+
+      let isPresent = false
+      try {
+        const fileStat = await fsp.lstat(path.join(config.rootdir, categoryDir, filename))
+        isPresent = fileStat.isFile() && !fileStat.isSymbolicLink()
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error?.code)) return null
+      }
+
+      const nextStatus = isPresent ? 'ready' : 'missing'
+      if (nextStatus !== item.status) operations.push({ kind: nextStatus, item })
+      else if (isPresent && item.type === 'image') operations.push({ kind: 'invalidate-thumbnail', item })
+    }
+    return operations
+  }
+
   async function reconcileManagedFilesUnlocked({ force = false } = {}) {
     const config = getConfig()
     const watchKey = `${config.libraryId}\0${config.rootdir}`
@@ -1032,6 +1279,29 @@ function createLibrary(dbPath) {
     const changedKeys = new Set(changedManagedKeys)
     const invalidateImages = invalidateAllImageThumbnails
 
+    const canReconcileIncrementally = !force
+      && !shouldStartWatchers
+      && managedLastScanAt > 0
+      && !invalidateImages
+      && changedKeys.size > 0
+      && changedKeys.size <= managedIncrementalKeyLimit
+    if (canReconcileIncrementally) {
+      const operations = await readChangedManagedOperations(config, changedKeys)
+      const currentConfig = getConfig()
+      if (operations && !isClosed && generation === managedRootGeneration
+        && currentConfig.rootdir === config.rootdir && currentConfig.libraryId === config.libraryId) {
+        const summary = { available: true, missing: 0, recovered: 0, updated: 0, staleThumbnailKeys: [] }
+        yingyongManagedReconcileOperations(operations, config, Date.now(), summary)
+        managedLastAvailable = true
+        if (revision === managedWatchRevision) {
+          managedSnapshotDirty = false
+          changedManagedKeys.clear()
+        }
+        summary.pending = managedSnapshotDirty
+        return summary
+      }
+    }
+
     let snapshots
     try {
       snapshots = await readManagedDirectorySnapshots(config)
@@ -1042,7 +1312,6 @@ function createLibrary(dbPath) {
       }
       return { available: false, missing: 0, recovered: 0, staleThumbnailKeys: [] }
     }
-    const items = readManagedItemsStmt.all(config.libraryId)
     const currentConfig = getConfig()
     if (isClosed || generation !== managedRootGeneration
       || currentConfig.rootdir !== config.rootdir || currentConfig.libraryId !== config.libraryId) {
@@ -1050,36 +1319,32 @@ function createLibrary(dbPath) {
     }
     const timestamp = Date.now()
     const summary = { available: true, missing: 0, recovered: 0, updated: 0, staleThumbnailKeys: [] }
-    const operations = items.flatMap((item) => {
-      const relativeKey = managedRelativeKey(item.type, item.relativePath)
-      const isPresent = Boolean(relativeKey && snapshots.get(item.type)?.has(relativeKey))
-      const nextStatus = isPresent ? 'ready' : 'missing'
-      if (nextStatus !== item.status) return [{ kind: nextStatus, item }]
-      if (isPresent && item.type === 'image' && (invalidateImages || changedKeys.has(relativeKey))) {
-        return [{ kind: 'invalidate-thumbnail', item }]
-      }
-      return []
-    })
-    if (operations.length) {
-      runTransaction(() => {
-        for (const { kind, item } of operations) {
-          if (kind !== 'invalidate-thumbnail') {
-            const updateResult = kind === 'missing'
-              ? markManagedMissingStmt.run(timestamp, timestamp, item.id, config.libraryId, item.relativePath, item.status)
-              : markManagedReadyStmt.run(timestamp, timestamp, item.id, config.libraryId, item.relativePath, item.status)
-            if (!updateResult.changes) continue
-            if (item.thumbnailCacheKey) summary.staleThumbnailKeys.push(item.thumbnailCacheKey)
-            if (kind === 'missing') summary.missing += 1
-            else summary.recovered += 1
-            continue
-          }
-          const updateResult = invalidateManagedImageThumbnailStmt.run(timestamp, item.id, config.libraryId, item.relativePath)
-          if (!updateResult.changes) continue
-          if (item.thumbnailCacheKey) summary.staleThumbnailKeys.push(item.thumbnailCacheKey)
-          summary.updated += 1
+    const operations = []
+    let itemCursor = ''
+    while (true) {
+      const itemBatch = readManagedItemsBatchStmt.all(config.libraryId, itemCursor, managedReconcileBatchSize)
+      for (const item of itemBatch) {
+        const relativeKey = managedRelativeKey(item.type, item.relativePath)
+        const isPresent = Boolean(relativeKey && snapshots.get(item.type)?.has(relativeKey))
+        const nextStatus = isPresent ? 'ready' : 'missing'
+        if (nextStatus !== item.status) {
+          operations.push({ kind: nextStatus, item })
+          continue
         }
-      })
+        if (isPresent && item.type === 'image' && (invalidateImages || changedKeys.has(relativeKey))) {
+          operations.push({ kind: 'invalidate-thumbnail', item })
+        }
+      }
+      if (itemBatch.length < managedReconcileBatchSize) break
+      itemCursor = itemBatch.at(-1).id
+      await new Promise((resolve) => setImmediate(resolve))
+      const latestConfig = getConfig()
+      if (isClosed || generation !== managedRootGeneration
+        || latestConfig.rootdir !== config.rootdir || latestConfig.libraryId !== config.libraryId) {
+        return { available: false, missing: 0, recovered: 0, staleThumbnailKeys: [] }
+      }
     }
+    yingyongManagedReconcileOperations(operations, config, timestamp, summary)
     managedLastAvailable = true
     managedLastScanAt = Date.now()
     if (generation === managedRootGeneration && revision === managedWatchRevision) {
@@ -1099,6 +1364,88 @@ function createLibrary(dbPath) {
     url.hostname = url.hostname.toLowerCase()
     if ((url.protocol === 'http:' && url.port === '80') || (url.protocol === 'https:' && url.port === '443')) url.port = ''
     return url.toString()
+  }
+
+  // 收集箱只向渲染层暴露可预览字段，截图以 data URL 形式安全显示。
+  function xulieJiantiebanItem(item) {
+    if (!item) return null
+    const imagePreviewBuffer = item.imagePreviewData ? Buffer.from(item.imagePreviewData) : item.imageData ? Buffer.from(item.imageData) : null
+    return {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      textContent: item.textContent ?? '',
+      sourceUrl: item.sourceUrl ?? '',
+      imageDataUrl: imagePreviewBuffer?.length ? `data:image/png;base64,${imagePreviewBuffer.toString('base64')}` : '',
+      createdAt: Number(item.createdAt) || 0,
+    }
+  }
+
+  function huoquJiantiebanItemIdList(rawIds) {
+    if (!Array.isArray(rawIds)) return []
+    return [...new Set(rawIds.filter((id) => typeof id === 'string' && id.length <= 120))].slice(0, jiantiebanItemLimit)
+  }
+
+  // 新内容按指纹去重，并淘汰最早的记录，让收集箱容量始终可控。
+  function tianjiaJiantiebanItem(payload) {
+    const type = ['text', 'url', 'image'].includes(payload?.type) ? payload.type : ''
+    const contentHash = String(payload?.contentHash ?? '').toLowerCase()
+    if (!type || !/^[a-f0-9]{64}$/.test(contentHash)) throw new Error('剪贴板内容无效')
+
+    const existing = findClipboardItemByHashStmt.get(contentHash)
+    if (existing) return { item: xulieJiantiebanItem(existing), duplicate: true }
+
+    const title = String(payload?.title ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 120)
+    const textContent = type === 'text' ? String(payload?.textContent ?? '').slice(0, 200000) : ''
+    const sourceUrl = type === 'url' ? String(payload?.sourceUrl ?? '').slice(0, 4000) : null
+    const imageData = type === 'image' && payload?.imageData ? Buffer.from(payload.imageData) : null
+    const imagePreviewData = type === 'image' && payload?.imagePreviewData ? Buffer.from(payload.imagePreviewData) : imageData
+    if (!title || (type === 'text' && !textContent) || (type === 'url' && !sourceUrl) || (type === 'image' && !imageData?.length)) {
+      throw new Error('剪贴板内容无效')
+    }
+
+    const item = {
+      id: randomUUID(),
+      type,
+      title,
+      textContent,
+      sourceUrl,
+      imageData,
+      imagePreviewData,
+      contentHash,
+      createdAt: Date.now(),
+    }
+    runTransaction(() => {
+      insertClipboardItemStmt.run(item.id, item.type, item.title, item.textContent, item.sourceUrl, item.imageData, item.imagePreviewData, item.contentHash, item.createdAt)
+      for (const { id } of readClipboardOverflowIdsStmt.all(jiantiebanItemLimit)) deleteClipboardItemStmt.run(id)
+    })
+    return { item: xulieJiantiebanItem(item), duplicate: false }
+  }
+
+  function huoquJiantiebanItems() {
+    return readClipboardItemsStmt.all(jiantiebanItemLimit).map(xulieJiantiebanItem)
+  }
+
+  function huoquJiantiebanItemsByIds(rawIds) {
+    return huoquJiantiebanItemIdList(rawIds)
+      .map((itemId) => readClipboardItemStmt.get(itemId))
+      .filter(Boolean)
+  }
+
+  function shanchuJiantiebanItems(rawIds) {
+    const itemIds = huoquJiantiebanItemIdList(rawIds)
+    const removedIds = []
+    // 单条删除本身就是 SQLite 原子操作，避免与资料库后台事务争夺事务边界。
+    for (const itemId of itemIds) {
+      const result = deleteClipboardItemStmt.run(itemId)
+      if (Number(result.changes ?? 0)) removedIds.push(itemId)
+    }
+    return { removedIds }
+  }
+
+  function qingkongJiantiebanItems() {
+    const removedCount = Number(clearClipboardItemsStmt.run().changes ?? 0)
+    return { removedCount }
   }
 
   // 本地拖入复制为受管副本，网址则建立收藏；两者均写入资料库索引
@@ -1125,7 +1472,10 @@ function createLibrary(dbPath) {
       const libraryConfig = getConfig()
       const libraryId = libraryConfig.libraryId
       if (!(await validateLibraryConfig(libraryConfig))) continue
-      const existing = findItemBySourceStmt.get(realPath, libraryId)
+      const contentHash = huoquDaoruContentHash(currentFile)
+      const existing = contentHash
+        ? findManagedItemByContentHashStmt.get(libraryId, contentHash) ?? findItemBySourceStmt.get(realPath, libraryId)
+        : findItemBySourceStmt.get(realPath, libraryId)
       if (existing?.storageMode === 'managed' && existing.status !== 'missing') {
         duplicates.push(existing.id)
         continue
@@ -1143,7 +1493,7 @@ function createLibrary(dbPath) {
         id,
         type: type.type,
         storageMode: 'managed',
-        title: path.basename(realPath),
+        title: huoquDaoruBiaoti(currentFile, realPath),
         sourcePath: realPath,
         relativePath: copyResult.relativePath,
         libraryId,
@@ -1164,6 +1514,7 @@ function createLibrary(dbPath) {
             updateManagedItemStmt.run(item.type, item.title, item.sourcePath, item.relativePath, item.libraryId, item.mimeType, item.byteSize, item.type, timestamp, item.id)
           } else {
             insertItemStmt.run(item.id, item.type, item.storageMode, item.title, item.sourcePath, item.relativePath, item.libraryId, item.sourceUrl, item.normalizedUrl, item.mimeType, item.byteSize, timestamp, timestamp)
+            if (contentHash) updateItemContentHashStmt.run(contentHash, item.id)
           }
         })
         markManagedSnapshotDirty(item.type, path.basename(item.relativePath))
@@ -1184,7 +1535,7 @@ function createLibrary(dbPath) {
       }
       if (!guifanWangzhi) continue
 
-      const existing = findItemByUrlStmt.get(guifanWangzhi, getConfig().libraryId)
+      const existing = findItemByUrl(guifanWangzhi, getConfig().libraryId)
       if (existing) {
         duplicates.push(existing.id)
         continue
@@ -1224,7 +1575,7 @@ function createLibrary(dbPath) {
     if (!normalizedUrl || !body) return { added: [], duplicates: [] }
     const libraryConfig = getConfig()
     const { rootdir, libraryId } = libraryConfig
-    const existing = findItemByUrlStmt.get(normalizedUrl, libraryId)
+    const existing = findItemByUrl(normalizedUrl, libraryId)
     const canRecover = existing?.storageMode === 'managed' && existing.libraryId === libraryId && existing.status === 'missing'
     if (existing && !canRecover) {
       if (typeof body.cancel === 'function') await body.cancel().catch(() => {})
@@ -1320,7 +1671,7 @@ function createLibrary(dbPath) {
     } catch (error) {
       await fsp.rm(finalPath, { force: true }).catch(() => {})
       if (String(error.message).includes('UNIQUE')) {
-        const duplicate = findItemByUrlStmt.get(normalizedUrl, item.libraryId)
+        const duplicate = findItemByUrl(normalizedUrl, item.libraryId)
         return { added: [], duplicates: duplicate ? [duplicate.id] : [] }
       }
       throw error
@@ -1333,7 +1684,7 @@ function createLibrary(dbPath) {
     runTransaction(() => {
       for (const shortcut of shortcuts) {
         const existingByPath = readShortcutByPathStmt.get(shortcut.sourcePath)
-        const existingByFingerprint = shortcut.shortcutFingerprint
+        const existingByFingerprint = !existingByPath && shortcut.shortcutFingerprint
           ? readShortcutByFingerprintStmt.get(shortcut.shortcutFingerprint)
           : null
         const existing = existingByPath ?? existingByFingerprint
@@ -1380,48 +1731,126 @@ function createLibrary(dbPath) {
   }
 
   function normalizePageOptions(options = {}) {
-    const type = itemTypeSet.has(options.type) ? options.type : 'document'
+    const type = categoryIdSet.has(options.type) ? options.type : defaultCategoryId
     const direction = options.direction === 'previous' ? 'previous' : 'next'
     const limit = Math.max(1, Math.min(Number(options.limit) || 30, 50))
     const createdAt = Number(options.cursor?.createdAt)
-    const cursor = Number.isFinite(createdAt) && typeof options.cursor?.id === 'string'
-      ? { createdAt, id: options.cursor.id }
-      : null
+    const lastOpenedAt = Number(options.cursor?.lastOpenedAt)
+    const itemId = typeof options.cursor?.id === 'string' ? options.cursor.id : ''
+    const cursor = type === zuijinCategoryId
+      ? (Number.isFinite(lastOpenedAt) && itemId
+          ? { lastOpenedAt, id: itemId }
+          : null)
+      : (Number.isFinite(createdAt) && itemId
+          ? { createdAt, id: itemId }
+          : null)
     return { type, direction, limit, cursor }
   }
 
-  // 以 createdAt + id 作为稳定游标，避免大数据量下 OFFSET 随页码线性退化。
+  // 为不同资料视图生成稳定游标，避免大数据量下 OFFSET 随页码线性退化。
+  function huoquItemPageCursor(item, type) {
+    if (type === zuijinCategoryId) {
+      return {
+        lastOpenedAt: Number(item.lastOpenedAt ?? 0),
+        id: item.id,
+      }
+    }
+    return { createdAt: Number(item.createdAt ?? 0), id: item.id }
+  }
+
+  function huoquZuijinCursorCondition(cursor, direction) {
+    const numberOperator = direction === 'previous' ? '>' : '<'
+    const idOperator = direction === 'previous' ? '<' : '>'
+    return `(
+      COALESCE(lastOpenedAt, 0) ${numberOperator} ?
+      OR (COALESCE(lastOpenedAt, 0) = ? AND id ${idOperator} ?)
+    )`
+  }
+
+  function huoquZuijinCursorParams(cursor) {
+    return [
+      cursor.lastOpenedAt,
+      cursor.lastOpenedAt, cursor.id,
+    ]
+  }
+
+  function huoquFenleiCursorCondition(cursor, direction) {
+    const numberOperator = direction === 'previous' ? '>' : '<'
+    const idOperator = direction === 'previous' ? '<' : '>'
+    return `(
+      createdAt ${numberOperator} ?
+      OR (createdAt = ? AND id ${idOperator} ?)
+    )`
+  }
+
+  function huoquFenleiCursorParams(cursor) {
+    return [
+      cursor.createdAt,
+      cursor.createdAt, cursor.id,
+    ]
+  }
+
+  // 最近打开与各资料分类分别查询，避免不同浏览意图混在同一个视图。
   function queryItemPage(options = {}, keyword = '') {
     const { type, direction, limit, cursor } = normalizePageOptions(options)
-    const params = [type, getConfig().libraryId]
-    const conditions = ['type = ?', visibleItemCondition]
+    const isZuijinCategory = type === zuijinCategoryId
+    const globalParams = []
+    const managedParams = [getConfig().libraryId]
+    const globalConditions = ["storageMode != 'managed'"]
+    const managedConditions = ["storageMode = 'managed'", 'libraryId = ?']
+    managedConditions.push("status != 'missing'")
+    if (isZuijinCategory) {
+      globalConditions.push('lastOpenedAt IS NOT NULL')
+      managedConditions.push('lastOpenedAt IS NOT NULL')
+    } else {
+      globalConditions.unshift('type = ?')
+      managedConditions.unshift('type = ?')
+      globalParams.push(type)
+      managedParams.unshift(type)
+    }
     if (keyword) {
-      conditions.push("(title LIKE ? ESCAPE '\\' OR sourcePath LIKE ? ESCAPE '\\' OR sourceUrl LIKE ? ESCAPE '\\')")
+      const searchCondition = "(title LIKE ? ESCAPE '\\' OR sourcePath LIKE ? ESCAPE '\\' OR sourceUrl LIKE ? ESCAPE '\\')"
       const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`
-      params.push(pattern, pattern, pattern)
+      globalConditions.push(searchCondition)
+      managedConditions.push(searchCondition)
+      globalParams.push(pattern, pattern, pattern)
+      managedParams.push(pattern, pattern, pattern)
     }
     if (cursor) {
-      const operator = direction === 'previous' ? '>' : '<'
-      const idOperator = direction === 'previous' ? '<' : '>'
-      conditions.push(`(createdAt ${operator} ? OR (createdAt = ? AND id ${idOperator} ?))`)
-      params.push(cursor.createdAt, cursor.createdAt, cursor.id)
+      const cursorCondition = isZuijinCategory
+        ? huoquZuijinCursorCondition(cursor, direction)
+        : huoquFenleiCursorCondition(cursor, direction)
+      const cursorParams = isZuijinCategory
+        ? huoquZuijinCursorParams(cursor)
+        : huoquFenleiCursorParams(cursor)
+      globalConditions.push(cursorCondition)
+      managedConditions.push(cursorCondition)
+      globalParams.push(...cursorParams)
+      managedParams.push(...cursorParams)
     }
 
-    const order = direction === 'previous' ? 'createdAt ASC, id DESC' : 'createdAt DESC, id ASC'
+    const order = isZuijinCategory
+      ? (direction === 'previous'
+          ? 'lastOpenedAt ASC, id DESC'
+          : 'lastOpenedAt DESC, id ASC')
+      : (direction === 'previous'
+          ? 'createdAt ASC, id DESC'
+          : 'createdAt DESC, id ASC')
     const rows = db.prepare(`
-      SELECT ${itemSummaryColumns} FROM items
-      WHERE ${conditions.join(' AND ')}
+      SELECT ${itemSummaryColumns} FROM items WHERE ${globalConditions.join(' AND ')}
+      UNION ALL
+      SELECT ${itemSummaryColumns} FROM items WHERE ${managedConditions.join(' AND ')}
       ORDER BY ${order}
       LIMIT ?
-    `).all(...params, limit + 1)
+    `).all(...globalParams, ...managedParams, limit + 1)
     const hasMore = rows.length > limit
     if (hasMore) rows.pop()
     if (direction === 'previous') rows.reverse()
 
     return {
       items: rows,
-      previousCursor: rows.length ? { createdAt: rows[0].createdAt, id: rows[0].id } : null,
-      nextCursor: rows.length ? { createdAt: rows.at(-1).createdAt, id: rows.at(-1).id } : null,
+      previousCursor: rows.length ? huoquItemPageCursor(rows[0], type) : null,
+      nextCursor: rows.length ? huoquItemPageCursor(rows.at(-1), type) : null,
       hasPrevious: direction === 'previous' ? hasMore : Boolean(cursor),
       hasNext: direction === 'next' ? hasMore : Boolean(cursor),
     }
@@ -1429,14 +1858,25 @@ function createLibrary(dbPath) {
 
   function getLibrarySummary() {
     const libraryId = getConfig().libraryId
-    const counts = Object.fromEntries(itemTypes.map((type) => [type, 0]))
-    for (const row of readItemCountsStmt.all(libraryId)) counts[row.type] = Number(row.count)
-    return {
-      counts,
-      updatedAt: Number(readLatestUpdateStmt.get(libraryId)?.updatedAt ?? 0),
-      defaultType: 'document',
-      defaultPage: queryItemPage({ type: 'document', limit: 30 }),
+    const totalChanges = Number(readTotalChangesStmt.get()?.changes ?? 0)
+    if (librarySummaryCache?.libraryId === libraryId && librarySummaryCache.totalChanges === totalChanges) {
+      return librarySummaryCache.summary
     }
+    const counts = Object.fromEntries([zuijinCategoryId, ...itemTypes].map((type) => [type, 0]))
+    let updatedAt = 0
+    for (const row of readLibrarySummaryRowsStmt.all(libraryId)) {
+      counts[row.type] += Number(row.count)
+      updatedAt = Math.max(updatedAt, Number(row.updatedAt ?? 0))
+    }
+    counts[zuijinCategoryId] = Number(readRecentItemCountStmt.get(libraryId)?.count ?? 0)
+    const summary = {
+      counts,
+      updatedAt,
+      defaultType: defaultCategoryId,
+      defaultPage: queryItemPage({ type: defaultCategoryId, limit: 30 }),
+    }
+    librarySummaryCache = { libraryId, totalChanges, summary }
+    return summary
   }
 
   function getLibraryPage(options) {
@@ -1453,14 +1893,14 @@ function createLibrary(dbPath) {
     return readApplicationCacheItemsStmt.all()
   }
 
-  function getIconCacheItems() {
-    return readIconCacheItemsStmt.all()
+  function hasIconCacheKey(cacheKey) {
+    return typeof cacheKey === 'string' && Boolean(hasIconCacheKeyStmt.get(cacheKey))
   }
 
   function getItemByUrl(rawUrl) {
     try {
       const normalizedUrl = normalizeUrl(rawUrl)
-      const item = normalizedUrl ? findItemByUrlStmt.get(normalizedUrl, getConfig().libraryId) ?? null : null
+      const item = normalizedUrl ? findItemByUrl(normalizedUrl, getConfig().libraryId) : null
       return item?.storageMode === 'managed' && item.status === 'missing' ? null : item
     } catch {
       return null
@@ -1487,6 +1927,26 @@ function createLibrary(dbPath) {
   // 主进程按条目 ID 读取来源，避免信任渲染层提交的任意路径
   function getItemDetail(id) {
     return readItemStmt.get(id) ?? null
+  }
+
+  function getItemNotes(id) {
+    const item = readItemStmt.get(id)
+    if (!item) return null
+    return { notes: item.notes ?? '' }
+  }
+
+  function setItemNotes(id, rawNotes) {
+    const notes = String(rawNotes ?? '').replace(/\u0000/g, '').trim().slice(0, 2000)
+    if (!updateItemNotesStmt.run(notes, id).changes) return null
+    return { notes }
+  }
+
+  // 仅在系统成功唤起资料后记录使用时间，避免失败操作污染最近打开列表。
+  function recordItemOpened(id) {
+    const lastOpenedAt = Date.now()
+    if (!recordItemOpenedStmt.run(lastOpenedAt, id).changes) return null
+    const item = readItemStmt.get(id)
+    return item ? { lastOpenedAt, openCount: Number(item.openCount ?? 0) } : null
   }
 
   function getItemLocalPath(item) {
@@ -1693,6 +2153,11 @@ function createLibrary(dbPath) {
     getCollapsedAnimation,
     setCollapsedAnimation,
     setRootdir,
+    tianjiaJiantiebanItem,
+    huoquJiantiebanItems,
+    huoquJiantiebanItemsByIds,
+    shanchuJiantiebanItems,
+    qingkongJiantiebanItems,
     importContent,
     importRemoteContent,
     tongbuDesktopShortcuts,
@@ -1700,7 +2165,7 @@ function createLibrary(dbPath) {
     getLibraryPage,
     searchLibrary,
     getApplicationCacheItems,
-    getIconCacheItems,
+    hasIconCacheKey,
     reconcileManagedFiles,
     onManagedFilesDirty,
     getItemByUrl,
@@ -1708,6 +2173,9 @@ function createLibrary(dbPath) {
     setWebsiteIconCache,
     setImageThumbnailCache,
     getItemDetail,
+    getItemNotes,
+    setItemNotes,
+    recordItemOpened,
     getItemLocalPath,
     getValidatedItemLocalPath,
     renameItem,

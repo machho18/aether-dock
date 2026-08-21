@@ -12,9 +12,10 @@
       class="lingdongchuangkou"
       :class="{
         'lingdongchuangkou--expanded': isExpanded,
-        'lingdongchuangkou--drop': isDragging || isDropping || isDropImporting,
+        'lingdongchuangkou--drop': isDropFeedbackActive,
         'lingdongchuangkou--dropping': isDropping,
-        'lingdongchuangkou--importing': isDropImporting && !isDropping,
+        'lingdongchuangkou--accepted': isDropImporting && !isDropping && !isDropProgressVisible,
+        'lingdongchuangkou--importing': isDropProgressVisible && !isDropping,
         'lingdongchuangkou--moving': isMovingIsland,
         'lingdongchuangkou--pasting': isPastingTape,
         [`lingdongchuangkou--anchor-x-${islandAnchor.horizontal}`]: true,
@@ -51,22 +52,52 @@
           @blur="chuliIslandBlur"
           @transitionrun="chuliShellTransitionRun"
           @transitionend="chuliShellTransitionEnd"
+          @transitioncancel="chuliShellTransitionEnd"
         >
           <div class="inner-glow"></div>
           <div class="collapsed-stage">
             <ShouqiStatus
               :animation-id="currentCollapsedAnimation"
-              :hidden="isExpanded || (toastState.visible && !isDragging && !isDropping && !isDropImporting)"
+              :hidden="isExpanded"
               :moving="isMovingIsland"
               :pasting="isPastingTape"
               charm
             />
           </div>
 
-          <div class="drop-hint" role="status" aria-live="polite">
-            <span class="drop-copy">
-              <strong>{{ dropFeedbackInfo.title }}</strong>
-              <small>{{ dropFeedbackInfo.detail }}</small>
+          <span
+            class="sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >{{ isDropFeedbackActive ? `${dropFeedbackInfo.title}，${dropFeedbackInfo.detail}` : '' }}</span>
+          <div
+            class="drop-hint"
+            aria-hidden="true"
+          >
+            <span class="drop-status">
+              <span class="drop-type-icon" aria-hidden="true">
+                <PhSpinnerGap v-if="isDropProgressVisible && !isDropping" :size="24" weight="bold" />
+                <PhLinkSimple v-else-if="dropNeirongType === 'link'" :size="24" weight="regular" />
+                <PhImage v-else-if="dropNeirongType === 'image'" :size="24" weight="regular" />
+                <PhFile v-else :size="24" weight="regular" />
+              </span>
+              <span class="drop-copy">
+                <strong>{{ dropFeedbackInfo.title }}</strong>
+                <small>{{ dropFeedbackInfo.detail }}</small>
+              </span>
+            </span>
+            <span class="drop-motion" aria-hidden="true">
+              <span class="drop-particles">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+              <span class="drop-stream">
+                <span></span>
+              <span></span>
+              <span></span>
+            </span>
             </span>
             <span class="drop-motion" aria-hidden="true">
               <span class="drop-particles">
@@ -85,9 +116,10 @@
           <!-- 资料库始终挂载，在收起态完成数据与首屏资源预热。 -->
           <div
             class="library-stage"
-            :class="{ 'library-stage--visible': isLibraryContentVisible && !isDragging && !isDropping && !isDropImporting && currentPage === 'library' }"
+            :class="{ 'library-stage--visible': isLibraryContentVisible && !isDropFeedbackActive && ['library', 'clipboard'].includes(currentPage) }"
           >
             <ZiliaokuPage
+              v-show="currentPage === 'library'"
               :items="libraryItems"
               :category-counts="categoryCounts"
               :library-config="libraryConfig"
@@ -97,10 +129,13 @@
               :is-yingyong-syncing="isYingyongSyncing"
               :is-animation-busy="isExpansionAnimating"
               :is-island-expanded="isExpanded"
-              @capture-clipboard="buhuoJiantiebanContent"
+              :clipboard-count="jiantiebanItems.length"
+              @capture-clipboard="chuliJiantiebanBuhuo"
+              @open-clipboard="dakaiJiantiebanShoujixiang"
               @open-settings="qiehuanSettings"
               @float-window="shouqiDaoYouceCapsule"
               @select-category="xuanzeZiliaokuCategory"
+              @refresh-library="shuaxinLibraryIndex(true)"
               @search="sousuoLibrary"
               @load-more="jiazaiGengduo"
               @open-item="dakaiLibraryItem"
@@ -110,7 +145,22 @@
               @delete-item="qingqiuDeleteItem"
               @delete-items="qingqiuPiliangDelete"
               @sync-applications="tongbuDesktopApplications"
+              @show-toast="xianshiToast"
             />
+            <Transition name="glass-switch" mode="out-in">
+              <JiantiebanPage
+                v-if="currentPage === 'clipboard'"
+                key="clipboard"
+                :items="jiantiebanItems"
+                :is-busy="isImporting || isLibraryRootMigrating"
+                @back="fanhuiLibrary"
+                @archive-item="guidangDanGeJiantiebanItem"
+                @archive-all="guidangQuanbuJiantiebanItems"
+                @delete-item="shanchuJiantiebanItem"
+                @clear="qingqiuQingkongJiantieban"
+                @copy="fuzhiJiantiebanItem"
+              />
+            </Transition>
           </div>
 
           <Transition name="glass-switch" mode="out-in">
@@ -145,7 +195,7 @@
         </div>
         <div class="toast-layer">
           <ToastMessage
-            :visible="toastState.visible && !isDragging && !isDropping && !isDropImporting"
+            :visible="toastState.visible && !isDropFeedbackActive"
             :text="toastState.text"
             :type="toastState.type"
             :compact="!isExpanded || toastState.text === '已删除'"
@@ -158,9 +208,11 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, onMounted, shallowRef, useTemplateRef } from 'vue'
+import { PhFile, PhImage, PhLinkSimple, PhSpinnerGap } from '@phosphor-icons/vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, shallowRef, useTemplateRef } from 'vue'
 import { useEventListener, useTimeoutFn } from '@vueuse/core'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import JiantiebanPage from '@/components/JiantiebanPage.vue'
 import QidongOverlay from '@/components/QidongOverlay.vue'
 import ShezhiPage from '@/components/ShezhiPage.vue'
 import ShouqiStatus from '@/components/ShouqiStatus.vue'
@@ -179,28 +231,47 @@ const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
 const isDropping = shallowRef(false)
 const isDropImporting = shallowRef(false)
+const isDropProgressVisible = shallowRef(false)
 const isMovingIsland = shallowRef(false)
 const isPastingTape = shallowRef(false)
-const islandAnchor = shallowRef({ horizontal: 'right', vertical: 'center' })
-const dropNeirongSummary = shallowRef('文件、链接或文字')
+const islandAnchor = shallowRef({ horizontal: 'right', vertical: 'bottom' })
+const dropNeirongType = shallowRef('file')
+const dropNeirongCount = shallowRef(1)
 const jujiaoLibraryItemId = shallowRef('')
 const currentPage = shallowRef('library')
 const isLibraryContentVisible = shallowRef(false)
 const isExpansionAnimating = shallowRef(false)
-const isCixiGuajianVisible = computed(() => !isExpanded.value && !isDragging.value && !isDropping.value && !isDropImporting.value)
+const isDropFeedbackActive = computed(() => isDragging.value || isDropping.value || isDropImporting.value)
+const isCixiGuajianVisible = computed(() => !isExpanded.value && !isDropFeedbackActive.value)
+// 将待投放、已接收和慢任务反馈收敛为稳定的两行状态文案。
+const dropFeedbackInfo = computed(() => {
+  const neirongName = ({ image: '图片', link: '网址', file: '文件' })[dropNeirongType.value]
+  const countText = dropNeirongCount.value > 1 ? `${dropNeirongCount.value} 项` : ''
+
+  if (isDropping.value) return { title: `已接收${neirongName}`, detail: countText || '正在准备保存' }
+  if (isDropProgressVisible.value) {
+    return {
+      title: `正在保存${neirongName}`,
+      detail: countText ? `正在处理 ${countText}` : '正在归入资料库',
+    }
+  }
+  if (isDropImporting.value) return { title: `已接收${neirongName}`, detail: countText || '正在准备保存' }
+  return {
+    title: `松开保存${neirongName}`,
+    detail: countText ? `${countText}将归入资料库` : '自动归入资料库',
+  }
+})
 let isPassthrough = true
 let islandMoveContext = null
 let tapePastingTimer = 0
 let collapseShapeTimer = 0
+let dropProgressTimer = 0
 let isIslandStateChanging = false
 let shouldIgnoreIslandClick = false
 let islandStateQingqiuVersion = 0
-
-const dropFeedbackInfo = computed(() => {
-  if (isDropping.value) return { title: '正在接收', detail: dropNeirongSummary.value }
-  if (isDropImporting.value) return { title: '正在整理', detail: '完成后打开资料库' }
-  return { title: '松开以收纳', detail: `${dropNeirongSummary.value}将自动归档` }
-})
+let mousePassthroughFrame = 0
+let zuixinMouseClientX = 0
+let zuixinMouseClientY = 0
 
 const {
   toastState,
@@ -219,8 +290,10 @@ const {
   libraryConfig,
   libraryAvailable,
   currentCollapsedAnimation,
+  isImporting,
   isYingyongSyncing,
   isLibraryRootMigrating,
+  jiantiebanItems,
   jiazaiLibrary,
   xuanzeLibraryCategory,
   sousuoLibrary,
@@ -229,6 +302,11 @@ const {
   xuanzeLibraryRootdir,
   daoruDragContent,
   buhuoJiantiebanContent,
+  shuaxinJiantieban,
+  guidangJiantiebanItems,
+  shanchuJiantiebanItem,
+  qingkongJiantiebanItems,
+  fuzhiJiantiebanItem,
   dakaiLibraryItem,
   dingweiLibraryItem,
   fenxiangLibraryItem,
@@ -241,11 +319,18 @@ const {
 
 function xianshiMigrationReport(report) {
   const items = Array.isArray(report.items) ? report.items : []
-  const detail = items.map((item, index) => {
+  const totalCount = Math.max(items.length, Number(report.totalCount) || 0)
+  const maxMigrationReportItems = 200
+  const visibleItems = items.slice(0, maxMigrationReportItems)
+  const detailLines = visibleItems.map((item, index) => {
     const name = item.title || item.relativePath || '未知资源'
     const source = item.relativePath ? `\n   原位置：${item.relativePath}` : ''
     return `${index + 1}. ${name}\n   原因：${item.reason || report.reason || '迁移失败'}${source}`
-  }).join('\n\n')
+  })
+  if (totalCount > visibleItems.length) {
+    detailLines.push(`其余 ${totalCount - visibleItems.length} 项未展示，请处理上述问题后重新尝试。`)
+  }
+  const detail = detailLines.join('\n\n')
   qingqiuConfirm({
     title: report.title || '迁移明细',
     message: report.message || '以下资源未能完成迁移：',
@@ -264,6 +349,14 @@ const { start: qidongCompleteTimer } = useTimeoutFn(
 
 onMounted(() => {
   if (!isStartupWindow) jiazaiLibrary()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(collapseShapeTimer)
+  window.clearTimeout(tapePastingTimer)
+  window.clearTimeout(dropProgressTimer)
+  if (mousePassthroughFrame) window.cancelAnimationFrame(mousePassthroughFrame)
+  if (!isStartupWindow) window.aetherDock?.setHeavyTasksPaused(false)
 })
 
 useEventListener(window, 'blur', chuliWindowBlur)
@@ -314,6 +407,9 @@ async function qiehuanIslandState(expanded) {
   isIslandStateChanging = true
   window.clearTimeout(collapseShapeTimer)
   try {
+    // 展开后立即关闭原生窗口穿透，避免分类模块依赖鼠标移动才能接收点击。
+    await guanbiMousePassthrough(true)
+    if (qingqiuVersion !== islandStateQingqiuVersion) return
     // 先按当前屏幕空间选择展开方向，再同步原生可见区域，挂件位置保持不变。
     let layout = null
     try {
@@ -325,7 +421,6 @@ async function qiehuanIslandState(expanded) {
     yingyongIslandAnchor(layout)
     isExpanded.value = true
     isLibraryContentVisible.value = true
-    void shuaxinLibraryIndex()
   } finally {
     // 窗口重定位会产生一次延迟的 mouseleave，保留到下一帧再结束切换锁。
     window.requestAnimationFrame(() => {
@@ -360,11 +455,13 @@ function chuliShellTransitionEnd(event) {
 
 // 切换设置时隐藏资料库内容，但保留其组件状态供返回时复用。
 function qiehuanSettings() {
+  void guanbiMousePassthrough(true)
   isLibraryContentVisible.value = false
   currentPage.value = 'settings'
 }
 
 function fanhuiLibrary() {
+  void guanbiMousePassthrough(true)
   currentPage.value = 'library'
   isLibraryContentVisible.value = true
 }
@@ -494,28 +591,81 @@ function baohanDragContent(event) {
   return types.some((type) => ['Files', 'text/uri-list', 'text/plain'].includes(type))
 }
 
-// 仅反馈投放内容类型与数量，不暴露文件名。
-function huoquDragContentSummary(dataTransfer) {
+const TUPIAN_FILE_EXTENSION_RE = /\.(?:avif|bmp|gif|heic|jpe?g|png|svg|webp)$/i
+
+function panduanTupianDragItem(item) {
+  const dragFile = item?.kind === 'file' ? item.getAsFile?.() : item
+  const mimeType = String(item?.type || dragFile?.type || '').toLowerCase()
+  if (mimeType.startsWith('image/')) return true
+  return TUPIAN_FILE_EXTENSION_RE.test(String(dragFile?.name ?? ''))
+}
+
+// 实体文件优先，全为图片时单独反馈图片类型。
+function huoquDragContentType(dataTransfer) {
+  const fileItems = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
+  const files = Array.from(dataTransfer?.files ?? [])
+  const types = Array.from(dataTransfer?.types ?? [])
+  const dragFiles = files.length ? files : fileItems
+
+  if (fileItems.length || files.length || types.includes('Files')) {
+    return dragFiles.length && dragFiles.every(panduanTupianDragItem) ? 'image' : 'file'
+  }
+  if (types.includes('text/uri-list')) return 'link'
+
+  const rawText = dataTransfer?.getData('text/uri-list')
+    || dataTransfer?.getData('text/plain')
+    || ''
+  return /^https?:\/\//i.test(rawText.trim()) ? 'link' : 'file'
+}
+
+// 仅展示批次数量，不读取或暴露拖入内容名称。
+function huoquDragContentCount(dataTransfer) {
   const fileItems = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
   const fileCount = Math.max(fileItems.length, dataTransfer?.files?.length ?? 0)
-  if (fileCount) return `${fileCount} 个文件`
+  if (fileCount) return fileCount
 
-  const types = Array.from(dataTransfer?.types ?? [])
-  return types.includes('text/uri-list') ? '网页链接' : '文字内容'
+  const rawText = dataTransfer?.getData('text/uri-list')
+    || dataTransfer?.getData('text/plain')
+    || ''
+  const urlCount = new Set(rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && /^https?:\/\//i.test(line))).size
+  return Math.max(1, Math.min(urlCount, 20))
+}
+
+function qingliDropProgressState() {
+  window.clearTimeout(dropProgressTimer)
+  dropProgressTimer = 0
+  isDropProgressVisible.value = false
+}
+
+// 慢任务延迟显示不定进度，避免本地快速归档出现一闪而过的加载态。
+function anpaiDropProgressFeedback(delay) {
+  qingliDropProgressState()
+  if (!delay) {
+    isDropProgressVisible.value = true
+    return
+  }
+  dropProgressTimer = window.setTimeout(() => {
+    dropProgressTimer = 0
+    if (isDropImporting.value && !isDropping.value) isDropProgressVisible.value = true
+  }, delay)
 }
 
 function chuliDragEnter(event) {
   if (isMovingIsland.value || isDropping.value || isDropImporting.value || !baohanDragContent(event)) return
   event.preventDefault()
   if (isDragging.value) return
-  dropNeirongSummary.value = huoquDragContentSummary(event.dataTransfer)
+  dropNeirongType.value = huoquDragContentType(event.dataTransfer)
+  dropNeirongCount.value = huoquDragContentCount(event.dataTransfer)
   isDragging.value = true
   isExpanded.value = false
   isLibraryContentVisible.value = false
 }
 
 function chuliDragOver(event) {
-  if (isMovingIsland.value || !baohanDragContent(event)) return
+  if (isMovingIsland.value || (!isDragging.value && !baohanDragContent(event))) return
   event.preventDefault()
   event.dataTransfer.dropEffect = 'copy'
 }
@@ -529,11 +679,15 @@ function chuliDragLeave(event) {
 async function chuliDrop(event) {
   if (isMovingIsland.value || isDropping.value || isDropImporting.value || !baohanDragContent(event)) return
   event.preventDefault()
+  dropNeirongType.value = huoquDragContentType(event.dataTransfer)
+  dropNeirongCount.value = huoquDragContentCount(event.dataTransfer)
   isDropping.value = true
   isDropImporting.value = true
   isDragging.value = true
+  const isReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  anpaiDropProgressFeedback(isReducedMotion ? 0 : 280)
   const importPromise = daoruDragContent(event.dataTransfer)
-  const feedbackDuration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160
+  const feedbackDuration = isReducedMotion ? 0 : 160
   try {
     if (feedbackDuration) await new Promise((resolve) => window.setTimeout(resolve, feedbackDuration))
     isDropping.value = false
@@ -549,6 +703,7 @@ async function chuliDrop(event) {
     currentPage.value = 'library'
     isExpanded.value = false
   } finally {
+    qingliDropProgressState()
     isDropping.value = false
     isDropImporting.value = false
     qingliDragState(true)
@@ -563,7 +718,41 @@ function chuliIslandBlur(event) {
 
 // 记录用户选择的资料库 Tab，供下次展开时恢复。
 function xuanzeZiliaokuCategory(category) {
-  xuanzeLibraryCategory(category)
+  // 分类按钮触发时再次确认窗口可交互，避免透明窗口的穿透状态吞掉后续点击。
+  void guanbiMousePassthrough(true)
+  return xuanzeLibraryCategory(category)
+}
+
+async function chuliJiantiebanBuhuo() {
+  const item = await buhuoJiantiebanContent()
+  if (!item) return
+  currentPage.value = 'clipboard'
+  isLibraryContentVisible.value = true
+}
+
+function dakaiJiantiebanShoujixiang() {
+  void guanbiMousePassthrough(true)
+  currentPage.value = 'clipboard'
+  isLibraryContentVisible.value = true
+  void shuaxinJiantieban()
+}
+
+async function guidangDanGeJiantiebanItem(itemId) {
+  await guidangJiantiebanItems([itemId])
+}
+
+async function guidangQuanbuJiantiebanItems(itemIds) {
+  await guidangJiantiebanItems(itemIds)
+}
+
+function qingqiuQingkongJiantieban() {
+  qingqiuConfirm({
+    title: '清空收集箱',
+    message: '确定移除全部剪贴板内容？',
+    detail: '这些内容尚未归档，清空后无法恢复。',
+    confirmText: '清空',
+    tone: 'danger',
+  }, () => qingkongJiantiebanItems())
 }
 
 function qingliDragState(force = false) {
@@ -619,10 +808,26 @@ function qingqiuMigrateLibrary() {
 function gengxinMousePassthrough(event) {
   if (isMovingIsland.value) return
   if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
+    if (mousePassthroughFrame) {
+      window.cancelAnimationFrame(mousePassthroughFrame)
+      mousePassthroughFrame = 0
+    }
     guanbiMousePassthrough()
     return
   }
-  shezhiMousePassthrough(!panduanMouseOverIsland(event.clientX, event.clientY))
+  zuixinMouseClientX = event.clientX
+  zuixinMouseClientY = event.clientY
+  if (mousePassthroughFrame) return
+  // 命中检测合并到下一帧，避免高频鼠标事件反复触发布局查询。
+  mousePassthroughFrame = window.requestAnimationFrame(() => {
+    mousePassthroughFrame = 0
+    if (isMovingIsland.value) return
+    if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
+      guanbiMousePassthrough()
+      return
+    }
+    shezhiMousePassthrough(!panduanMouseOverIsland(zuixinMouseClientX, zuixinMouseClientY))
+  })
 }
 
 function panduanMouseOverIsland(clientX, clientY) {
@@ -631,25 +836,25 @@ function panduanMouseOverIsland(clientX, clientY) {
 }
 
 function guanbiMousePassthrough(force = false) {
-  shezhiMousePassthrough(false, force)
+  return shezhiMousePassthrough(false, force)
 }
 
 function huifuMousePassthrough(force = false) {
   if (isMovingIsland.value) return
   if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
-    guanbiMousePassthrough(force)
-    return
+    return guanbiMousePassthrough(force)
   }
-  shezhiMousePassthrough(true, force)
+  return shezhiMousePassthrough(true, force)
 }
 
 // 穿透调用失败后废弃本地缓存，下一次鼠标事件会主动重试。
 function shezhiMousePassthrough(passthrough, force = false) {
   const nextPassthrough = Boolean(passthrough)
-  if (!force && nextPassthrough === isPassthrough) return
+  if (!force && nextPassthrough === isPassthrough) return Promise.resolve()
   isPassthrough = nextPassthrough
   const request = window.aetherDock?.setIslandPassthrough(nextPassthrough)
-  request?.catch(() => {
+  if (!request) return Promise.resolve()
+  return request.catch(() => {
     if (isPassthrough === nextPassthrough) isPassthrough = null
   })
 }
@@ -673,9 +878,9 @@ function shezhiMousePassthrough(passthrough, force = false) {
   --drop-width: 160px;
   --drop-height: 214px;
   --drop-hint-height: 94px;
-  --drop-motion-height: 58px;
-  --drop-stream-height: 40px;
-  --drop-stream-distance: 48px;
+  --drop-motion-height: 46px;
+  --drop-stream-height: 30px;
+  --drop-stream-distance: 38px;
   --drop-x: calc(var(--shouqi-x) + (var(--shouqi-width) - var(--drop-width)) / 2);
   --drop-y: calc(var(--shouqi-y) - (var(--drop-height) - var(--shouqi-height)));
   --drop-hint-y: calc(var(--shouqi-y) - 70px);
@@ -704,12 +909,12 @@ function shezhiMousePassthrough(passthrough, force = false) {
 
 .lingdongchuangkou--anchor-y-top {
   --drop-hint-height: 90px;
-  --drop-motion-height: 50px;
-  --drop-stream-height: 24px;
-  --drop-stream-distance: 34px;
+  --drop-motion-height: 40px;
+  --drop-stream-height: 22px;
+  --drop-stream-distance: 30px;
   --shouqi-y: var(--shouqi-edge-offset);
   --drop-y: var(--shouqi-y);
-  --drop-hint-y: calc(var(--shouqi-y) + var(--shouqi-height) + 8px);
+  --drop-hint-y: calc(var(--shouqi-y) + var(--shouqi-height) + 2px);
 }
 
 .lingdongchuangkou--anchor-y-top .drop-hint {
@@ -719,7 +924,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
 
 .lingdongchuangkou--anchor-y-top .drop-motion {
   margin-top: 0;
-  margin-bottom: 7px;
+  margin-bottom: 6px;
   transform: scaleY(-1);
 }
 
@@ -887,7 +1092,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   box-shadow: inset 0 1px rgba(255, 255, 255, .86), inset 0 -1px rgba(38, 38, 38, .08);
 }
 
-/* 上传反馈像系统提示一样悬浮在桌宠上方，不建立额外容器。 */
+/* 上传反馈保持固定尺寸，避免状态切换时改变桌宠周围的命中区域。 */
 .lingdongchuangkou--drop {
   pointer-events: none;
 }
@@ -904,6 +1109,10 @@ function shezhiMousePassthrough(passthrough, force = false) {
 }
 
 .drop-hint {
+  --drop-icon-color: var(--accent);
+  --drop-pulse-color: #171a19;
+  --drop-pulse-soft: rgba(23, 26, 25, .34);
+  --drop-pulse-faint: rgba(23, 26, 25, .14);
   position: absolute;
   z-index: 2;
   top: var(--drop-hint-y);
@@ -914,7 +1123,6 @@ function shezhiMousePassthrough(passthrough, force = false) {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  color: rgba(246, 248, 246, .94);
   isolation: isolate;
   opacity: 0;
   pointer-events: none;
@@ -922,39 +1130,183 @@ function shezhiMousePassthrough(passthrough, force = false) {
   transition: opacity 150ms ease, transform 220ms var(--motion-easing);
 }
 
+.drop-status {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 148px;
+  height: 44px;
+  flex: none;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  background: var(--surface-ink);
+  /* 透明窗口中不使用外投影，避免胶囊边缘合成出黑色光晕。 */
+  box-shadow: inset 0 1px rgba(255, 255, 255, .08);
+  color: var(--text-on-ink);
+  transform: translateZ(0);
+  transition: transform 180ms var(--motion-easing);
+}
+
+.drop-type-icon {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--drop-icon-color);
+  place-items: center;
+}
+
+.drop-type-icon svg {
+  display: block;
+}
+
 .drop-copy {
   position: relative;
   z-index: 1;
   display: grid;
-  font-family: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  justify-items: center;
-  gap: 3px;
-  text-align: center;
-  text-rendering: geometricPrecision;
-  -webkit-font-smoothing: antialiased;
+  min-width: 0;
+  gap: 2px;
+}
+
+.drop-copy strong,
+.drop-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drop-copy strong {
-  color: rgba(153, 160, 155, .98);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.45;
+  color: var(--text-on-ink);
+  font: 650 12px/1.2 var(--font-body);
   letter-spacing: .015em;
-  text-shadow: 0 1px 1px rgba(8, 11, 9, .54);
-  white-space: nowrap;
 }
 
 .drop-copy small {
+  color: var(--text-on-ink-muted);
+  font: 500 9.5px/1.2 var(--font-body);
+  letter-spacing: .01em;
+}
+
+.lingdongchuangkou--dropping .drop-status { transform: translateZ(0) scale(.96); }
+.lingdongchuangkou--accepted .drop-status { transform: translateZ(0) scale(.985); }
+
+.drop-motion {
+  position: relative;
+  z-index: 1;
+  width: 64px;
+  height: var(--drop-motion-height);
+  margin-top: 4px;
+  filter:
+    drop-shadow(0 0 1px rgba(255, 255, 255, .92))
+    drop-shadow(0 1px 2px rgba(255, 255, 255, .68));
+}
+
+/* 接收槽与扩散波同步反馈每一批数据抵达。 */
+.drop-motion::before {
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  width: 22px;
+  height: 8px;
+  border: 1px solid var(--drop-pulse-color);
+  border-radius: 50%;
+  content: '';
+  opacity: 0;
+  transform: translate3d(-50%, 0, 0) scale(.45);
+  will-change: transform, opacity;
+}
+
+.drop-motion::after {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--drop-pulse-color);
+  content: '';
+  opacity: .54;
+  transform: translate3d(-50%, 0, 0) scaleX(.42);
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.drop-particles {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 28px;
+  transition: opacity 120ms ease;
+}
+
+.drop-particles > span {
+  --drop-particle-x: 0px;
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 1px;
+  background: var(--drop-pulse-color);
+  transform: translate3d(var(--drop-particle-x), 0, 0);
+  will-change: transform, opacity;
+}
+
+.drop-particles > span:first-child { --drop-particle-x: -18px; }
+.drop-particles > span:last-child { --drop-particle-x: 18px; }
+
+.lingdongchuangkou--dropping .drop-particles > span {
+  animation: none;
+  opacity: 0;
+  transform: translate3d(0, 25px, 0) scaleX(.45);
+  transition: opacity 150ms ease, transform 180ms cubic-bezier(.4, 0, 1, 1);
+}
+
+.drop-stream {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  width: 1px;
+  height: var(--drop-stream-height);
   overflow: hidden;
-  max-width: 154px;
-  color: rgba(147, 154, 149, .96);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.55;
-  letter-spacing: .012em;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 1px rgba(8, 11, 9, .48);
-  white-space: nowrap;
+  background: linear-gradient(180deg, transparent, var(--drop-pulse-soft) 12%, var(--drop-pulse-faint) 86%, transparent);
+  transform: translateX(-50%);
+  transition: opacity 120ms ease;
+}
+
+.drop-stream > span {
+  position: absolute;
+  top: -12px;
+  left: -1px;
+  width: 3px;
+  height: 12px;
+  background: linear-gradient(180deg, transparent, var(--drop-pulse-color) 52%, transparent);
+  will-change: transform, opacity;
+}
+
+.lingdongchuangkou--accepted .drop-particles,
+.lingdongchuangkou--accepted .drop-stream,
+.lingdongchuangkou--importing .drop-particles,
+.lingdongchuangkou--importing .drop-stream {
+  opacity: 0;
+}
+
+.lingdongchuangkou--accepted .drop-motion::after,
+.lingdongchuangkou--importing .drop-motion::after {
+  opacity: .76;
+  transform: translate3d(-50%, 0, 0) scaleX(.82);
+}
+
+.lingdongchuangkou--accepted .drop-motion::before,
+.lingdongchuangkou--importing .drop-motion::before {
+  opacity: .28;
+  transform: translate3d(-50%, 0, 0) scale(.72);
 }
 
 .drop-motion {
@@ -1044,42 +1396,61 @@ function shezhiMousePassthrough(passthrough, force = false) {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .lingdongchuangkou--drop:not(.lingdongchuangkou--dropping):not(.lingdongchuangkou--importing) .drop-particles > span {
-    animation: drop-particle-converge 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  .lingdongchuangkou--drop:not(.lingdongchuangkou--dropping):not(.lingdongchuangkou--accepted):not(.lingdongchuangkou--importing) .drop-particles > span {
+    animation: drop-particle-converge 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
   }
 
-  .lingdongchuangkou--drop .drop-particles > span:nth-child(2) { animation-delay: -500ms; }
-  .lingdongchuangkou--drop .drop-particles > span:nth-child(3) { animation-delay: -1000ms; }
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(2) { animation-delay: -450ms; }
+  .lingdongchuangkou--drop .drop-particles > span:nth-child(3) { animation-delay: -900ms; }
 
-  .lingdongchuangkou--drop .drop-stream > span {
-    animation: drop-stream-fall 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  .lingdongchuangkou--drop:not(.lingdongchuangkou--accepted):not(.lingdongchuangkou--importing) .drop-stream > span {
+    animation: drop-stream-fall 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
   }
 
-  .lingdongchuangkou--drop .drop-stream > span:nth-child(2) { animation-delay: -500ms; }
-  .lingdongchuangkou--drop .drop-stream > span:nth-child(3) { animation-delay: -1000ms; }
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(2) { animation-delay: -450ms; }
+  .lingdongchuangkou--drop .drop-stream > span:nth-child(3) { animation-delay: -900ms; }
 
-  .lingdongchuangkou--drop .drop-motion::after {
-    animation: drop-intake-receive 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  .lingdongchuangkou--drop:not(.lingdongchuangkou--accepted):not(.lingdongchuangkou--importing) .drop-motion::after {
+    animation: drop-intake-receive 1.35s cubic-bezier(.4, 0, .2, 1) infinite;
   }
+
+  .lingdongchuangkou--drop:not(.lingdongchuangkou--accepted):not(.lingdongchuangkou--importing) .drop-motion::before {
+    animation: drop-pulse-wave 1.35s cubic-bezier(.16, 1, .3, 1) infinite;
+  }
+
+  .lingdongchuangkou--importing .drop-type-icon svg {
+    animation: drop-progress-spin 900ms linear infinite;
+  }
+}
+
+@keyframes drop-progress-spin {
+  to { transform: rotate(1turn); }
 }
 
 @keyframes drop-particle-converge {
   0% { opacity: 0; transform: translate3d(var(--drop-particle-x), 0, 0) scaleX(1); }
-  20% { opacity: .82; }
-  68% { opacity: .58; }
+  18% { opacity: .96; }
+  66% { opacity: .72; }
   100% { opacity: 0; transform: translate3d(0, 24px, 0) scaleX(.48); }
 }
 
 @keyframes drop-stream-fall {
   0% { opacity: 0; transform: translate3d(0, 0, 0) scaleY(.6); }
-  16% { opacity: .94; }
-  72% { opacity: .82; }
+  14% { opacity: 1; }
+  70% { opacity: .9; }
   100% { opacity: 0; transform: translate3d(0, var(--drop-stream-distance), 0) scaleY(1); }
 }
 
 @keyframes drop-intake-receive {
-  0%, 58%, 100% { opacity: .42; transform: translate3d(-50%, 0, 0) scaleX(.42); }
-  76% { opacity: .9; transform: translate3d(-50%, 0, 0) scaleX(1); }
+  0%, 50%, 100% { opacity: .46; transform: translate3d(-50%, 0, 0) scaleX(.42); }
+  66% { opacity: 1; transform: translate3d(-50%, 0, 0) scaleX(1.18); }
+  82% { opacity: .68; transform: translate3d(-50%, 0, 0) scaleX(.72); }
+}
+
+@keyframes drop-pulse-wave {
+  0%, 54% { opacity: 0; transform: translate3d(-50%, 0, 0) scale(.45); }
+  66% { opacity: .62; transform: translate3d(-50%, 0, 0) scale(.58); }
+  100% { opacity: 0; transform: translate3d(-50%, 0, 0) scale(1.72); }
 }
 
 @keyframes cixi-body-settle {
@@ -1105,16 +1476,27 @@ function shezhiMousePassthrough(passthrough, force = false) {
   .lingdongchuangkou--expanded .island-frame--expanded { transition-delay: 0s; }
 
   .lingdongchuangkou--pasting .island-shell { animation: none; }
+  .drop-hint,
+  .drop-status { transition-duration: 0ms; }
+  .drop-type-icon svg { animation: none; }
+  .drop-particles,
+  .drop-stream { transition-duration: 0ms; }
 
   .drop-particles > span,
   .drop-stream > span,
+  .drop-motion::before,
   .drop-motion::after { animation: none; transition-duration: 0ms; }
 
   .drop-stream > span { opacity: 0; }
 
   .drop-motion::after {
-    opacity: .68;
+    opacity: .82;
     transform: translate3d(-50%, 0, 0) scaleX(.76);
+  }
+
+  .drop-motion::before {
+    opacity: .32;
+    transform: translate3d(-50%, 0, 0) scale(.78);
   }
 
   .lingdongchuangkou--moving .island-shell { transform: none; }

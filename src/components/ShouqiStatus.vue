@@ -19,7 +19,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import lottie from 'lottie-web/build/player/lottie_light'
 import { jiazaiDonghuaData } from '@/constants/donghua'
@@ -35,11 +35,13 @@ const props = defineProps({
 const lottieHolder = useTemplateRef('lottieHolder')
 const currentTime = shallowRef('')
 const systemStatus = shallowRef({ cpu: 0, neicun: 0 })
+const shouldPollInfo = computed(() => !props.charm && !props.hidden && !props.moving)
 let lottiePlayer = null
 let currentLottieRequest = 0
+let isSystemStatusLoading = false
 
 function gengxinCurrentTime() {
-  if (props.charm) return
+  if (!shouldPollInfo.value) return
   currentTime.value = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -48,12 +50,15 @@ function gengxinCurrentTime() {
 }
 
 async function gengxinSystemStatus() {
-  if (props.charm) return
+  if (!shouldPollInfo.value || isSystemStatusLoading) return
+  isSystemStatusLoading = true
   try {
     const status = await window.aetherDock?.getSystemStatus()
     if (status) systemStatus.value = status
   } catch {
     // 系统状态短暂读取失败时保留上一帧。
+  } finally {
+    isSystemStatusLoading = false
   }
 }
 
@@ -84,8 +89,21 @@ function tongbuLottiePlayback() {
   else lottiePlayer.play()
 }
 
-useIntervalFn(gengxinCurrentTime, 1000, { immediateCallback: true })
-useIntervalFn(gengxinSystemStatus, 2000, { immediateCallback: true })
+const { pause: zantingTimePolling, resume: huifuTimePolling } = useIntervalFn(gengxinCurrentTime, 1000, { immediate: false })
+const { pause: zantingStatusPolling, resume: huifuStatusPolling } = useIntervalFn(gengxinSystemStatus, 2000, { immediate: false })
+
+// 挂件态和不可见阶段停掉信息轮询，避免常驻无效计时器与 IPC。
+watch(shouldPollInfo, (shouldPoll) => {
+  if (!shouldPoll) {
+    zantingTimePolling()
+    zantingStatusPolling()
+    return
+  }
+  gengxinCurrentTime()
+  void gengxinSystemStatus()
+  huifuTimePolling()
+  huifuStatusPolling()
+}, { immediate: true })
 watch(() => props.animationId, chongjianLottie)
 watch(() => [props.hidden, props.moving, props.pasting], tongbuLottiePlayback)
 onMounted(chongjianLottie)

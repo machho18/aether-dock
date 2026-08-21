@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, shallowRef } from 'vue'
 
-const categoryIds = ['document', 'image', 'url', 'application']
+const categoryIds = ['document', 'image', 'url', 'application', 'recent']
 const pageSize = 30
 const maxWindowSize = 90
 
@@ -24,7 +24,7 @@ function createCategoryWindows() {
 export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   const categoryWindows = shallowRef(createCategoryWindows())
   const categoryCounts = shallowRef(Object.fromEntries(categoryIds.map((type) => [type, 0])))
-  const currentCategory = shallowRef('document')
+  const currentCategory = shallowRef('recent')
   const searchKeyword = shallowRef('')
   const searchState = shallowRef(createPageState())
   const libraryConfig = shallowRef({ rootdir: '', libraryId: '' })
@@ -33,14 +33,17 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   const isImporting = shallowRef(false)
   const isYingyongSyncing = shallowRef(false)
   const isLibraryRootMigrating = shallowRef(false)
+  const jiantiebanItems = shallowRef([])
+  const isJiantiebanLoading = shallowRef(false)
   let searchRequestId = 0
   let libraryRefreshPromise = null
   let forcedRefreshVersion = 0
   let libraryStateGeneration = 0
 
-  const libraryItems = computed(() => (
-    searchKeyword.value ? searchState.value.items : categoryWindows.value[currentCategory.value].items
-  ))
+  const libraryItems = computed(() => {
+    const currentWindow = categoryWindows.value[currentCategory.value] ?? categoryWindows.value.recent
+    return searchKeyword.value ? searchState.value.items : currentWindow.items
+  })
 
   function huoquBridge() {
     return window.aetherDock
@@ -65,6 +68,26 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     })
   }
 
+  // 客户端窗口裁剪时按当前视图的排序字段续载，避免最近打开列表出现重复或漏项。
+  function huoquItemCursor(item, type) {
+    if (type === 'recent') {
+      return {
+        lastOpenedAt: Number(item.lastOpenedAt ?? 0),
+        id: item.id,
+      }
+    }
+    return { createdAt: Number(item.createdAt ?? 0), id: item.id }
+  }
+
+  function gengxinKaipianShuju(itemId, patch) {
+    const gengxinItem = (item) => item.id === itemId ? { ...item, ...patch } : item
+    categoryWindows.value = Object.fromEntries(categoryIds.map((type) => [
+      type,
+      { ...categoryWindows.value[type], items: categoryWindows.value[type].items.map(gengxinItem) },
+    ]))
+    searchState.value = { ...searchState.value, items: searchState.value.items.map(gengxinItem) }
+  }
+
   async function jiazaiLibrary() {
     if (libraryRefreshPromise) return libraryRefreshPromise
     libraryRefreshPromise = (async () => {
@@ -75,10 +98,12 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
         const requestGeneration = libraryStateGeneration
         try {
           const bridge = huoquBridge()
-          const [config, summary, animation] = await Promise.all([
-            bridge?.getLibraryConfig(),
-            bridge?.getLibrarySummary(),
-            bridge?.getCollapsedAnimation(),
+          const [config, summary, animation, jiantiebanResult] = await Promise.all([
+            Promise.resolve(bridge?.getLibraryConfig?.()),
+            Promise.resolve(bridge?.getLibrarySummary?.()),
+            Promise.resolve(bridge?.getCollapsedAnimation?.()),
+            // 收集箱故障不能阻断资料库配置恢复，避免重启后误显示为未设置目录。
+            Promise.resolve().then(() => bridge?.getClipboardItems?.()).catch(() => null),
           ])
           if (requestGeneration === libraryStateGeneration) {
             if (config) libraryConfig.value = config
@@ -87,9 +112,12 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
               categoryCounts.value = summary.counts
               categoryWindows.value = createCategoryWindows()
               shezhiPage(summary.defaultType, summary.defaultPage)
+              // 兼容收藏分类移除前保留的界面状态，避免访问已废弃的分页窗口。
+              if (!categoryIds.includes(currentCategory.value)) currentCategory.value = summary.defaultType
             }
           }
           if (animation) currentCollapsedAnimation.value = animation
+          if (jiantiebanResult?.items) jiantiebanItems.value = jiantiebanResult.items
           success = true
         } catch {
           success = false
@@ -116,7 +144,10 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   }
 
   async function xuanzeLibraryCategory(type) {
-    if (!categoryIds.includes(type)) return
+    if (!categoryIds.includes(type)) {
+      currentCategory.value = 'recent'
+      return
+    }
     currentCategory.value = type
     if (searchKeyword.value) {
       await sousuoLibrary(searchKeyword.value)
@@ -195,8 +226,8 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
         : combinedItems.slice(-maxWindowSize)
       const nextState = {
         items: nextItems,
-        previousCursor: nextItems.length ? { createdAt: nextItems[0].createdAt, id: nextItems[0].id } : null,
-        nextCursor: nextItems.length ? { createdAt: nextItems.at(-1).createdAt, id: nextItems.at(-1).id } : null,
+        previousCursor: nextItems.length ? huoquItemCursor(nextItems[0], requestType) : null,
+        nextCursor: nextItems.length ? huoquItemCursor(nextItems.at(-1), requestType) : null,
         hasPrevious: loadDirection === 'previous' ? Boolean(page?.hasPrevious) : state.hasPrevious || didTrim,
         hasNext: loadDirection === 'next' ? Boolean(page?.hasNext) : state.hasNext || didTrim,
         loaded: true,
@@ -286,6 +317,7 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
             message: '以下资源在原目录和目标目录中均未找到：',
             reason: '源文件缺失',
             items: migration.missingItems,
+            totalCount: migration.missing,
           })
         }
       } else if (migration.kind === 'switched') {
@@ -348,27 +380,139 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     }
   }
 
+  function yichuJiantiebanItems(rawItemIds) {
+    const itemIdSet = new Set(rawItemIds)
+    if (!itemIdSet.size) return
+    jiantiebanItems.value = jiantiebanItems.value.filter(({ id }) => !itemIdSet.has(id))
+  }
+
+  // 收集箱由主进程读取和去重，渲染层只维护当前可见的内容块。
+  async function shuaxinJiantieban() {
+    if (isJiantiebanLoading.value) return jiantiebanItems.value
+    isJiantiebanLoading.value = true
+    try {
+      const result = await huoquBridge()?.getClipboardItems()
+      jiantiebanItems.value = result?.items ?? []
+      return jiantiebanItems.value
+    } catch {
+      xianshiToast('收集箱暂时不可用', 'error')
+      return jiantiebanItems.value
+    } finally {
+      isJiantiebanLoading.value = false
+    }
+  }
+
   // 捕获内容由主进程读取，避免渲染层因系统剪贴板权限而出现不一致。
   async function buhuoJiantiebanContent() {
-    if (isLibraryRootMigrating.value || isImporting.value) return []
-    if (!(await quebaoLibrary())) return []
+    if (isImporting.value) return null
     isImporting.value = true
     try {
       const result = await huoquBridge()?.captureClipboardContent()
-      const addedItems = result?.added ?? []
-      if (!addedItems.length) {
+      const item = result?.item
+      if (!item) {
         xianshiToast(result?.xiaoxi || '未发现可捕获的新内容', 'info')
-        return []
+        return null
       }
-      libraryStateGeneration += 1
-      await shuaxinLibraryIndex(true)
-      xianshiToast(`已捕获${result.captureType || '内容'}`, 'success')
-      return addedItems
+      if (!result.duplicate) jiantiebanItems.value = [item, ...jiantiebanItems.value.filter(({ id }) => id !== item.id)].slice(0, 50)
+      const truncatedHint = result.wasTruncated ? ' · 已保存前 20 万字' : ''
+      xianshiToast(result.duplicate ? '内容已在收集箱中' : `已捕获${result.captureType || '内容'}${truncatedHint} · 已加入收集箱`, result.duplicate ? 'info' : 'success')
+      return item
     } catch {
       xianshiToast('剪贴板捕获失败，请稍后重试', 'error')
-      return []
+      return null
     } finally {
       isImporting.value = false
+    }
+  }
+
+  async function guidangJiantiebanItems(itemIds) {
+    if (!Array.isArray(itemIds) || !itemIds.length || isImporting.value) return false
+    if (isLibraryRootMigrating.value) {
+      xianshiToast('资料库正在迁移，请稍候', 'info')
+      return false
+    }
+    if (!(await quebaoLibrary())) return false
+    isImporting.value = true
+    try {
+      const result = await huoquBridge()?.archiveClipboardItems(itemIds)
+      const removedIds = result?.removedIds ?? []
+      const addedCount = result?.added?.length ?? 0
+      const duplicateCount = result?.duplicates?.length ?? 0
+      const failedCount = result?.failedIds?.length ?? 0
+      yichuJiantiebanItems(removedIds)
+      if (removedIds.length) {
+        libraryStateGeneration += 1
+        await shuaxinLibraryIndex(true)
+      }
+      if (!removedIds.length) {
+        xianshiToast(failedCount ? '归档失败，请稍后重试' : '没有可归档的新内容', failedCount ? 'error' : 'info')
+        return false
+      }
+      const xiaoxi = [`已归档 ${addedCount || removedIds.length} 项`]
+      if (duplicateCount) xiaoxi.push(`已有 ${duplicateCount} 项`)
+      if (failedCount) xiaoxi.push(`${failedCount} 项保留在收集箱`)
+      xianshiToast(xiaoxi.join(' · '), failedCount ? 'info' : 'success')
+      return true
+    } catch {
+      xianshiToast('归档失败，请稍后重试', 'error')
+      return false
+    } finally {
+      isImporting.value = false
+    }
+  }
+
+  async function shanchuJiantiebanItem(itemId) {
+    if (!itemId || isImporting.value) return false
+    isImporting.value = true
+    try {
+      const bridge = huoquBridge()
+      if (typeof bridge?.deleteClipboardItems !== 'function') {
+        xianshiToast('收集箱已更新，请重启应用后重试', 'info')
+        return false
+      }
+      const result = await bridge.deleteClipboardItems([itemId])
+      if (!result?.chenggong) {
+        xianshiToast(result?.xiaoxi || '移除失败，请稍后重试', 'error')
+        return false
+      }
+      const removedIds = result?.removedIds ?? []
+      yichuJiantiebanItems(removedIds)
+      if (removedIds.length) xianshiToast('已从收集箱移除', 'success')
+      else {
+        // 返回空结果时重新读取服务端状态，避免旧界面残留已不存在的卡片。
+        await shuaxinJiantieban()
+        xianshiToast('收集箱已同步最新状态', 'info')
+      }
+      return true
+    } catch {
+      xianshiToast('移除操作未发送成功，请重启应用后重试', 'error')
+      return false
+    } finally {
+      isImporting.value = false
+    }
+  }
+
+  async function qingkongJiantiebanItems() {
+    try {
+      const result = await huoquBridge()?.clearClipboardItems()
+      const removedCount = Number(result?.removedCount ?? 0)
+      jiantiebanItems.value = []
+      if (removedCount) xianshiToast(`已清空 ${removedCount} 条内容`, 'success')
+      return Boolean(removedCount)
+    } catch {
+      xianshiToast('清空失败，请稍后重试', 'error')
+      return false
+    }
+  }
+
+  async function fuzhiJiantiebanItem(itemId) {
+    try {
+      const result = await huoquBridge()?.copyClipboardItem(itemId)
+      xianshiToast(result?.xiaoxi || '复制失败，请稍后重试', result?.chenggong ? 'success' : 'error')
+      return Boolean(result?.chenggong)
+    } catch {
+      xianshiToast('复制失败，请稍后重试', 'error')
+      return false
     }
   }
 
@@ -389,7 +533,19 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
       return
     }
     const result = await huoquBridge()?.openLibraryItem(item.id)
-    if (!result?.chenggong) xianshiToast(result?.xiaoxi || '打开失败', 'error')
+    if (!result?.chenggong) {
+      xianshiToast(result?.xiaoxi || '打开失败', 'error')
+      return false
+    }
+    if (!result.usage) return true
+    gengxinKaipianShuju(item.id, result.usage)
+    if (currentCategory.value === 'recent') {
+      libraryStateGeneration += 1
+      await shuaxinLibraryIndex(true)
+    } else {
+      gengxinCategoryState('recent', createPageState())
+    }
+    return true
   }
 
   function dingweiLibraryItem(item) {
@@ -462,10 +618,13 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
         { ...categoryWindows.value[type], items: categoryWindows.value[type].items.filter(({ id }) => id !== item.id) },
       ]))
       searchState.value = { ...searchState.value, items: searchState.value.items.filter(({ id }) => id !== item.id) }
-      categoryCounts.value = {
-        ...categoryCounts.value,
+      const categoryCountPatch = {
         [item.type]: Math.max(0, categoryCounts.value[item.type] - 1),
       }
+      if (item.lastOpenedAt) {
+        categoryCountPatch.recent = Math.max(0, categoryCounts.value.recent - 1)
+      }
+      categoryCounts.value = { ...categoryCounts.value, ...categoryCountPatch }
       xianshiToast('已删除', 'success')
       return true
     } catch {
@@ -557,6 +716,8 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     isImporting,
     isYingyongSyncing,
     isLibraryRootMigrating,
+    jiantiebanItems,
+    isJiantiebanLoading,
     jiazaiLibrary,
     xuanzeLibraryCategory,
     sousuoLibrary,
@@ -565,6 +726,11 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
     xuanzeLibraryRootdir,
     daoruDragContent,
     buhuoJiantiebanContent,
+    shuaxinJiantieban,
+    guidangJiantiebanItems,
+    shanchuJiantiebanItem,
+    qingkongJiantiebanItems,
+    fuzhiJiantiebanItem,
     dakaiLibraryItem,
     dingweiLibraryItem,
     fenxiangLibraryItem,
@@ -576,7 +742,7 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   }
 }
 
-// 浏览器拖拽图片时优先使用 HTML 中的图片源，避免误收藏包裹图片的网页链接。
+// 浏览器拖拽图片时优先使用 HTML 中的图片源，避免误导入包裹图片的网页链接。
 function tiquDraggedResources(dataTransfer) {
   const rawText = dataTransfer?.getData('text/uri-list') || dataTransfer?.getData('text/plain') || ''
   const transferUrls = [...new Set(rawText
@@ -602,7 +768,12 @@ function tiquDraggedResources(dataTransfer) {
       if (!candidates.length) return []
       const anchorUrl = image.closest('a[href]')?.getAttribute('href')?.trim()
       const referer = /^https?:\/\//i.test(anchorUrl || '') ? anchorUrl : ''
-      return [{ sourceUrl: associatedTransferUrls[0] || referer || candidates[0], referer: referer || associatedTransferUrls[0] || '', candidates: candidates.slice(0, 8) }]
+      return [{
+        sourceUrl: associatedTransferUrls[0] || referer || candidates[0],
+        referer: referer || associatedTransferUrls[0] || '',
+        candidates: candidates.slice(0, 8),
+        isXiazaiPreferred: true,
+      }]
     })
     if (resources.length) return resources.slice(0, 20)
   }
