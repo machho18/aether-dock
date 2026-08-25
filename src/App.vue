@@ -904,8 +904,8 @@ function shezhiMousePassthrough(passthrough, force = false) {
   --shouqi-x: calc(100% - var(--shouqi-width) - var(--shouqi-edge-offset));
   --shouqi-y: calc((100% - var(--shouqi-height)) / 2);
   position: relative;
-  width: min(680px, calc(100vw - 40px));
-  height: 380px;
+  width: min(760px, calc(100vw - 40px));
+  height: 460px;
   overflow: visible;
   cursor: default;
   isolation: isolate;
@@ -983,7 +983,7 @@ function shezhiMousePassthrough(passthrough, force = false) {
   width: 100%;
 }
 
-.lingdongchuangkou--expanded .toast-layer { height: 380px; }
+.lingdongchuangkou--expanded .toast-layer { height: 460px; }
 .lingdongchuangkou--drop .toast-layer {
   top: var(--drop-y);
   left: var(--drop-x);

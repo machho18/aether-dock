@@ -441,6 +441,30 @@ function createLibrary(dbPath) {
     return animation
   }
 
+  // 读取联网搜索来源，未设置时回退到内建的必应搜索。
+  function getSearchProvider() {
+    return readSettingStmt.get('sousuoLaiYuan')?.value === 'anysearch' ? 'anysearch' : 'bing'
+  }
+
+  // 保存联网搜索来源，仅接受内置来源。
+  function setSearchProvider(provider) {
+    if (!['bing', 'anysearch'].includes(provider)) throw new Error('不支持的搜索来源')
+    writeSettingStmt.run('sousuoLaiYuan', provider, Date.now())
+    return provider
+  }
+
+  // 读取 AnySearch API 密钥，未填写返回空字符串。
+  function getAnySearchApiKey() {
+    return readSettingStmt.get('anysearchApiKey')?.value ?? ''
+  }
+
+  // 保存或清除 AnySearch API 密钥；留空即清除。
+  function setAnySearchApiKey(apiKey) {
+    const value = String(apiKey ?? '').trim()
+    writeSettingStmt.run('anysearchApiKey', value, Date.now())
+    return value
+  }
+
   function createMigrationError(code, message, conflictPath = '') {
     const error = new Error(message)
     error.code = code
@@ -2197,6 +2221,10 @@ function createLibrary(dbPath) {
     getConfig,
     getCollapsedAnimation,
     setCollapsedAnimation,
+    getSearchProvider,
+    setSearchProvider,
+    getAnySearchApiKey,
+    setAnySearchApiKey,
     setRootdir,
     tianjiaJiantiebanItem,
     huoquJiantiebanItems,

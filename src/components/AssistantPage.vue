@@ -157,7 +157,7 @@
               </label>
             </div>
             <div class="assistant-provider-actions">
-              <button class="assistant-save" type="button" :disabled="isSavingKey || isRemovingProvider || !apiKey.trim()" @mousedown.prevent @click="baocunProviderKey">
+              <button class="assistant-save" type="button" :disabled="isSavingKey || isRemovingProvider || !apiKey.trim() || (currentSelectedProvider?.configured && apiKey.trim() === (currentSelectedProvider.apiKeyMask || keyMask))" @mousedown.prevent @click="baocunProviderKey">
                 {{ isSavingKey ? '保存中…' : '保存密钥' }}
               </button>
               <button
@@ -213,6 +213,67 @@
             <button class="assistant-save assistant-save--primary" type="button" :disabled="isAddingProvider" @click="tianjiaCustomProvider">
               {{ isAddingProvider ? '接入中…' : customModelId.trim() ? '接入模型' : '识别并接入' }}
             </button>
+          </div>
+
+          <div class="assistant-config-sub">
+            <div class="assistant-config-subtitle">联网搜索</div>
+            <div class="assistant-field">
+              <span>搜索来源</span>
+              <div class="assistant-search-source" role="radiogroup" aria-label="选择搜索来源">
+                <button
+                  class="assistant-search-source-option"
+                  :class="{ 'assistant-search-source-option--active': searchProvider === 'bing' }"
+                  type="button"
+                  role="radio"
+                  :aria-checked="searchProvider === 'bing'"
+                  :disabled="isSavingSearchKey"
+                  @click="qiehuanSearchSource('bing')"
+                >
+                  <span class="assistant-search-source-copy">
+                    <strong>必应 Bing</strong>
+                    <small>免费、无需密钥的网页搜索</small>
+                  </span>
+                  <span class="assistant-search-source-state">
+                    <template v-if="searchProvider === 'bing'"><PhCheck :size="12" weight="bold" /> 使用中</template>
+                    <template v-else>切换</template>
+                  </span>
+                </button>
+                <button
+                  class="assistant-search-source-option"
+                  :class="{ 'assistant-search-source-option--active': searchProvider === 'anysearch' }"
+                  type="button"
+                  role="radio"
+                  :aria-checked="searchProvider === 'anysearch'"
+                  :disabled="isSavingSearchKey"
+                  @click="qiehuanSearchSource('anysearch')"
+                >
+                  <span class="assistant-search-source-copy">
+                    <strong>AnySearch</strong>
+                    <small>高质量结果，可用 API Key 解锁更多配额</small>
+                  </span>
+                  <span class="assistant-search-source-state">
+                    <template v-if="searchProvider === 'anysearch'"><PhCheck :size="12" weight="bold" /> 使用中</template>
+                    <template v-else>切换</template>
+                  </span>
+                </button>
+              </div>
+            </div>
+            <template v-if="searchProvider === 'anysearch'">
+              <label class="assistant-field">
+                <span>API 密钥（选填）</span>
+                <input v-model="anysearchKey" :type="anysearchKeyInputType" placeholder="留空则使用匿名配额" autocomplete="off" @focus="chuliAnySearchKeyFocus" @blur="chuliAnySearchKeyBlur">
+              </label>
+              <p class="assistant-search-note">匿名访问无需注册即可低频使用，但速率限制（QPS）与每日免费额度处于最低配额状态；注册并创建免费 API Key 后解锁标准免费额度——每天 1,000 次请求、单 Key 限速 20 QPS。详见 <button class="assistant-search-link" type="button" @click="dakaiAnySearchGuize">AnySearch 配额说明</button>。</p>
+              <div class="assistant-provider-actions">
+                <button class="assistant-save" type="button" :disabled="isSavingSearchKey || (isAnySearchKeyConfigured && anysearchKey.trim() === (anysearchKeyMask || keyMask))" @mousedown.prevent @click="tijiaoAnySearchKey">
+                  {{ isSavingSearchKey ? '保存中…' : '保存密钥' }}
+                </button>
+                <button v-if="isAnySearchKeyConfigured" class="assistant-provider-clean" type="button" :disabled="isSavingSearchKey || isBusy" @click="qingchuAnySearchKey">
+                  <PhTrash :size="13" weight="bold" aria-hidden="true" />
+                  清除密钥
+                </button>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -375,22 +436,40 @@
             'assistant-bubble-inner--activity': message.role === 'assistant' && !message.content && message.pending,
           }"
         >
-          <div
-            v-if="message.role === 'assistant' && yinggaiXianshiChuliGuocheng(message)"
-            class="assistant-activity"
-            :class="{ 'assistant-activity--completed': Boolean(huoquChuliXiangqing(message)) }"
-          >
-            <div class="assistant-reasoning" :class="{ 'assistant-reasoning--pending': message.pending, 'assistant-reasoning--failed': message.failed, 'assistant-reasoning--completed': !message.pending && !message.failed }">
-              <div class="assistant-reasoning-trigger">
-                <span v-if="huoquChuliZhuangtai(message)" class="assistant-status-shimmer">{{ huoquChuliZhuangtai(message) }}</span>
-                <span class="assistant-reasoning-duration">{{ huoquChuliXiangqing(message) }}</span>
+          <template v-if="message.role === 'assistant' && yinggaiXianshiGongjuJilu(message)">
+            <div class="assistant-activity">
+              <div class="assistant-reasoning" :class="{ 'assistant-reasoning--pending': message.pending, 'assistant-reasoning--failed': message.failed, 'assistant-reasoning--completed': !message.pending && !message.failed }">
+                <div class="assistant-reasoning-trigger">
+                  <span class="assistant-reasoning-duration">{{ huoquChuliXiangqing(message) }}</span>
+                </div>
               </div>
             </div>
-          </div>
-          <template v-if="message.role === 'assistant' && huoquShixuKuai(message).length">
-            <template v-for="block in huoquShixuKuai(message)" :key="block.id">
-              <div v-if="block.type === 'text'" class="assistant-markdown" v-html="xuanzaiMarkdown(block.content)"></div>
-              <div v-else-if="block.type === 'approval-result' || block.type === 'operation-result'" class="assistant-write-result" :class="`assistant-write-result--${huoquXieruJieguo(block.content, block.type === 'approval-result').tone}`" role="status">
+            <div class="assistant-tool-stream">
+              <template v-for="block in huoquGongjuChuliKuai(message)" :key="block.id">
+                <div v-if="block.type === 'text'" class="assistant-activity-note assistant-markdown" v-html="xuanzaiMarkdown(block.content)"></div>
+                <details v-else-if="block.type === 'tool'" class="assistant-tool-call" :class="`assistant-tool-call--${block.tool.status}`" :open="block.tool.status !== 'completed'">
+                  <summary>
+                    <span class="assistant-tool-call-label" :class="{ 'assistant-status-shimmer': block.tool.status === 'running' }">{{ block.tool.label }}</span>
+                    <small>{{ huoquToolZhuangtaiWenAn(block.tool) }}</small>
+                  </summary>
+                  <p v-if="block.tool.detail">{{ block.tool.detail }}</p>
+                </details>
+              </template>
+            </div>
+            <div v-if="yinggaiXianshiWenjianShengcheng(message)" class="assistant-activity-generating">
+              <span aria-hidden="true"></span>
+              {{ huoquWenjianShengchengWenAn(message) }}
+            </div>
+            <div v-else-if="yinggaiXianshiLiuShiDengdai(message)" class="assistant-activity-waiting">
+              <span aria-hidden="true"></span>
+              {{ huoquLiuShiDengdaiWenAn(message) }}
+            </div>
+            <div v-else-if="yinggaiXianshiSikao(message)" class="assistant-activity-thinking">
+              <span aria-hidden="true"></span>
+              正在思考
+            </div>
+            <template v-for="block in huoquGongjuJieguoKuai(message)" :key="block.id">
+              <div class="assistant-write-result" :class="`assistant-write-result--${huoquXieruJieguo(block.content, block.type === 'approval-result').tone}`" role="status">
                 <span class="assistant-write-result-icon" aria-hidden="true">
                   <PhX v-if="huoquXieruJieguo(block.content, block.type === 'approval-result').tone !== 'completed'" :size="13" weight="bold" />
                   <PhCheck v-else :size="13" weight="bold" />
@@ -402,10 +481,51 @@
                 </div>
               </div>
             </template>
+            <div v-if="huoquGongjuZuiZhongWenben(message)" class="assistant-markdown assistant-answer" v-html="xuanzaiMarkdown(huoquGongjuZuiZhongWenben(message))"></div>
           </template>
-          <div v-else-if="message.role === 'assistant' && message.content" class="assistant-markdown" v-html="xuanzaiMarkdown(message.content)"></div>
-          <p v-else>{{ message.content }}</p>
-          <span v-if="message.role === 'assistant' && huoquTokenXiaohao(message)" class="assistant-token-usage">{{ huoquTokenXiaohao(message) }}</span>
+          <template v-else>
+            <div
+              v-if="message.role === 'assistant' && yinggaiXianshiChuliGuocheng(message)"
+              class="assistant-activity"
+            >
+              <div class="assistant-reasoning" :class="{ 'assistant-reasoning--pending': message.pending, 'assistant-reasoning--failed': message.failed, 'assistant-reasoning--completed': !message.pending && !message.failed }">
+                <div class="assistant-reasoning-trigger">
+                  <span class="assistant-reasoning-duration">{{ huoquChuliXiangqing(message) }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="message.role === 'assistant' && yinggaiXianshiWenjianShengcheng(message)" class="assistant-activity-generating">
+              <span aria-hidden="true"></span>
+              {{ huoquWenjianShengchengWenAn(message) }}
+            </div>
+            <div v-else-if="message.role === 'assistant' && yinggaiXianshiLiuShiDengdai(message)" class="assistant-activity-waiting">
+              <span aria-hidden="true"></span>
+              {{ huoquLiuShiDengdaiWenAn(message) }}
+            </div>
+            <div v-else-if="message.role === 'assistant' && yinggaiXianshiSikao(message)" class="assistant-activity-thinking">
+              <span aria-hidden="true"></span>
+              正在思考
+            </div>
+            <template v-if="message.role === 'assistant' && huoquShixuKuai(message).length">
+              <template v-for="block in huoquShixuKuai(message)" :key="block.id">
+                <div v-if="block.type === 'text'" class="assistant-markdown assistant-answer" v-html="xuanzaiMarkdown(block.content)"></div>
+                <div v-else-if="block.type === 'approval-result' || block.type === 'operation-result'" class="assistant-write-result" :class="`assistant-write-result--${huoquXieruJieguo(block.content, block.type === 'approval-result').tone}`" role="status">
+                  <span class="assistant-write-result-icon" aria-hidden="true">
+                    <PhX v-if="huoquXieruJieguo(block.content, block.type === 'approval-result').tone !== 'completed'" :size="13" weight="bold" />
+                    <PhCheck v-else :size="13" weight="bold" />
+                  </span>
+                  <div>
+                    <small>{{ block.type === 'approval-result' ? '授权结果' : '操作结果' }}</small>
+                    <strong>{{ huoquXieruJieguo(block.content, block.type === 'approval-result').title }}</strong>
+                    <p>{{ huoquXieruJieguo(block.content, block.type === 'approval-result').content }}</p>
+                  </div>
+                </div>
+              </template>
+            </template>
+            <div v-else-if="message.role === 'assistant' && message.content" class="assistant-markdown assistant-answer" v-html="xuanzaiMarkdown(message.content)"></div>
+            <p v-else>{{ message.content }}</p>
+          </template>
+          <span v-if="message.role === 'assistant' && !message.pending && huoquTokenXiaohao(message)" class="assistant-token-usage">{{ huoquTokenXiaohao(message) }}</span>
         </div>
         <img v-if="message.role === 'user'" class="assistant-message-avatar assistant-message-avatar--user" :src="yonghuHuiFuIcon" alt="" aria-hidden="true">
       </article>
@@ -414,10 +534,10 @@
       <!-- 资料库变更在对话流内等待授权，用户无需离开当前上下文。 -->
       <section v-if="ziliaokuShouquanQingqiu" class="assistant-library-approval" :class="{ 'assistant-library-approval--danger': ziliaokuShouquanQingqiu.tone === 'danger' }" role="group" :aria-label="huoquShouquanBiaoti(ziliaokuShouquanQingqiu)">
         <div class="assistant-library-approval-head">
-          <span class="assistant-library-approval-icon" aria-hidden="true"><PhCheck :size="15" weight="bold" /></span>
+          <span class="assistant-library-approval-icon" aria-hidden="true"><PhKey :size="15" weight="bold" /></span>
           <div>
+            <small>需要授权</small>
             <strong>{{ huoquShouquanBiaoti(ziliaokuShouquanQingqiu) }}</strong>
-            <small>请确认后执行</small>
           </div>
         </div>
         <p class="assistant-library-approval-message">{{ ziliaokuShouquanQingqiu.message }}</p>
@@ -425,25 +545,25 @@
           <li v-for="detail in huoquShouquanMingxi(ziliaokuShouquanQingqiu)" :key="detail">{{ detail }}</li>
         </ul>
         <div class="assistant-library-approval-actions">
-          <button class="assistant-library-approval-reject" type="button" @click="huiyingZiliaokuShouquan(false)">暂不处理</button>
-          <button class="assistant-library-approval-allow" type="button" @click="huiyingZiliaokuShouquan(true)">{{ huoquShouquanAnniu(ziliaokuShouquanQingqiu) }}</button>
+          <button class="assistant-library-approval-reject" type="button" @click="huiyingZiliaokuShouquan('reject')">拒绝</button>
+          <button class="assistant-library-approval-allow" type="button" @click="huiyingZiliaokuShouquan('once')">允许本次</button>
+          <button class="assistant-library-approval-always" type="button" @click="huiyingZiliaokuShouquan('always')">本次启动始终允许</button>
         </div>
       </section>
     </div>
 
-    <button
-      v-if="isXianshiZuihouXiaoxi"
-      class="assistant-latest-button"
-      type="button"
-      aria-label="回到最新消息"
-      title="回到最新消息"
-      @click="gunDaoZuihou"
-    >
-      <PhArrowDown :size="14" weight="bold" />
-      <span>最新消息</span>
-    </button>
-
     <footer class="assistant-composer">
+      <button
+        v-if="isXianshiZuihouXiaoxi"
+        class="assistant-latest-button"
+        type="button"
+        aria-label="回到最新消息"
+        title="回到最新消息"
+        @click="gunDaoZuihou"
+      >
+        <PhArrowDown :size="14" weight="bold" />
+        <span>最新消息</span>
+      </button>
       <div class="assistant-composer-input">
         <textarea
           ref="shuruKuang"
@@ -455,50 +575,58 @@
           @keydown.enter.exact.prevent="tijiaoXiaoxi"
           @input="zhengliShuruKuangGaodu"
         ></textarea>
-        <div v-if="currentModel" class="assistant-composer-meta">
-          <button
-            class="assistant-thinking-trigger"
-            type="button"
-            :class="{ 'assistant-thinking-trigger--open': isThinkingMenuOpen }"
-            :disabled="!tuiliQiangduList.length || isBusy || isSwitchingThinking"
-            :aria-expanded="isThinkingMenuOpen"
-            :aria-label="`推理强度：${tuiliQiangduList.length ? huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) : '不可用'}`"
-            aria-haspopup="menu"
-            :title="tuiliQiangduList.length ? `推理强度：${huoquTuiliQiangduMingcheng(currentModel.thinkingLevel)}` : '当前模型不支持推理强度设置'"
-            @click.stop="isThinkingMenuOpen = !isThinkingMenuOpen"
-          >
-            <PhLightning :size="16" weight="fill" aria-hidden="true" />
-            <span v-if="tuiliQiangduList.length" class="assistant-thinking-level">{{ huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) }}</span>
-          </button>
-          <div v-if="isThinkingMenuOpen" class="assistant-thinking-menu" role="menu" aria-label="选择推理强度" @click.stop>
+      </div>
+      <div class="assistant-composer-toolbar">
+        <span v-if="currentModel" class="assistant-search-indicator" :title="`联网搜索来源：${sousuoLaiYuanMingcheng}`" aria-label="当前联网搜索来源">
+          <img :src="lianwangSousuoIcon" alt="" aria-hidden="true" draggable="false">
+          <span>{{ sousuoLaiYuanMingcheng }}</span>
+        </span>
+        <div class="assistant-composer-actions">
+          <div v-if="currentModel" class="assistant-composer-meta">
             <button
-              v-for="level in tuiliQiangduList"
-              :key="level"
+              class="assistant-thinking-trigger"
               type="button"
-              role="menuitemradio"
-              :class="{ 'is-active': level === currentModel.thinkingLevel }"
-              :aria-checked="level === currentModel.thinkingLevel"
-              :disabled="isSwitchingThinking || level === currentModel.thinkingLevel"
-              @click="qiehuanTuiliQiangdu(level)"
+              :class="{ 'assistant-thinking-trigger--open': isThinkingMenuOpen }"
+              :disabled="!tuiliQiangduList.length || isBusy || isSwitchingThinking"
+              :aria-expanded="isThinkingMenuOpen"
+              :aria-label="`推理强度：${tuiliQiangduList.length ? huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) : '不可用'}`"
+              aria-haspopup="menu"
+              :title="tuiliQiangduList.length ? `推理强度：${huoquTuiliQiangduMingcheng(currentModel.thinkingLevel)}` : '当前模型不支持推理强度设置'"
+              @click.stop="isThinkingMenuOpen = !isThinkingMenuOpen"
             >
-              <span>{{ huoquTuiliQiangduMingcheng(level) }}</span>
-              <PhCheck v-if="level === currentModel.thinkingLevel" :size="13" weight="bold" aria-hidden="true" />
+              <PhLightning :size="16" weight="fill" aria-hidden="true" />
+              <span v-if="tuiliQiangduList.length" class="assistant-thinking-level">{{ huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) }}</span>
             </button>
+            <div v-if="isThinkingMenuOpen" class="assistant-thinking-menu" role="menu" aria-label="选择推理强度" @click.stop>
+              <button
+                v-for="level in tuiliQiangduList"
+                :key="level"
+                type="button"
+                role="menuitemradio"
+                :class="{ 'is-active': level === currentModel.thinkingLevel }"
+                :aria-checked="level === currentModel.thinkingLevel"
+                :disabled="isSwitchingThinking || level === currentModel.thinkingLevel"
+                @click="qiehuanTuiliQiangdu(level)"
+              >
+                <span>{{ huoquTuiliQiangduMingcheng(level) }}</span>
+                <PhCheck v-if="level === currentModel.thinkingLevel" :size="13" weight="bold" aria-hidden="true" />
+              </button>
+            </div>
           </div>
+          <button
+            v-if="isBusy"
+            class="assistant-send assistant-send--stop"
+            type="button"
+            aria-label="停止生成"
+            title="停止生成"
+            @click="zhongzhi"
+          >
+            <PhStop :size="15" weight="fill" />
+          </button>
+          <button v-else class="assistant-send" type="button" aria-label="发送" title="发送" :disabled="isStatusLoading || !currentModel || !draft.trim()" @click="tijiaoXiaoxi">
+            <PhPaperPlaneRight :size="15" weight="bold" />
+          </button>
         </div>
-        <button
-          v-if="isBusy"
-          class="assistant-send assistant-send--stop"
-          type="button"
-          aria-label="停止生成"
-          title="停止生成"
-          @click="zhongzhi"
-        >
-          <PhStop :size="15" weight="fill" />
-        </button>
-        <button v-else class="assistant-send" type="button" aria-label="发送" title="发送" :disabled="isStatusLoading || !currentModel || !draft.trim()" @click="tijiaoXiaoxi">
-          <PhPaperPlaneRight :size="15" weight="bold" />
-        </button>
       </div>
     </footer>
       </main>
@@ -516,6 +644,7 @@ import { xuanzaiMarkdown } from '@/utils/markdown'
 import aiBiaotiIcon from '@/assets/images/ai-title-mascot.png'
 import aiHuiFuIcon from '@/assets/images/chat-assistant-avatar.png'
 import yonghuHuiFuIcon from '@/assets/images/chat-user-avatar.png'
+import lianwangSousuoIcon from '@/assets/icons/lianwang-sousuo.svg'
 import aiZhushouShiyongWendang from '../../docs/ai-assistant-guide.md?raw'
 
 const emit = defineEmits(['back', 'request-provider-cleanup', 'request-conversation-delete'])
@@ -545,6 +674,13 @@ const {
   shezhiTuiliQiangdu,
   addProvider,
   qingliProvider,
+  searchProvider,
+  isAnySearchKeyConfigured,
+  anysearchKeyMask,
+  isSavingSearchKey,
+  jiazaiSearchConfig,
+  shezhiSearchProvider,
+  baocunAnySearchApiKey,
   kaishiJianting,
 } = usePiAssistant()
 
@@ -554,7 +690,7 @@ watch(ziliaokuShouquanQingqiu, (request) => {
 })
 
 onUnmounted(() => {
-  if (ziliaokuShouquanQingqiu.value) void huiyingZiliaokuShouquan(false)
+  if (ziliaokuShouquanQingqiu.value) void huiyingZiliaokuShouquan('reject')
 })
 
 const draft = ref('')
@@ -581,6 +717,9 @@ const customKey = ref('')
 let zidingyiMingchengLastAuto = ''
 const isAddingProvider = ref(false)
 const keyMask = '••••••'
+const anysearchKey = ref('')
+const anysearchKeyInputType = ref('password')
+const ANYSEARCH_GUIZE_URL = 'https://www.anysearch.com/pricing'
 const moxingKeyword = ref('')
 const moxingZhanshiCount = ref({})
 let scrollFrame = 0
@@ -591,12 +730,49 @@ const modelBatchSize = 80
 const isJinZuihou = ref(true)
 const zuihouJuliYuzhi = 72
 const chuliJishiNow = ref(Date.now())
+const liushiDengdaiYuzhi = 1200
+const liushiChangDengdaiYuzhi = 8000
 
 function isGongjuJinxing(message) {
   return message?.toolCalls?.some((tool) => tool.status === 'running') ?? false
 }
 
-// 时序块直接映射到工具详情，确保工具与文本按流式事件抵达的先后显示。
+// 已有可见回复时不再显示思考状态，避免与正文重复表达处理进度。
+function yinggaiXianshiSikao(message) {
+  return Boolean(message?.pending && !isGongjuJinxing(message) && !String(message?.content ?? '').trim())
+}
+
+// 文件已获授权但工具尚未启动时，使用专用生成状态衔接两个阶段。
+function yinggaiXianshiWenjianShengcheng(message) {
+  return Boolean(message?.pending && message?.wenjianShengchengZhong && message?.wenjianShengchengWenAn)
+}
+
+function huoquWenjianShengchengWenAn(message) {
+  return String(message?.wenjianShengchengWenAn ?? '正在生成文件')
+}
+
+// 已输出内容后的短暂静默仍应说明处理状态，避免等待期间留下无提示空白。
+function huoquLiuShiDengdaiHaoshi(message) {
+  return Math.max(0, chuliJishiNow.value - Number(message?.lastActivityAt ?? message?.startedAt ?? 0))
+}
+
+function yinggaiXianshiLiuShiDengdai(message) {
+  return Boolean(
+    message?.pending
+    && !isGongjuJinxing(message)
+    && !yinggaiXianshiWenjianShengcheng(message)
+    && String(message?.content ?? '').trim()
+    && huoquLiuShiDengdaiHaoshi(message) >= liushiDengdaiYuzhi,
+  )
+}
+
+function huoquLiuShiDengdaiWenAn(message) {
+  return huoquLiuShiDengdaiHaoshi(message) >= liushiChangDengdaiYuzhi
+    ? '仍在处理，可停止后重试'
+    : '正在继续处理'
+}
+
+// 时序块直接映射到工具详情，确保每次调用都按流式事件抵达的先后显示。
 function huoquShixuKuai(message) {
   const tools = new Map((message?.toolCalls ?? []).map((tool) => [tool.id, tool]))
   return (message?.timeline ?? [])
@@ -606,27 +782,6 @@ function huoquShixuKuai(message) {
     .filter((block) => block.type === 'tool'
       ? Boolean(block.tool)
       : ['text', 'approval-result', 'operation-result'].includes(block.type) && Boolean(block.content))
-    .reduce((blocks, block) => {
-      if (block.type !== 'tool') {
-        blocks.push(block)
-        return blocks
-      }
-      const lastBlock = blocks.at(-1)
-      if (lastBlock?.type !== 'tool' || lastBlock.tool.name !== block.tool.name) {
-        blocks.push({ ...block, tools: [block.tool], count: 1 })
-        return blocks
-      }
-      const tools = [...lastBlock.tools, block.tool]
-      const status = tools.some((tool) => tool.status === 'running')
-        ? 'running'
-        : tools.some((tool) => tool.status === 'failed')
-          ? 'failed'
-          : 'completed'
-      lastBlock.tools = tools
-      lastBlock.tool = { ...block.tool, status }
-      lastBlock.count = tools.length
-      return blocks
-    }, [])
 }
 
 // 写入结果需同时说明用户决定与最终影响，失败则明确区分为执行问题。
@@ -649,6 +804,31 @@ function yinggaiXianshiChuliGuocheng(message) {
   return Boolean(message?.pending || message?.toolCalls?.length || message?.completedAt)
 }
 
+function yinggaiXianshiGongjuJilu(message) {
+  return Boolean(message?.toolCalls?.length)
+}
+
+// 最后一段工具调用后的文本作为最终回复保留在摘要外，其余记录归入可展开的执行过程。
+function huoquGongjuChuliKuai(message) {
+  const blocks = huoquShixuKuai(message)
+  const lastToolIndex = blocks.reduce((index, block, currentIndex) => block.type === 'tool' ? currentIndex : index, -1)
+  const lastIndex = blocks.length - 1
+  const isZuiZhongWenben = lastToolIndex >= 0 && lastIndex > lastToolIndex && blocks[lastIndex]?.type === 'text'
+  return blocks.filter((block, index) => !['approval-result', 'operation-result'].includes(block.type) && !(isZuiZhongWenben && index === lastIndex))
+}
+
+function huoquGongjuJieguoKuai(message) {
+  return huoquShixuKuai(message).filter((block) => ['approval-result', 'operation-result'].includes(block.type))
+}
+
+function huoquGongjuZuiZhongWenben(message) {
+  const blocks = huoquShixuKuai(message)
+  const lastToolIndex = blocks.reduce((index, block, currentIndex) => block.type === 'tool' ? currentIndex : index, -1)
+  const lastIndex = blocks.length - 1
+  const block = blocks[lastIndex]
+  return lastToolIndex >= 0 && lastIndex > lastToolIndex && block?.type === 'text' ? block.content : ''
+}
+
 // 等待授权时仅保留授权卡，避免与当前助手的工具执行卡重复呈现同一项操作。
 function yinggaiYincangShouquanQianXiaoxi(message, index) {
   return Boolean(
@@ -669,16 +849,9 @@ function geshiChuliShijian(startedAt, completedAt = 0) {
   return `${Math.round(milliseconds / 1000)} 秒`
 }
 
-function huoquChuliZhuangtai(message) {
-  if (message?.pending) return isGongjuJinxing(message) ? (message.toolLabel || '正在处理') : '正在思考'
-  if (message?.failed) return '处理失败'
-  return ''
-}
-
 function huoquChuliXiangqing(message) {
-  if (message?.pending) return ''
   const shijian = geshiChuliShijian(message?.startedAt, message?.completedAt)
-  return shijian ? `耗时 ${shijian}` : ''
+  return shijian ? `${message?.pending ? '已用时' : '耗时'} ${shijian}` : ''
 }
 
 // 仅显示供应商返回的真实输出 token，避免把字符数或估算值当作消耗。
@@ -689,7 +862,12 @@ function huoquTokenXiaohao(message) {
 }
 
 function huoquToolZhuangtaiWenAn(tool) {
-  if (tool?.status === 'running') return '进行中'
+  // 文件生成工具在执行期间明确展示“生成中”，普通工具仍使用通用状态。
+  if (tool?.status === 'running') {
+    return ['create_docx_copy', 'create_xlsx_workbook', 'create_markdown_file', 'create_pdf_document'].includes(tool?.name)
+      ? '生成中'
+      : '进行中'
+  }
   if (tool?.status === 'failed') return '未完成'
   return tool?.count > 1 ? `已执行 ${tool.count} 次` : '已完成'
 }
@@ -708,17 +886,6 @@ function huoquShouquanBiaoti(request) {
     .replace(/[？?]$/u, '')
 }
 
-function huoquShouquanAnniu(request) {
-  const title = huoquShouquanBiaoti(request)
-  if (title.includes('归档')) return '确认归档'
-  if (title.includes('删除') || title.includes('移除')) return '确认删除'
-  if (title.includes('重命名')) return '确认重命名'
-  if (title.includes('笔记')) return '确认更新'
-  if (['Word', 'Excel', 'Markdown', 'PDF'].some((keyword) => title.includes(keyword))) return '确认生成'
-  if (title.includes('保存')) return '确认保存'
-  return '确认执行'
-}
-
 const currentModel = computed(() => status.value?.current ?? null)
 const tuiliQiangduList = computed(() => currentModel.value?.thinkingLevels ?? [])
 const aiZhushouShiyongWendangHtml = computed(() => xuanzaiMarkdown(aiZhushouShiyongWendang))
@@ -729,6 +896,7 @@ const shiyongWendangShili = [
   { title: '保存一份结果', prompt: '把这份总结保存到收集箱，标题叫“竞品调研要点”。' },
 ]
 const currentModelName = computed(() => (isStatusLoading.value ? '正在准备' : currentModel.value ? currentModel.value.name : '未配置模型'))
+const sousuoLaiYuanMingcheng = computed(() => (searchProvider.value === 'anysearch' ? 'AnySearch' : '必应'))
 const huanyingYuanwen = computed(() => (isStatusLoading.value ? '正在准备助手…' : currentModel.value ? '有什么可以帮你?' : '配置模型后开始对话'))
 const huanyingYiShuru = ref('')
 const isHuanyingDaziWancheng = ref(false)
@@ -937,8 +1105,10 @@ async function chushihua() {
   kaishiJianting()
   await jiazaiHuihua()
   await jiazaiStatus()
+  await jiazaiSearchConfig()
   if (status.value?.keyProviders?.length) selectedProvider.value = status.value.keyProviders[0].id
   chuliProviderBianhua()
+  tianchongAnySearchKeyMask()
 }
 
 // 首帧完成后再加载 Pi 运行时，避免首次进入助手页与主进程初始化争用界面响应。
@@ -971,7 +1141,7 @@ function dakaiGongyingshangConfig() {
 // 有密钥则显示打码，无密钥则为空；聚焦进入编辑态，失焦未保存则还原。
 function tianchongMask() {
   if (currentSelectedProvider.value?.configured) {
-    apiKey.value = keyMask
+    apiKey.value = currentSelectedProvider.value.apiKeyMask || keyMask
     keyInputType.value = 'text'
   } else {
     apiKey.value = ''
@@ -994,6 +1164,54 @@ function chuliApiKeyBlur() {
   tianchongMask()
 }
 
+// AnySearch 密钥沿用供应商密钥的打码交互：已配置显示掩码，聚焦进入编辑态。
+function tianchongAnySearchKeyMask() {
+  if (isAnySearchKeyConfigured.value) {
+    anysearchKey.value = anysearchKeyMask.value || keyMask
+    anysearchKeyInputType.value = 'text'
+  } else {
+    anysearchKey.value = ''
+    anysearchKeyInputType.value = 'password'
+  }
+}
+
+function chuliAnySearchKeyFocus() {
+  if (anysearchKeyInputType.value === 'text') {
+    anysearchKey.value = ''
+    anysearchKeyInputType.value = 'password'
+  }
+}
+
+function chuliAnySearchKeyBlur() {
+  tianchongAnySearchKeyMask()
+}
+
+// 切换搜索来源即时持久化，切换失败由状态提示反馈。
+async function qiehuanSearchSource(provider) {
+  if (isSavingSearchKey.value || provider === searchProvider.value) return
+  await shezhiSearchProvider(provider)
+}
+
+// 保存 AnySearch 密钥，掩码未变化时跳过。
+async function tijiaoAnySearchKey() {
+  const value = anysearchKey.value.trim()
+  if (isAnySearchKeyConfigured.value && value === (anysearchKeyMask.value || keyMask)) return
+  const chenggong = await baocunAnySearchApiKey(value)
+  if (chenggong) tianchongAnySearchKeyMask()
+}
+
+// 清除时提交空密钥，主进程据此移除存储。
+async function qingchuAnySearchKey() {
+  if (isSavingSearchKey.value) return
+  const chenggong = await baocunAnySearchApiKey('')
+  if (chenggong) tianchongAnySearchKeyMask()
+}
+
+// 打开 AnySearch 官方配额与价格说明页。
+function dakaiAnySearchGuize() {
+  window.aetherDock?.openExternalUrl(ANYSEARCH_GUIZE_URL)
+}
+
 // 自定义选择菜单沿用原有供应商状态和密钥预填逻辑。
 function qiehuanProvider(providerId) {
   if (!providerId || isSavingKey.value) return
@@ -1006,7 +1224,7 @@ async function baocunProviderKey() {
   const provider = selectedProvider.value || status.value?.keyProviders?.[0]?.id
   const value = apiKey.value.trim()
   if (!provider || !value) return
-  if (currentSelectedProvider.value?.configured && value === keyMask) return
+  if (currentSelectedProvider.value?.configured && value === (currentSelectedProvider.value.apiKeyMask || keyMask)) return
   const chenggong = await shezhiProviderKey(provider, value)
   if (chenggong) {
     tianchongMask()
@@ -1252,6 +1470,9 @@ onUnmounted(() => {
 .assistant-config-row { display: grid; grid-template-columns: minmax(0, 160px) minmax(0, 1fr); gap: 10px; }
 .assistant-field { display: grid; gap: 4px; }
 .assistant-field > span { color: #687168; font: 650 10px var(--font-body); letter-spacing: .04em; }
+
+/* 说明 AnySearch 填 Key 与匿名的额度差异，弱化呈现避免干扰主操作。 */
+.assistant-search-note { margin: 1px 0 2px; color: #7c867d; font: 500 10px/1.5 var(--font-body); }
 
 .assistant-configured { margin: 0; color: var(--ink-muted); font: 600 11px var(--font-body); }
 .assistant-configured--empty { color: var(--ink-faint); }
@@ -1519,22 +1740,22 @@ onUnmounted(() => {
   gap: 9px;
   padding: 12px 13px 11px;
   border: 1px solid rgba(44, 65, 47, .17);
-  border-left: 3px solid #5c8f61;
+  border-left: 3px solid #a87c35;
   border-radius: 12px;
   background: rgba(255, 255, 255, .82);
   box-shadow: 0 5px 16px rgba(39, 64, 42, .06), inset 0 1px rgba(255, 255, 255, .86);
 }
 .assistant-library-approval--danger { border-color: rgba(133, 69, 60, .2); border-left-color: #ad6258; }
 .assistant-library-approval-head { display: flex; align-items: center; gap: 7px; }
-.assistant-library-approval-icon { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid rgba(70, 120, 75, .22); border-radius: 7px; background: #edf6e9; color: #4c824f; }
+.assistant-library-approval-icon { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid rgba(152, 112, 46, .24); border-radius: 7px; background: #fff7e8; color: #96702f; }
 .assistant-library-approval--danger .assistant-library-approval-icon { border-color: rgba(173, 98, 88, .2); background: #fff0ed; color: #a34f46; }
-.assistant-library-approval-head div { display: grid; gap: 1px; }
+.assistant-library-approval-head div { display: grid; gap: 2px; }
 .assistant-library-approval-head strong { color: #2c392d; font: 750 12px/1.25 var(--assistant-font-sans); }
-.assistant-library-approval-head small { color: #738075; font: 600 9px/1.25 var(--assistant-font-sans); }
+.assistant-library-approval-head small { color: #8e7650; font: 700 9px/1.25 var(--assistant-font-sans); letter-spacing: .04em; }
 .assistant-library-approval-message { margin: 1px 0 0; color: #49584b; font: 12px/1.5 var(--assistant-font-sans); }
 .assistant-library-approval-detail { display: grid; gap: 4px; max-height: 92px; margin: 0; padding: 8px 0 0; overflow: auto; border-top: 1px solid rgba(44, 65, 47, .1); color: #657268; font: 10px/1.45 var(--assistant-font-sans); list-style: none; }
 .assistant-library-approval-detail li { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.assistant-library-approval-actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 2px; }
+.assistant-library-approval-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding-top: 2px; }
 .assistant-library-approval-actions button { min-width: 72px; padding: 7px 10px; border-radius: 8px; cursor: pointer; font: 700 10px/1 var(--assistant-font-sans); transition: transform 150ms var(--motion-easing), background 150ms ease, border-color 150ms ease; white-space: nowrap; }
 .assistant-library-approval-actions button:hover { transform: translateY(-1px); }
 .assistant-library-approval-actions button:active { transform: translateY(0); }
@@ -1542,19 +1763,29 @@ onUnmounted(() => {
 .assistant-library-approval-reject:hover { border-color: rgba(44, 65, 47, .28); background: rgba(44, 65, 47, .04); color: #455246; }
 .assistant-library-approval-allow { border: 1px solid #263d29; background: #263d29; color: #fff; }
 .assistant-library-approval-allow:hover { border-color: #345d39; background: #345d39; }
+.assistant-library-approval-always { border: 1px solid rgba(44, 65, 47, .22); background: #edf4ec; color: #38513b; }
+.assistant-library-approval-always:hover { border-color: rgba(44, 65, 47, .38); background: #e2eee0; }
 .assistant-library-approval--danger .assistant-library-approval-allow { border-color: #9d4e45; background: #9d4e45; }
 .assistant-library-approval--danger .assistant-library-approval-allow:hover { border-color: #b75c50; background: #b75c50; }
+.assistant-library-approval--danger .assistant-library-approval-always { border-color: rgba(157, 78, 69, .26); background: #fff0ed; color: #914a42; }
+.assistant-library-approval--danger .assistant-library-approval-always:hover { border-color: rgba(157, 78, 69, .44); background: #fde4df; }
 .assistant-library-approval-actions button:focus-visible { outline: 2px solid rgba(74, 121, 62, .42); outline-offset: 2px; }
 
-.assistant-tool-chip {
-  display: inline-block;
-  margin-top: 5px;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: #e2f1da;
-  color: #397b32;
-  font: 600 10px var(--font-mono);
-}
+/* 工具以独立的紧凑行呈现，完成后默认收起输入细节。 */
+.assistant-tool-stream { display: grid; gap: 2px; margin: 0 0 10px; }
+.assistant-tool-call { min-width: 0; color: #708072; font: 600 10px/1.45 var(--assistant-font-sans); }
+.assistant-tool-call summary { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 25px; padding: 3px 0; cursor: pointer; list-style: none; }
+.assistant-tool-call summary::-webkit-details-marker { display: none; }
+.assistant-tool-call summary::before { width: 5px; height: 5px; border-radius: 50%; background: #6f9a72; content: ''; }
+.assistant-tool-call--completed { color: #879087; }
+.assistant-tool-call--completed summary::before { display: grid; width: 8px; height: 8px; place-items: center; border-radius: 0; background: transparent; color: #6f9a72; content: '✓'; font: 700 9px/1 var(--assistant-font-sans); }
+.assistant-tool-call--running summary::before { animation: assistant-tool-call-pulse 1.1s ease-in-out infinite; }
+.assistant-tool-call--failed { color: #9a5b51; }
+.assistant-tool-call--failed summary::before { background: #b35d53; }
+.assistant-tool-call-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-tool-call small { flex: 0 0 auto; color: #929b93; font: 600 9px/1 var(--assistant-font-mono); }
+.assistant-tool-call p { margin: 0 0 5px 14px; padding: 5px 8px; border-left: 1px solid rgb(72 91 74 / 14%); color: #7d887e; font: 500 9px/1.45 var(--assistant-font-mono); overflow-wrap: anywhere; }
+@keyframes assistant-tool-call-pulse { 50% { opacity: .45; } }
 
 .assistant-typing { display: inline-flex; gap: 3px; align-items: center; height: 16px; }
 .assistant-typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-faint); animation: assistant-typing-dot 900ms ease-in-out infinite; }
@@ -1656,6 +1887,8 @@ onUnmounted(() => {
   --assistant-paper: #fafafa;
   --assistant-paper-deep: #f0f0f0;
   --assistant-paper-white: #fbfcfa;
+  --assistant-titlebar-paper: #ececec;
+  --assistant-sidebar-paper: var(--assistant-titlebar-paper);
   --assistant-sidebar-width: 216px;
   --assistant-graphite: var(--ink);
   --assistant-pencil: #657067;
@@ -1690,7 +1923,7 @@ onUnmounted(() => {
   gap: 11px;
   padding: 0 17px;
   border-bottom: 1px solid var(--border-ink);
-  background: #ececec;
+  background: var(--assistant-titlebar-paper);
   box-shadow: 0 4px 14px rgb(15 17 16 / 6%);
 }
 
@@ -1704,7 +1937,7 @@ onUnmounted(() => {
   gap: 10px;
   padding: 14px 10px 12px;
   border-right: 1px solid var(--border-ink);
-  background: #f4f6f2;
+  background: var(--assistant-sidebar-paper);
   overflow: hidden;
   transition: width 220ms var(--motion-easing), flex-basis 220ms var(--motion-easing), padding 220ms var(--motion-easing), border-color 160ms ease, opacity 160ms ease;
 }
@@ -2241,6 +2474,67 @@ onUnmounted(() => {
 }
 .assistant-protocol-option--selected:hover { background: var(--assistant-graphite); color: var(--assistant-paper-white); }
 
+/* 搜索来源以单选项卡片呈现，明确标出当前使用中的来源。 */
+.assistant-search-source { display: grid; gap: 6px; }
+.assistant-search-source-option {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 66%);
+  color: var(--assistant-graphite);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+.assistant-search-source-option:hover:not(:disabled) { border-color: var(--assistant-graphite); }
+.assistant-search-source-option:disabled { cursor: wait; opacity: .6; }
+.assistant-search-source-option--active {
+  border-color: rgba(33, 140, 0, .5);
+  background: var(--assistant-accent-soft);
+  box-shadow: inset 3px 0 0 var(--assistant-accent);
+}
+.assistant-search-source-copy { display: grid; min-width: 0; gap: 1px; }
+.assistant-search-source-copy strong { color: var(--assistant-graphite); font: 700 12px/1.25 var(--font-body); }
+.assistant-search-source-copy small { color: var(--assistant-pencil); font: 500 10px/1.3 var(--font-body); }
+.assistant-search-source-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  color: var(--assistant-pencil);
+  font: 700 10px var(--font-body);
+}
+.assistant-search-source-option--active .assistant-search-source-state { color: var(--accent-deep); }
+.assistant-search-note { margin: 1px 0 2px; color: var(--assistant-pencil); font: 500 10px/1.6 var(--font-body); }
+.assistant-search-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2c7a3d;
+  cursor: pointer;
+  font: 600 10px/1.6 var(--font-body);
+  text-decoration: underline;
+}
+.assistant-search-link:hover { color: #1f5e2c; }
+
+/* 输入框右侧的当前搜索来源标识，仅作状态展示，避免形似可点击按钮。 */
+.assistant-search-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--assistant-pencil);
+  font: 600 10px var(--assistant-font-sans);
+  white-space: nowrap;
+}
+.assistant-search-indicator img { width: 15px; height: 15px; flex: 0 0 auto; }
+
 /* 搜索图标独立定位，输入文字保持稳定的左侧对齐。 */
 .assistant-model-search {
   position: relative;
@@ -2348,8 +2642,8 @@ onUnmounted(() => {
 .assistant-latest-button {
   position: absolute;
   z-index: 2;
-  right: 20px;
-  bottom: 80px;
+  right: 8px;
+  bottom: calc(100% + 8px);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2469,14 +2763,43 @@ onUnmounted(() => {
 :deep(.assistant-markdown pre) { margin: 10px 0; padding: 10px; overflow: auto; border: 1px solid var(--border-ink); border-radius: 8px; background: #f4f6f1; }
 :deep(.assistant-markdown pre code) { padding: 0; background: transparent; color: var(--ink); }
 :deep(.assistant-markdown blockquote) { margin: 9px 0; padding: 5px 0 5px 10px; border-left: 3px solid var(--accent-deep); color: var(--ink-soft); }
+/* 助手正文采用稳定的阅读节奏，避免工具记录与正式回答争夺视觉层级。 */
+.assistant-answer { max-width: 64ch; color: #344036; font-size: 14px; line-height: 1.82; letter-spacing: .003em; }
+.assistant-answer :deep(p) { margin-bottom: 13px; }
+.assistant-answer :deep(h1),
+.assistant-answer :deep(h2),
+.assistant-answer :deep(h3),
+.assistant-answer :deep(h4) { color: #283329; font-weight: 760; }
+.assistant-answer :deep(h1) { margin: 22px 0 10px; font-size: 20px; letter-spacing: -.012em; }
+.assistant-answer :deep(h2) { margin: 24px 0 10px; padding-bottom: 6px; border-bottom-color: rgb(72 91 74 / 16%); font-size: 16px; }
+.assistant-answer :deep(h3) { margin: 19px 0 8px; font-size: 14px; }
+.assistant-answer :deep(h4) { margin: 16px 0 7px; font-size: 13px; }
+.assistant-answer :deep(ul),
+.assistant-answer :deep(ol) { margin: 9px 0 14px; padding-left: 22px; }
+.assistant-answer :deep(li + li) { margin-top: 5px; }
+.assistant-answer :deep(blockquote) { margin: 13px 0; padding: 8px 12px; border-left-color: #6c9a70; border-radius: 0 7px 7px 0; background: rgb(110 151 109 / 8%); color: #536156; }
+.assistant-answer :deep(a) { color: #3e7744; font-weight: 650; text-decoration-color: rgb(62 119 68 / 42%); text-underline-offset: 2px; }
+.assistant-answer :deep(hr) { height: 1px; margin: 18px 0; border: 0; background: rgb(72 91 74 / 14%); }
+.assistant-answer :deep(table) { display: block; max-width: 100%; margin: 14px 0; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
+.assistant-answer :deep(th),
+.assistant-answer :deep(td) { padding: 7px 9px; border: 1px solid rgb(72 91 74 / 14%); text-align: left; vertical-align: top; }
+.assistant-answer :deep(th) { background: rgb(110 151 109 / 9%); color: #334635; font-weight: 750; }
 /* 执行过程使用紧凑任务清单，避免呈现为调试日志。 */
 .assistant-activity {
   min-width: 0;
   margin: 0 0 12px;
 }
-/* 完成耗时与后续正文分隔，保持生成过程的阅读层级。 */
-.assistant-activity--completed {
-  margin-bottom: 14px;
+.assistant-activity-note { margin: 0 0 7px; color: #5f6d61; font-size: 10px; }
+.assistant-activity-note :deep(p) { margin: 0; }
+.assistant-activity-thinking,
+.assistant-activity-generating,
+.assistant-activity-waiting { display: flex; align-items: center; gap: 6px; padding-top: 7px; color: #7d897e; font: 600 10px/1.4 var(--assistant-font-sans); }
+.assistant-activity-thinking span,
+.assistant-activity-generating span,
+.assistant-activity-waiting span { width: 5px; height: 5px; border-radius: 50%; background: #6f9a72; animation: assistant-tool-call-pulse 1.1s ease-in-out infinite; }
+/* 耗时区域始终与后续内容分隔，避免处理状态切换时版面跳动。 */
+.assistant-activity {
+  margin-bottom: 8px;
   padding-bottom: 10px;
   border-bottom: 1px solid rgb(72 91 74 / 14%);
 }
@@ -2516,41 +2839,58 @@ onUnmounted(() => {
   border: 0;
   background: transparent;
   color: #8c938c;
-  cursor: default;
+  cursor: pointer;
   font: 500 12px/1.5 var(--assistant-font-sans);
   letter-spacing: .005em;
   text-align: left;
   user-select: none;
 }
+.assistant-activity-caret { flex: 0 0 auto; margin-left: -2px; transition: transform 160ms var(--motion-easing); }
+.assistant-activity[open] .assistant-activity-caret { transform: rotate(90deg); }
 .assistant-status-shimmer {
-  color: #627064;
-  animation: assistant-tool-text-blink 3s ease-in-out infinite;
+  color: transparent;
+  background: linear-gradient(90deg, #627064 0%, #627064 38%, #aeb8af 50%, #627064 62%, #627064 100%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: assistant-tool-text-shimmer 1.8s linear infinite;
 }
+.assistant-reasoning-status { margin-top: 2px; font: 500 10px/1.4 var(--assistant-font-sans); }
 .assistant-reasoning-duration {
   color: #969d96;
   font-weight: 400;
 }
-@keyframes assistant-tool-text-blink {
-  0%, 18%, 100% { opacity: 1; }
-  48%, 68% { opacity: .28; }
+@keyframes assistant-tool-text-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -120% 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .assistant-status-shimmer { animation: none; }
+  .assistant-status-shimmer { animation: none; color: #627064; background: none; }
 }
 
-/* 输入区以统一的细分割线收束，保留纸张底色。 */
+/* 输入区改为双层卡片，先保证编辑空间，再放置上下文与发送操作。 */
 .assistant-composer {
+  position: relative;
   display: grid;
-  gap: 10px;
+  gap: 5px;
   align-items: stretch;
-  padding: 13px 17px 15px;
-  border-top: 1px solid var(--border-ink);
-  background: rgb(250 250 250 / 94%);
-  box-shadow: 0 -4px 14px rgb(15 17 16 / 4%);
+  margin: 0 12px 12px;
+  padding: 9px 11px 8px;
+  border: 1px solid rgb(41 48 45 / 14%);
+  border-radius: 15px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 4px 14px rgb(15 17 16 / 7%);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
-.assistant-composer-meta { position: relative; display: flex; width: auto; height: 40px; flex: 0 0 auto; align-items: center; }
-/* 输入区操作仅保留图标，避免按钮底色打断输入框的整体感。 */
-.assistant-thinking-trigger { display: flex; width: auto; min-width: 40px; height: 40px; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); transition: color 150ms ease, transform 150ms var(--motion-easing); }
+.assistant-composer:focus-within {
+  border-color: rgb(41 48 45 / 30%);
+  box-shadow: 0 4px 14px rgb(15 17 16 / 7%), 0 0 0 3px rgb(99 254 19 / 12%);
+}
+.assistant-composer-toolbar { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 10px; }
+.assistant-composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+.assistant-composer-meta { position: relative; display: flex; width: auto; height: 30px; flex: 0 0 auto; align-items: center; }
+/* 操作组使用紧凑尺寸，让注意力始终停留在输入内容。 */
+.assistant-thinking-trigger { display: flex; width: auto; min-width: 30px; height: 30px; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; border: 0; border-radius: 7px; background: transparent; box-shadow: none; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); transition: color 150ms ease, transform 150ms var(--motion-easing); }
 .assistant-thinking-trigger:hover:not(:disabled),
 .assistant-thinking-trigger--open { background: transparent; color: var(--assistant-graphite); }
 .assistant-thinking-trigger:active:not(:disabled) { transform: translateY(0) scale(.98); }
@@ -2562,18 +2902,18 @@ onUnmounted(() => {
 .assistant-thinking-menu button { display: flex; width: 100%; min-height: 30px; align-items: center; justify-content: space-between; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); text-align: left; }
 .assistant-thinking-menu button:hover:not(:disabled) { background: rgb(15 17 16 / 5%); color: var(--assistant-graphite); }
 .assistant-thinking-menu button.is-active { background: var(--assistant-accent-soft); color: var(--assistant-graphite); cursor: default; }
-.assistant-composer-input { display: flex; min-width: 0; align-items: flex-end; gap: 10px; }
-/* 推理与发送属于同一操作组，间距比输入框侧更紧凑。 */
-.assistant-composer-meta + .assistant-send { margin-left: -6px; }
+.assistant-composer-input { display: flex; min-width: 0; }
 .assistant-composer textarea {
   box-sizing: border-box;
-  min-height: 40px;
+  display: block;
+  width: 100%;
+  min-height: 46px;
   max-height: 128px;
-  padding: 9px 11px;
-  border: 1px solid var(--border-ink);
-  border-radius: 10px;
-  background: rgb(255 255 255 / 76%);
-  box-shadow: inset 0 -2px rgb(41 48 45 / 6%);
+  padding: 6px 2px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
   color: var(--assistant-graphite);
   font: 12px/1.5 var(--assistant-font-mono);
   overflow-y: hidden;
@@ -2581,25 +2921,25 @@ onUnmounted(() => {
 }
 .assistant-composer textarea::placeholder { color: var(--assistant-faint); }
 .assistant-composer textarea:focus {
-  border-color: rgba(33, 140, 0, .56);
-  background: var(--paper-white);
   outline: 0;
-  box-shadow: 0 0 0 3px rgb(99 254 19 / 14%);
 }
 .assistant-composer textarea:disabled { background: var(--assistant-paper-deep); color: var(--assistant-faint); }
 .assistant-send {
-  width: 40px;
-  height: 40px;
-  flex-basis: 40px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
   border: 0;
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 50%;
+  background: var(--assistant-graphite);
   box-shadow: none;
-  color: #43a854;
-  transition: color 150ms ease, transform 150ms var(--motion-easing);
+  color: var(--assistant-paper-white);
+  transition: background 150ms ease, color 150ms ease, transform 150ms var(--motion-easing);
 }
-.assistant-send:hover:not(:disabled) { background: transparent; color: #27833a; transform: translateY(-1px); }
+.assistant-send:hover:not(:disabled) { background: #3f4b40; color: #fff; transform: translateY(-1px); }
 .assistant-send:active:not(:disabled) { transform: translateY(0) scale(.98); }
+.assistant-send:disabled { background: rgb(41 48 45 / 20%); color: rgb(255 255 255 / 68%); }
 /* 终止控制保留清晰边界，避免只显示孤立的红色方块。 */
 .assistant-send--stop {
   border: 1px solid rgb(181 74 64 / 38%);

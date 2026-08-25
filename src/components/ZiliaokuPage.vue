@@ -301,7 +301,12 @@
           <div class="library-detail-content">
             <div v-if="detailData.preview.type !== 'none'" class="library-detail-preview">
               <img v-if="detailData.preview.type === 'image'" :src="detailData.preview.content" alt="资料预览">
-              <iframe v-else-if="detailData.preview.type === 'pdf'" :src="detailData.preview.content" title="PDF 预览"></iframe>
+              <iframe
+                v-else-if="detailData.preview.type === 'pdf'"
+                class="library-detail-pdf"
+                :src="detailData.preview.content"
+                title="PDF 预览"
+              ></iframe>
               <pre v-else-if="detailData.preview.type === 'text'">{{ detailData.preview.content }}</pre>
             </div>
             <dl v-if="detailMetaItems.length" class="library-detail-meta">
@@ -559,6 +564,7 @@ async function baocunKuaishuYulan() {
 }
 
 const keshikapianRange = 4
+const shujiaKapianJiange = 204
 
 function guolvCurrentItemRecord(record, items = currentItems.value) {
   const nextRecord = {}
@@ -1381,7 +1387,7 @@ function huoquCardStyle(offset) {
   const distance = Math.abs(offset)
   const angle = offset === 0 ? 0 : (offset < 0 ? 1 : -1) * Math.min(32 + distance * 12, 62)
   return {
-    transform: `translateX(calc(-50% + ${offset * 184}px)) translateZ(${-distance * 55}px) rotateY(${angle}deg) scale(${Math.max(1 - distance * .12, .72)})`,
+    transform: `translateX(calc(-50% + ${offset * shujiaKapianJiange}px)) translateZ(${-distance * 55}px) rotateY(${angle}deg) scale(${Math.max(1 - distance * .12, .72)})`,
     opacity: Math.max(1 - distance * .25, 0),
     zIndex: 10 - distance,
     pointerEvents: distance <= 2 ? 'auto' : 'none',
@@ -1802,13 +1808,15 @@ onKeyStroke('Escape', () => {
 .context-stage-forward-leave-to, .context-stage-backward-enter-from { opacity: 0; transform: translateX(-7px); }
 
 .library-shelf-card {
+  /* 卡片随内容区居中，窗口增高时不再把额外空间全部留在上方。 */
+  --library-shelf-card-height: 170px;
   position: absolute;
   z-index: 1;
-  top: auto;
-  bottom: 32px;
+  top: calc(50% - var(--library-shelf-card-height) / 2);
+  bottom: auto;
   left: 50%;
-  width: 142px;
-  height: 150px;
+  width: 156px;
+  height: var(--library-shelf-card-height);
   margin-left: 0;
   overflow: visible;
   border: 1px solid rgba(191, 191, 191, .42);
@@ -1840,12 +1848,12 @@ onKeyStroke('Escape', () => {
 .library-shelf-card--missing { filter: grayscale(.8); }
 .library-shelf-main { position: relative; z-index: 3; display: flex; width: 100%; height: 100%; box-sizing: border-box; flex-direction: column; align-items: center; justify-content: flex-start; padding: 10px 10px 0; overflow: hidden; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; transform: translateZ(8px); transform-style: preserve-3d; -webkit-app-region: no-drag; }
 /* 预览图与卡片边缘保持一致的 10px 留白。 */
-.library-shelf-view { position: relative; display: flex; width: 100%; height: 78px; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
-.library-shelf-icon { position: relative; z-index: 2; width: 56px; height: 56px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
+.library-shelf-view { position: relative; display: flex; width: 100%; height: 88px; flex: none; align-items: center; justify-content: center; margin: 0; padding: 0; overflow: hidden; border: 0; background: transparent; }
+.library-shelf-icon { position: relative; z-index: 2; width: 60px; height: 60px; object-fit: contain; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); pointer-events: none; transform: translateZ(6px); }
 .library-shelf-card--application .library-shelf-icon { animation: application-icon-in 120ms ease both; }
 .library-shelf-card--application .library-shelf-icon { border-radius: 12px; }
-.library-shelf-icon-skeleton { width: 52px; height: 52px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 13px; background: linear-gradient(110deg, rgba(255, 255, 255, .07) 20%, rgba(255, 255, 255, .16) 42%, rgba(255, 255, 255, .07) 64%); background-size: 220% 100%; box-shadow: inset 0 1px rgba(255, 255, 255, .08); animation: application-icon-pending 1.4s ease-in-out infinite; }
-.library-shelf-preview { position: relative; z-index: 2; width: 100%; height: 78px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
+.library-shelf-icon-skeleton { width: 56px; height: 56px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 13px; background: linear-gradient(110deg, rgba(255, 255, 255, .07) 20%, rgba(255, 255, 255, .16) 42%, rgba(255, 255, 255, .07) 64%); background-size: 220% 100%; box-shadow: inset 0 1px rgba(255, 255, 255, .08); animation: application-icon-pending 1.4s ease-in-out infinite; }
+.library-shelf-preview { position: relative; z-index: 2; width: 100%; height: 88px; flex: none; object-fit: cover; border-radius: 10px; filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .6)); pointer-events: none; transform: translateZ(6px); }
 .library-shelf-cover { display: flex; width: 100%; flex: none; flex-direction: column; align-items: center; justify-content: flex-start; gap: 7px; margin: 0; padding: 10px 2px 0; border: 0; background: transparent; text-align: center; }
 .library-shelf-cover strong { overflow: hidden; width: 100%; color: var(--text-on-ink); font: 600 13px/1.35 var(--font-body); letter-spacing: .02em; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .9); white-space: nowrap; }
 .library-shelf-cover small { overflow: hidden; width: 100%; color: var(--text-on-ink-muted); font: 11px/1.3 var(--font-mono); letter-spacing: .04em; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); white-space: nowrap; }
@@ -1883,6 +1891,8 @@ onKeyStroke('Escape', () => {
 .library-detail-content::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(38, 38, 38, .24); }
 .library-detail-preview { display: grid; min-height: 112px; max-height: 142px; margin: 0 14px 10px; overflow: hidden; border: 1px solid rgba(38, 38, 38, .1); border-radius: 10px; background: linear-gradient(145deg, #edf2ec, #f8f9f7); }
 .library-detail-preview img, .library-detail-preview iframe { width: 100%; height: 100%; border: 0; object-fit: contain; }
+/* PDF 内置查看器由浏览器绘制，扩展视口后由预览容器裁掉右侧轨道。 */
+.library-detail-preview .library-detail-pdf { width: calc(100% + 17px); max-width: none; }
 .library-detail-preview pre { min-width: 0; max-height: 166px; padding: 10px; margin: 0; overflow: auto; color: var(--ink-soft); font: 10px/1.55 var(--font-mono); white-space: pre-wrap; }
 .library-detail-meta { display: grid; gap: 6px; padding: 0 14px 10px; margin: 0; }
 .library-detail-meta div { display: grid; min-height: 30px; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 7px; padding: 0 9px; border-radius: 8px; background: rgba(38, 38, 38, .04); }

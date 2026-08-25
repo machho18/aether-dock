@@ -33,8 +33,44 @@ let renameLibraryItem = () => ({ chenggong: false, xiaoxi: '重命名功能不�
 let deleteLibraryItem = () => ({ chenggong: false, xiaoxi: '删除功能不可用' })
 let updateLibraryNotes = () => ({ chenggong: false, xiaoxi: '更新笔记功能不可用' })
 let getLibraryItem = () => null
+let getSearchConfig = () => ({ provider: 'bing', apiKey: '' })
 // 仅记录当前一轮已确认的目标格式，实际工具调用时一次性消费，避免扩大授权范围。
 let yuxianShouquanWenjianToolName = ''
+const lianwangYusuan = {
+  sousuoCishu: 0,
+  zhuquCishu: 0,
+  sousuoKeywordSet: new Set(),
+  zhuquUrlSet: new Set(),
+  anysearchZhengwenMap: new Map(),
+  anysearchWanzhengYiduUrlSet: new Set(),
+}
+const lianwangYusuanShangxian = { sousuo: 2, zhuqu: 2 }
+const ANYSEARCH_YULAN_ZHENGWEN_CHAR_LIMIT = 1200
+const ANYSEARCH_DUQU_ZHENGWEN_CHAR_LIMIT = 12000
+
+// 每次用户消息开始时重置联网预算，避免跨轮次继承调用额度。
+function chongzhiLianwangYusuan() {
+  lianwangYusuan.sousuoCishu = 0
+  lianwangYusuan.zhuquCishu = 0
+  lianwangYusuan.sousuoKeywordSet.clear()
+  lianwangYusuan.zhuquUrlSet.clear()
+  lianwangYusuan.anysearchZhengwenMap.clear()
+  lianwangYusuan.anysearchWanzhengYiduUrlSet.clear()
+}
+
+function guifanSousuoKeyword(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN')
+}
+
+function guifanZhuquUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim())
+    url.hash = ''
+    return url.href
+  } catch {
+    return ''
+  }
+}
 
 const toolLabels = {
   read: '读取文件',
@@ -45,7 +81,8 @@ const toolLabels = {
   grep: '搜索文件内容',
   ls: '浏览目录',
   web_search: '联网搜索',
-  fetch_url: '抓取网页',
+  read_search_result: '联网搜索',
+  fetch_url: '联网搜索',
   library_search: '资料库搜索',
   library_read: '读取资料库文件',
   save_note: '保存到收集箱',
@@ -101,6 +138,9 @@ function xiaofeiYuxianWenjianShouquan(toolName) {
 
 // 记录工具完成后才能得到的补充信息，例如网页真实标题；在结束事件中写回对话记录。
 const gongjuWanchengXiangqingMap = new Map()
+// 工具开始时冻结展示名称，避免执行期间的状态变化影响历史记录。
+const gongjuBiaoqianMap = new Map()
+const lianwangGongjuNames = new Set(['web_search', 'read_search_result', 'fetch_url'])
 
 const ziliaoTypeLabels = {
   document: '文档',
@@ -122,6 +162,13 @@ function huoquGongjuXiangqing(name, args = {}, toolCallId = '', shiJieshu = fals
   switch (name) {
     case 'web_search':
       return value('query') ? `搜索“${jianhuaWenben(value('query'))}”` : ''
+    case 'read_search_result': {
+      try {
+        return value('url') ? `读取 ${new URL(value('url')).hostname} 的搜索正文` : ''
+      } catch {
+        return '读取搜索正文'
+      }
+    }
     case 'fetch_url': {
       try {
         return value('url') ? `阅读 ${new URL(value('url')).hostname}` : ''
@@ -148,6 +195,20 @@ function huoquGongjuXiangqing(name, args = {}, toolCallId = '', shiJieshu = fals
   }
 }
 
+// 搜索、读取搜索正文与抓取网页统一展示为联网搜索。
+function huoquGongjuBiaoqian(name, toolCallId = '', shiJieshu = false) {
+  const cachedLabel = gongjuBiaoqianMap.get(toolCallId)
+  if (cachedLabel) {
+    if (shiJieshu) gongjuBiaoqianMap.delete(toolCallId)
+    return cachedLabel
+  }
+  if (!lianwangGongjuNames.has(name)) return toolLabels[name] ?? name ?? '处理中'
+
+  const label = '联网搜索'
+  if (toolCallId && !shiJieshu) gongjuBiaoqianMap.set(toolCallId, label)
+  return label
+}
+
 // 标准工具结果以内容块返回；仅提取文本，避免把内部详情暴露到对话。
 function tiquGongjuWenbenJieguo(result) {
   return (result?.content ?? [])
@@ -169,7 +230,8 @@ const AETHERDOCK_SYSTEM_PROMPT = `你是 AetherDock 的文档与知识助手，�
 - 默认采用“本地资料库优先、按需联网”的顺序：与用户资料、已有笔记、文档主题相关的问题，先搜索资料库，再读取最相关的条目；不要编造未读取到的资料内容。
 - 用户询问“资料库中有什么”但未提供关键词时，使用资料库概览并明确各分类数量；“最近打开”仅是使用记录，不能表述为资料库的全部内容。
 - 用户提到“收集箱”“收件箱”或“待归档”时，只能依据程序注入的收集箱实时清单回答；绝不能以资料库搜索或资料库概览推断收集箱为空。
-- 资料库未命中或内容不足且用户需要补充事实时，再使用联网搜索；需要核对搜索结果细节时，使用网页抓取。
+- 资料库未命中或内容不足且用户需要补充事实时，再使用联网搜索；通常只搜索一次，需要核对搜索结果细节时再抓取最相关网页。每轮最多搜索 2 次、抓取 2 个不同网页；已有结果足够时直接回答，不重复搜索相同关键词或抓取相同链接。
+- 当联网来源为 AnySearch 时，搜索结果会附带正文预览。需要更多细节时，优先使用“读取搜索正文”读取本轮已返回的清洗正文，不得重复搜索或直接抓取同一网页；只有 AnySearch 未返回正文，或已读取完整正文后仍需核验原始页面时，才可抓取原始网页。
 - 对新闻、天气、价格、时效性政策等明确需要最新信息的问题，可直接联网搜索。
 - 用户明确要求保存内容时，使用收集箱保存；保存前确保标题和正文完整、易于回看。
 - 用户明确要求把资料库中的 Word、Markdown 或 TXT 文档整理为 Word 修订副本时，先读取原文，再使用“生成 Word 修订副本”。TXT 内容可直接生成 DOCX，无需先转为 Markdown。该功能会新建并归档一份 DOCX，绝不覆盖原文件；当前版本采用清晰的统一排版，不承诺还原原文复杂版式。
@@ -183,6 +245,8 @@ const AETHERDOCK_SYSTEM_PROMPT = `你是 AetherDock 的文档与知识助手，�
 
 回复要求：
 - 默认使用简洁、自然的中文；需要结构化表达时使用清晰的 Markdown 标题、列表和重点。
+- 用户未指定格式时，先直接给出结论或答案，再按需补充说明；内容较长时用二至四个短标题组织，避免重复标题、连续短句或大段密集文字。
+- 列表只用于并列信息，每项表达完整且简短；仅在需要比较三项以上字段时使用 Markdown 表格。
 - 优先给出可以直接使用的总结、提纲、改写稿或行动建议。`
 
 async function huoquPi() {
@@ -218,6 +282,7 @@ function peizhi(options = {}) {
   if (typeof options.deleteLibraryItem === 'function') deleteLibraryItem = options.deleteLibraryItem
   if (typeof options.updateLibraryNotes === 'function') updateLibraryNotes = options.updateLibraryNotes
   if (typeof options.getLibraryItem === 'function') getLibraryItem = options.getLibraryItem
+  if (typeof options.getSearchConfig === 'function') getSearchConfig = options.getSearchConfig
 }
 
 // 所有会改变资料库的工具先等待用户确认，拒绝后不调用主进程写入能力。
@@ -292,17 +357,75 @@ async function lianwangSousuo(query, count = 6) {
   return results
 }
 
-// 将搜索结果渲染为模型可读的紧凑文本。
+// 搜索首轮仅提供正文预览，避免多篇长文挤占模型上下文。
 function geshiSousuoJieguo(query, results) {
   if (!results.length) return `未找到与“${query}”相关的网页结果。`
   return results
     .map((item, index) => {
       const lines = [`${index + 1}. ${item.title}`]
       if (item.snippet) lines.push(`   ${item.snippet}`)
+      const metadata = [item.publishedDate, item.author, item.source].filter(Boolean).join(' · ')
+      if (metadata) lines.push(`   信息：${metadata}`)
+      if (item.highlights?.length) lines.push(`   要点：${item.highlights.join('；')}`)
+      if (item.zhengwen) {
+        const yulan = item.zhengwen.slice(0, ANYSEARCH_YULAN_ZHENGWEN_CHAR_LIMIT)
+        lines.push(`   正文预览：${yulan}${item.zhengwen.length > yulan.length ? '…' : ''}`)
+        if (item.zhengwen.length > yulan.length) lines.push('   如需完整正文，请使用“读取搜索正文”。')
+      }
       lines.push(`   ${item.url}`)
       return lines.join('\n')
     })
     .join('\n')
+}
+
+const ANYSEARCH_SEARCH_URL = 'https://api.anysearch.com/v1/search'
+
+// 使用 AnySearch 作为可选的联网搜索来源，缓存清洗正文供本轮按需读取。
+async function anysearchSousuo(query, count = 6, apiKey = '') {
+  const keyword = String(query ?? '').trim().slice(0, 300)
+  if (!keyword) throw new Error('搜索关键词不能为空')
+  const headers = { 'Content-Type': 'application/json' }
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+  const response = await fetch(ANYSEARCH_SEARCH_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      query: keyword,
+      max_results: Math.max(1, Math.min(count, 10)),
+      language: 'zh-CN',
+    }),
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!response.ok) throw new Error(`搜索服务返回 ${response.status}`)
+  const payload = await response.json()
+  if (payload?.code !== 0) throw new Error(String(payload?.message ?? '搜索失败'))
+  return (payload?.data?.results ?? [])
+    .map((item) => {
+      const zhengwen = String(item?.content ?? item?.text ?? '').trim()
+      const highlights = Array.isArray(item?.highlights)
+        ? item.highlights.map((highlight) => String(highlight ?? '').trim()).filter(Boolean).slice(0, 3)
+        : []
+      return {
+        title: String(item?.title ?? '').trim(),
+        url: String(item?.url ?? '').trim(),
+        snippet: String(item?.snippet ?? item?.summary ?? '').trim(),
+        zhengwen,
+        highlights,
+        publishedDate: String(item?.published_date ?? item?.publishedDate ?? '').trim(),
+        author: String(item?.author ?? '').trim(),
+        source: String(item?.source ?? '').trim(),
+      }
+    })
+    .filter((item) => item.title && item.url)
+    .slice(0, count)
+}
+
+// 依据用户设置的搜索来源路由请求，默认走必应，选择 AnySearch 时按密钥状态调用。
+function zhixingLianwangSousuo(query, count) {
+  const config = getSearchConfig()
+  const provider = config?.provider === 'anysearch' ? 'anysearch' : 'bing'
+  if (provider === 'anysearch') return anysearchSousuo(query, count, config?.apiKey ?? '')
+  return lianwangSousuo(query, count)
 }
 
 // 为模型构造自定义工具，统一返回 { content, details } 结构。
@@ -310,19 +433,58 @@ function jiangzaoGongju(Type) {
   const webSearchTool = pi.defineTool({
     name: 'web_search',
     label: '联网搜索',
-    description: '联网搜索网页资料，返回标题、链接与摘要，用于回答需要最新信息的问题。',
+    description: '联网搜索网页资料，返回标题、链接、摘要和正文预览。AnySearch 结果需要更多细节时，优先使用 read_search_result 读取本轮缓存的正文。',
     parameters: Type.Object({
       query: Type.String({ description: '搜索关键词' }),
       count: Type.Optional(Type.Integer({ description: '返回结果数，默认 6' })),
     }),
     execute: async (_toolCallId, params) => {
+      const keyword = guifanSousuoKeyword(params.query)
+      if (!keyword) return { content: [{ type: 'text', text: '搜索关键词不能为空。' }], details: {} }
+      if (lianwangYusuan.sousuoKeywordSet.has(keyword)) {
+        return { content: [{ type: 'text', text: `本轮已搜索过“${params.query}”，请基于已有结果继续判断。` }], details: {} }
+      }
+      if (lianwangYusuan.sousuoCishu >= lianwangYusuanShangxian.sousuo) {
+        return { content: [{ type: 'text', text: '本轮联网搜索已达上限，请基于已有结果回答，并说明信息范围。' }], details: {} }
+      }
+      lianwangYusuan.sousuoCishu += 1
+      lianwangYusuan.sousuoKeywordSet.add(keyword)
       const count = Math.max(1, Math.min(Number(params.count) || 6, 10))
       try {
-        const results = await lianwangSousuo(params.query, count)
+        const results = await zhixingLianwangSousuo(params.query, count)
+        if (getSearchConfig()?.provider === 'anysearch') {
+          for (const result of results) {
+            const url = guifanZhuquUrl(result.url)
+            if (url && result.zhengwen) lianwangYusuan.anysearchZhengwenMap.set(url, { title: result.title, content: result.zhengwen })
+          }
+        }
         return { content: [{ type: 'text', text: geshiSousuoJieguo(params.query, results) }], details: {} }
       } catch (error) {
         return { content: [{ type: 'text', text: `搜索失败：${error?.message ?? '网络异常'}` }], details: {} }
       }
+    },
+  })
+
+  const readSearchResultTool = pi.defineTool({
+    name: 'read_search_result',
+    label: '读取搜索正文',
+    description: '读取 AnySearch 在本轮搜索中已返回的清洗正文，不会重新搜索、调用 API 或抓取网页。长正文可通过 offset 从指定位置继续读取。',
+    parameters: Type.Object({
+      url: Type.String({ description: '搜索结果中的网页链接' }),
+      offset: Type.Optional(Type.Integer({ description: '正文起始字符位置，默认从 0 开始' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const url = guifanZhuquUrl(params.url)
+      const result = url ? lianwangYusuan.anysearchZhengwenMap.get(url) : null
+      if (!result) return { content: [{ type: 'text', text: '本轮搜索中没有该链接的 AnySearch 正文，请基于已有结果或按需抓取网页。' }], details: {} }
+
+      const offset = Math.max(0, Math.min(Number(params.offset) || 0, result.content.length))
+      const end = Math.min(offset + ANYSEARCH_DUQU_ZHENGWEN_CHAR_LIMIT, result.content.length)
+      const content = result.content.slice(offset, end)
+      if (end >= result.content.length) lianwangYusuan.anysearchWanzhengYiduUrlSet.add(url)
+      const progress = `第 ${offset + 1}-${end} / 共 ${result.content.length} 字符`
+      const next = end < result.content.length ? `\n\n正文未完；如仍需后续内容，请继续使用 offset: ${end}。` : ''
+      return { content: [{ type: 'text', text: `【${result.title}】\n正文（${progress}）：\n${content}${next}` }], details: {} }
     },
   })
 
@@ -334,10 +496,22 @@ function jiangzaoGongju(Type) {
       url: Type.String({ description: '要抓取的网页链接' }),
     }),
     execute: async (toolCallId, params) => {
+      const url = guifanZhuquUrl(params.url)
+      if (!url) return { content: [{ type: 'text', text: '网页链接无效。' }], details: {} }
+      if (lianwangYusuan.anysearchZhengwenMap.has(url) && !lianwangYusuan.anysearchWanzhengYiduUrlSet.has(url)) {
+        return { content: [{ type: 'text', text: 'AnySearch 已返回该网页的清洗正文，请先使用“读取搜索正文”读取完整内容；只有完整正文仍不足以回答或需要核验原始页面时，才可抓取。' }], details: {} }
+      }
+      if (lianwangYusuan.zhuquUrlSet.has(url)) {
+        return { content: [{ type: 'text', text: '本轮已抓取过该网页，请使用已有正文。' }], details: {} }
+      }
+      if (lianwangYusuan.zhuquCishu >= lianwangYusuanShangxian.zhuqu) {
+        return { content: [{ type: 'text', text: '本轮网页抓取已达上限，请基于已读取内容回答，并说明信息范围。' }], details: {} }
+      }
+      lianwangYusuan.zhuquCishu += 1
+      lianwangYusuan.zhuquUrlSet.add(url)
       try {
-        const result = await fetchUrl(String(params.url ?? ''))
+        const result = await fetchUrl(url)
         if (!result.chenggong) return { content: [{ type: 'text', text: `抓取失败：${result.xiaoxi ?? '未知错误'}` }], details: {} }
-        const url = String(params.url ?? '').trim()
         const title = String(result.title ?? '').trim()
         if (url && title) gongjuWanchengXiangqingMap.set(toolCallId, `网页：${title}\n链接：${url}`)
         const head = result.title ? `【${result.title}】\n` : ''
@@ -658,7 +832,7 @@ function jiangzaoGongju(Type) {
     },
   })
 
-  return [webSearchTool, fetchUrlTool, librarySearchTool, libraryReadTool, inboxListTool, saveNoteTool, createDocxCopyTool, createXlsxWorkbookTool, createMarkdownFileTool, createPdfDocumentTool, inboxArchiveTool, inboxRemoveTool, libraryRenameTool, libraryDeleteTool, libraryUpdateNotesTool]
+  return [webSearchTool, readSearchResultTool, fetchUrlTool, librarySearchTool, libraryReadTool, inboxListTool, saveNoteTool, createDocxCopyTool, createXlsxWorkbookTool, createMarkdownFileTool, createPdfDocumentTool, inboxArchiveTool, inboxRemoveTool, libraryRenameTool, libraryDeleteTool, libraryUpdateNotesTool]
 }
 
 // 流式文本按短间隔聚合后统一推送，避免逐 token 触发主进程到渲染层的 IPC 洪峰。
@@ -729,7 +903,7 @@ function anzhuangDingyue() {
           type: 'tool',
           callId: event.toolCallId,
           name: event.toolName,
-          label: toolLabels[event.toolName] ?? event.toolName ?? '处理中',
+          label: huoquGongjuBiaoqian(event.toolName, event.toolCallId),
           detail: huoquGongjuXiangqing(event.toolName, event.args, event.toolCallId),
         })
         break
@@ -742,7 +916,7 @@ function anzhuangDingyue() {
           type: 'tool-end',
           callId: event.toolCallId,
           name: event.toolName,
-          label: toolLabels[event.toolName] ?? event.toolName ?? '处理中',
+          label: huoquGongjuBiaoqian(event.toolName, event.toolCallId, true),
           detail: resultText || huoquGongjuXiangqing(event.toolName, event.args, event.toolCallId, true),
           resultText,
           resultType: zhenZhengShouquanGongjuNames.has(event.toolName) ? 'approval' : 'operation',
@@ -989,10 +1163,28 @@ function init(options = {}) {
   return initPromise
 }
 
+// 每轮注入系统时钟，确保“今天”“今年”等相对时间可稳定转换为明确日期。
+function huoquDangqianShijianShangxiawen() {
+  const now = new Date()
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+  const dateText = new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now)
+  const year = new Intl.DateTimeFormat('zh-CN', { timeZone, year: 'numeric' }).format(now)
+  return `[系统时间上下文：当前本地时间为 ${dateText}（${timeZone}）；“今天”“本周”“今年”等相对日期均以此时间为准，其中“今年”指 ${year} 年。生成联网搜索关键词时，必须将相对日期改写为对应的明确日期或年份。此上下文无需向用户复述。]`
+}
+
 // 发送消息；运行中的会话按转向消息排队，避免覆盖当前回合。
 async function faSong(message) {
   const text = String(message ?? '').trim()
   if (!text) return { accepted: false, xiaoxi: '消息不能为空' }
+  chongzhiLianwangYusuan()
   const wenjianShengchengQingqiu = tiquWenjianShengchengQingqiu(text)
   if (wenjianShengchengQingqiu) {
     const approved = await querenZiliaokuXieru({
@@ -1007,7 +1199,7 @@ async function faSong(message) {
       return { accepted: true, mode: 'generation-declined' }
     }
     yuxianShouquanWenjianToolName = wenjianShengchengQingqiu.toolName
-    sendEvent({ type: 'document-preparing', label: '正在整理标题和内容' })
+    sendEvent({ type: 'document-preparing', label: `正在生成 ${wenjianShengchengQingqiu.label} 文件` })
   }
   try {
     await querenJiuxu()
@@ -1016,9 +1208,10 @@ async function faSong(message) {
     throw error
   }
   const textWithInboxContext = zhuruJiantiebanShishiShangxiawen(text)
+  const textWithTimeContext = `${huoquDangqianShijianShangxiawen()}\n\n${textWithInboxContext}`
   const textWithGenerationApproval = wenjianShengchengQingqiu
-    ? `${textWithInboxContext}\n\n[系统提示：用户已确认生成 ${wenjianShengchengQingqiu.label} 文件。请先整理标题和正文，再调用 ${wenjianShengchengQingqiu.toolName} 写入文件；本次对应格式的写入已获一次性授权，无需再次请求确认。]`
-    : textWithInboxContext
+    ? `${textWithTimeContext}\n\n[系统提示：用户已确认生成 ${wenjianShengchengQingqiu.label} 文件。请先整理标题和正文，再调用 ${wenjianShengchengQingqiu.toolName} 写入文件；本次对应格式的写入已获一次性授权，无需再次请求确认。]`
+    : textWithTimeContext
   if (session.isStreaming) {
     void session.steer(textWithGenerationApproval).catch((error) => sendEvent({ type: 'error', message: error?.message ?? '发送失败' }))
     return { accepted: true, mode: 'steer' }
@@ -1065,6 +1258,7 @@ async function getStatus() {
   // 列出所有支持 API key 的供应商（含 token plan 类），供助手页配置。
   const providers = modelRuntime.getProviders()
   const providerNames = new Map(providers.map((provider) => [provider.id, provider.name || provider.id]))
+  const authConfig = await duquJsonDuiXiang(authPath)
   const customProviderIds = await duquCustomProviderIds()
   for (const providerId of modelRuntime.getRegisteredProviderIds()) customProviderIds.add(providerId)
   const keyProviders = providers
@@ -1074,6 +1268,7 @@ async function getStatus() {
       name: provider.name,
       configured: modelRuntime.getProviderAuthStatus(provider.id).configured,
       custom: customProviderIds.has(provider.id),
+      apiKeyMask: geshiProviderApiKeyMask(authConfig[provider.id]?.key),
     }))
   return {
     initialized: true,
@@ -1113,6 +1308,13 @@ async function duquCustomProviderIds() {
     throw new Error('models.json 的 providers 配置无效')
   }
   return new Set(Object.keys(providers))
+}
+
+// 状态接口仅返回脱敏文本，避免完整模型密钥进入渲染层。
+function geshiProviderApiKeyMask(apiKey) {
+  const value = String(apiKey ?? '').trim()
+  if (value.length <= 8) return value ? '*******' : ''
+  return `${value.slice(0, 4)}*******${value.slice(-4)}`
 }
 
 // 将 API Key 写入 Pi 标准凭据文件，重启后由 ModelRuntime 自动恢复。
