@@ -200,7 +200,11 @@
             <button class="library-compact-main" type="button" @click.stop="isPiliangMoshi ? qiehuanKapianXuanze(item) : emit('open-item', item)">
               <img v-if="cardInfo.preview" class="library-compact-icon library-compact-icon--preview" :src="cardInfo.preview" alt="" draggable="false" @error="biaojiPreviewFailed(item)">
               <img v-else-if="cardInfo.icon" class="library-compact-icon" :src="cardInfo.icon" alt="" draggable="false">
-              <span v-else class="library-compact-icon library-compact-icon--empty"></span>
+              <span
+                v-else
+                class="library-compact-icon library-compact-icon--empty"
+                :class="{ 'library-compact-icon--pending': cardInfo.iconPending }"
+              ></span>
               <span class="library-compact-copy">
                 <strong>{{ huoquCardName(item) }}</strong>
                 <small>{{ huoquKapianFushuzifu(item) }}</small>
@@ -391,7 +395,6 @@ const tupianThumbnailPendingItems = new Map()
 const tupianThumbnailRetryCountMap = new Map()
 const tupianThumbnailRetryRequestMap = new Map()
 const tupianThumbnailRetryTimers = new Map()
-const tupianThumbnailRetryCooldownMs = 30 * 1000
 let tupianThumbnailRenwu = 0
 let tupianThumbnailIdleTaskId = 0
 let isTupianThumbnailRequesting = false
@@ -1195,13 +1198,11 @@ function anpaiTupianThumbnailRetry(requestKeys, renwuId) {
     tupianThumbnailRetryRequestMap.set(requestKey, itemId)
   }
   if (retryCount > 3) {
-    // 连续失败后进入长冷却，避免紧密循环，同时不让瞬时故障永久占位。
-    const cooldownTimerId = window.setTimeout(() => {
-      tupianThumbnailRetryTimers.delete(cooldownTimerId)
-      yiChuTupianThumbnailRetryRequest(requestKeys)
-      qingliTupianThumbnailRequestKeys(requestKeys)
-    }, tupianThumbnailRetryCooldownMs)
-    tupianThumbnailRetryTimers.set(cooldownTimerId, requestKeys)
+    // 连续失败后停止本轮后台请求，避免不支持的格式持续占用解码队列。
+    for (const [itemId, requestKey] of Object.entries(requestKeys)) {
+      yulanFailedKeys.set(itemId, requestKey)
+    }
+    yiChuTupianThumbnailRetryRequest(requestKeys)
     return
   }
   for (const requestKey of Object.values(requestKeys)) {
@@ -1244,10 +1245,22 @@ function anpaiTupianThumbnailIdleTask() {
         qingliTupianThumbnailRequestKeys(requestKeys)
         return
       }
-      if (thumbnailMap) {
-        tupianThumbnailMap.value = hebingCurrentItemRecord(tupianThumbnailMap.value, thumbnailMap)
-        yiChuTupianThumbnailRetryRequest(requestKeys)
+      const validThumbnailMap = Object.fromEntries(
+        Object.entries(thumbnailMap ?? {}).filter(([itemId, thumbnailKey]) => requestKeys[itemId]
+          && typeof thumbnailKey === 'string' && thumbnailKey),
+      )
+      if (Object.keys(validThumbnailMap).length) {
+        tupianThumbnailMap.value = hebingCurrentItemRecord(tupianThumbnailMap.value, validThumbnailMap)
+        const successfulRequestKeys = Object.fromEntries(
+          Object.keys(validThumbnailMap).map((itemId) => [itemId, requestKeys[itemId]]),
+        )
+        yiChuTupianThumbnailRetryRequest(successfulRequestKeys)
       }
+      const failedRequestKeys = Object.fromEntries(
+        Object.entries(requestKeys).filter(([itemId]) => !validThumbnailMap[itemId]),
+      )
+      // 主进程会以空键反馈解码或缓存瞬时失败；不能把它当作成功，否则卡片会永久停在回退态。
+      if (Object.keys(failedRequestKeys).length) anpaiTupianThumbnailRetry(failedRequestKeys, renwuId)
     } catch {
       if (isUnmounted || renwuId !== tupianThumbnailRenwu || !['image', 'recent'].includes(currentCategory.value) || props.isAnimationBusy) {
         yiChuTupianThumbnailRetryRequest(requestKeys)
@@ -1734,6 +1747,8 @@ onKeyStroke('Escape', () => {
 .library-compact-icon { width: 33px; height: 33px; flex: 0 0 33px; object-fit: contain; }
 .library-compact-icon--preview { border-radius: 8px; background: rgba(239, 249, 236, .68); object-fit: cover; }
 .library-compact-icon--empty { border-radius: 9px; background: linear-gradient(120deg, rgba(99, 254, 19, .12), rgba(91, 156, 255, .18)); }
+/* 图片缩略图等待时复用骨架节奏，避免静态占位看起来像加载已完成。 */
+.library-compact-icon--pending { background-size: 220% 100%; animation: application-icon-pending 1.4s ease-in-out infinite; }
 .library-compact-copy { display: grid; min-width: 0; gap: 3px; }
 .library-compact-copy strong, .library-compact-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-compact-copy strong { font: 600 12px var(--font-body); }
@@ -1948,7 +1963,8 @@ onKeyStroke('Escape', () => {
 @media (prefers-reduced-motion: reduce) {
   .kongzhuangtai-zifu,
   .library-shelf-icon,
-  .library-shelf-icon-skeleton { animation: none; }
+  .library-shelf-icon-skeleton,
+  .library-compact-icon--pending { animation: none; }
 }
 .data-switch-enter-active,
 .data-switch-leave-active {

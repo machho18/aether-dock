@@ -202,6 +202,7 @@ export function usePiAssistant() {
         break
       case 'text':
         shuaXinLiuShiHuodong(last)
+        if (last?.toolLabel === '正在整理标题和内容') last.toolLabel = ''
         tianjiaShixuWenben(last, event.delta)
         break
       case 'tool':
@@ -249,6 +250,13 @@ export function usePiAssistant() {
         break
       case 'library-approval':
         ziliaokuShouquanQingqiu.value = event
+        break
+      case 'document-preparing':
+        if (last) {
+          last.pending = true
+          last.toolLabel = event.label || '正在整理标题和内容'
+          shuaXinLiuShiHuodong(last)
+        }
         break
       case 'end':
         if (last) {

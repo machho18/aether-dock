@@ -14,6 +14,8 @@ const { autoUpdater } = require('electron-updater')
 const { createLibrary } = require('./ziliaoku.cjs')
 const { createHuihuaStore } = require('./huihua.cjs')
 const { shengchengDocxBuffer } = require('./docx-generator.cjs')
+const { shengchengMarkdownBuffer } = require('./markdown-generator.cjs')
+const { shengchengPdfBuffer } = require('./pdf-generator.cjs')
 const { shengchengXlsxBuffer } = require('./xlsx-generator.cjs')
 const { ipcTongdao } = require('./ipc.cjs')
 const piJicheng = require('./pi.cjs')
@@ -1107,13 +1109,15 @@ async function piShengchengDocxFuben(payload) {
   const config = library.getConfig()
   if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
 
-  const approval = await piQingqiuZiliaokuShouquan({
-    title: '允许生成 Word 副本？',
-    message: `将根据“${sourceItem.title}”创建新的 Word 副本。`,
-    detail: `新文件名：${title}.docx\n原始文件不会被修改。`,
-    tone: 'default',
-  })
-  if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Word 副本' }
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Word 副本？',
+      message: `将根据“${sourceItem.title}”创建新的 Word 副本。`,
+      detail: `新文件名：${title}.docx\n原始文件不会被修改。`,
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Word 副本' }
+  }
 
   const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
   const temporaryPath = path.join(temporaryDir, `${randomUUID()}.docx`)
@@ -1158,13 +1162,15 @@ async function piShengchengXlsxGongzuobu(payload) {
   const config = library.getConfig()
   if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
 
-  const approval = await piQingqiuZiliaokuShouquan({
-    title: '允许生成 Excel 工作簿？',
-    message: `将创建新的 Excel 工作簿“${title}.xlsx”。`,
-    detail: '生成的工作簿会加入资料库，原始资料不会被修改。',
-    tone: 'default',
-  })
-  if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Excel 工作簿' }
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Excel 工作簿？',
+      message: `将创建新的 Excel 工作簿“${title}.xlsx”。`,
+      detail: '生成的工作簿会加入资料库，原始资料不会被修改。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Excel 工作簿' }
+  }
 
   const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
   const temporaryPath = path.join(temporaryDir, `${randomUUID()}.xlsx`)
@@ -1187,6 +1193,98 @@ async function piShengchengXlsxGongzuobu(payload) {
     return { chenggong: true, title: item.title.replace(/\.xlsx$/i, ''), itemId: item.id }
   } catch (error) {
     return { chenggong: false, xiaoxi: error?.message ?? 'Excel 工作簿生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 生成独立 Markdown 文件并导入资料库，保留模型输出的原始 Markdown 结构。
+async function piShengchengMarkdownWenjian(payload) {
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  if (!content) return { chenggong: false, xiaoxi: 'Markdown 正文不能为空' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const title = (rawTitle || 'Markdown 文档').replace(/\.md$/i, '').trim().slice(0, 100) || 'Markdown 文档'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Markdown 文件？',
+      message: `将创建新的 Markdown 文件“${title}.md”。`,
+      detail: '生成的文件会加入资料库，不会修改任何原始资料。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Markdown 文件' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.md`)
+  try {
+    const buffer = shengchengMarkdownBuffer({ title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.md`,
+        title: `${title}.md`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存 Markdown 文件' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.md$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'Markdown 文件生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 生成排版后的 PDF 文件并导入资料库，始终创建新文件而不覆盖原始资料。
+async function piShengchengPdfWenjian(payload) {
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  if (!content) return { chenggong: false, xiaoxi: 'PDF 正文不能为空' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const title = (rawTitle || 'PDF 文档').replace(/\.pdf$/i, '').trim().slice(0, 100) || 'PDF 文档'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 PDF 文件？',
+      message: `将创建新的 PDF 文件“${title}.pdf”。`,
+      detail: '生成的文件会加入资料库，不会修改任何原始资料。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 PDF 文件' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.pdf`)
+  try {
+    const buffer = await shengchengPdfBuffer(BrowserWindow, { title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.pdf`,
+        title: `${title}.pdf`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存 PDF 文件' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.pdf$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'PDF 文件生成失败' }
   } finally {
     await fsp.rm(temporaryPath, { force: true }).catch(() => {})
   }
@@ -3338,6 +3436,8 @@ async function chushihuaYingyong() {
     saveNote: piBaocunBiji,
     createDocxCopy: piShengchengDocxFuben,
     createXlsxWorkbook: piShengchengXlsxGongzuobu,
+    createMarkdownFile: piShengchengMarkdownWenjian,
+    createPdfDocument: piShengchengPdfWenjian,
     requestLibraryApproval: piQingqiuZiliaokuShouquan,
     listInbox: piLiebiaoJiantieban,
     archiveInbox: piGuidangJiantiebanItems,

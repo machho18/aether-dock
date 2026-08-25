@@ -24,10 +24,14 @@ const cardTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
 export function huoquCardInfo(item, previewFailed) {
   if (item.type === 'image') {
     const thumbnailKey = item.thumbnailKey || (item.thumbnailStatus === 'ready' ? item.thumbnailCacheKey : '')
+    const hasPreviewFailed = previewFailed.has(item.id)
     const canPreview = item.status !== 'missing' && thumbnailKey && previewFailed.get(item.id) !== thumbnailKey
+    // 缩略图仍在后台读取时显示骨架，避免通用图标被误解为图片内容。
+    const iconPending = item.status !== 'missing' && !thumbnailKey && !hasPreviewFailed && item.thumbnailStatus !== 'failed'
     return {
       type: 'IMG',
-      icon: canPreview ? '' : imageIcon,
+      icon: canPreview || iconPending ? '' : imageIcon,
+      iconPending,
       preview: canPreview ? `aetherdock-thumb://${thumbnailKey}/320` : '',
       previewSrcset: canPreview
         ? `aetherdock-thumb://${thumbnailKey}/320 1x, aetherdock-thumb://${thumbnailKey}/640 2x`

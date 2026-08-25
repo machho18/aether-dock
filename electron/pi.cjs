@@ -23,6 +23,8 @@ let fetchUrl = () => ({ chenggong: false, xiaoxi: '抓取功能不可用' })
 let saveNote = () => ({ chenggong: false, xiaoxi: '保存功能不可用' })
 let createDocxCopy = () => ({ chenggong: false, xiaoxi: 'Word 修订副本功能不可用' })
 let createXlsxWorkbook = () => ({ chenggong: false, xiaoxi: 'Excel 工作簿生成功能不可用' })
+let createMarkdownFile = () => ({ chenggong: false, xiaoxi: 'Markdown 文件生成功能不可用' })
+let createPdfDocument = () => ({ chenggong: false, xiaoxi: 'PDF 文件生成功能不可用' })
 let requestLibraryApproval = () => Promise.resolve({ approved: false })
 let listInbox = () => ({ items: [] })
 let archiveInbox = () => ({ chenggong: false, xiaoxi: '归档功能不可用' })
@@ -31,6 +33,8 @@ let renameLibraryItem = () => ({ chenggong: false, xiaoxi: '重命名功能不�
 let deleteLibraryItem = () => ({ chenggong: false, xiaoxi: '删除功能不可用' })
 let updateLibraryNotes = () => ({ chenggong: false, xiaoxi: '更新笔记功能不可用' })
 let getLibraryItem = () => null
+// 仅记录当前一轮已确认的目标格式，实际工具调用时一次性消费，避免扩大授权范围。
+let yuxianShouquanWenjianToolName = ''
 
 const toolLabels = {
   read: '读取文件',
@@ -47,6 +51,8 @@ const toolLabels = {
   save_note: '保存到收集箱',
   create_docx_copy: '生成 DOCX Word 修订副本',
   create_xlsx_workbook: '生成 Excel 工作簿',
+  create_markdown_file: '生成 Markdown 文件',
+  create_pdf_document: '生成 PDF 文件',
   inbox_list: '查看收集箱',
   inbox_archive: '归档收集箱内容',
   inbox_remove: '移除收集箱内容',
@@ -60,6 +66,8 @@ const shouquanXieruGongjuNames = new Set([
   'save_note',
   'create_docx_copy',
   'create_xlsx_workbook',
+  'create_markdown_file',
+  'create_pdf_document',
   'inbox_archive',
   'inbox_remove',
   'library_rename',
@@ -68,6 +76,28 @@ const shouquanXieruGongjuNames = new Set([
 ])
 // 保存到收集箱无需二次确认，其余写入工具均需将结果标记为授权结果。
 const zhenZhengShouquanGongjuNames = new Set([...shouquanXieruGongjuNames].filter((name) => name !== 'save_note'))
+
+const wenjianShengchengPeizhi = [
+  { toolName: 'create_pdf_document', label: 'PDF', suffix: 'PDF|\\.pdf' },
+  { toolName: 'create_markdown_file', label: 'Markdown', suffix: 'Markdown|MD|\\.md' },
+  { toolName: 'create_xlsx_workbook', label: 'Excel', suffix: 'Excel|XLSX|\\.xlsx' },
+  { toolName: 'create_docx_copy', label: 'Word', suffix: 'Word|DOCX|\\.docx' },
+]
+const shengchengXingweiPattern = '(?:生成|导出|创建|制作|输出|保存为|转(?:换)?为|整理成|写成)'
+
+// 只识别明确的文件生成意图，避免把“如何生成 PDF”一类咨询误当作写入请求。
+function tiquWenjianShengchengQingqiu(rawText) {
+  const text = String(rawText ?? '').trim()
+  if (!text || new RegExp(`^(?:如何|怎么|怎样|能否|是否|可否|请问).{0,24}${shengchengXingweiPattern}`, 'u').test(text)) return null
+  return wenjianShengchengPeizhi.find((item) => new RegExp(`${shengchengXingweiPattern}[\\s\\S]{0,24}(?:${item.suffix})`, 'iu').test(text)) ?? null
+}
+
+// 本次格式授权只允许匹配的一次工具写入，后续调用仍必须单独请求用户确认。
+function xiaofeiYuxianWenjianShouquan(toolName) {
+  if (yuxianShouquanWenjianToolName !== toolName) return false
+  yuxianShouquanWenjianToolName = ''
+  return true
+}
 
 // 记录工具完成后才能得到的补充信息，例如网页真实标题；在结束事件中写回对话记录。
 const gongjuWanchengXiangqingMap = new Map()
@@ -109,6 +139,10 @@ function huoquGongjuXiangqing(name, args = {}, toolCallId = '', shiJieshu = fals
       return value('title') ? `生成“${jianhuaWenben(value('title'))}”` : '生成 Word 副本'
     case 'create_xlsx_workbook':
       return value('title') ? `生成“${jianhuaWenben(value('title'))}”` : '生成 Excel 工作簿'
+    case 'create_markdown_file':
+      return value('title') ? `生成“${jianhuaWenben(value('title'))}”` : '生成 Markdown 文件'
+    case 'create_pdf_document':
+      return value('title') ? `生成“${jianhuaWenben(value('title'))}”` : '生成 PDF 文件'
     default:
       return ''
   }
@@ -139,6 +173,8 @@ const AETHERDOCK_SYSTEM_PROMPT = `你是 AetherDock 的文档与知识助手，�
 - 对新闻、天气、价格、时效性政策等明确需要最新信息的问题，可直接联网搜索。
 - 用户明确要求保存内容时，使用收集箱保存；保存前确保标题和正文完整、易于回看。
 - 用户明确要求把资料库中的 Word、Markdown 或 TXT 文档整理为 Word 修订副本时，先读取原文，再使用“生成 Word 修订副本”。TXT 内容可直接生成 DOCX，无需先转为 Markdown。该功能会新建并归档一份 DOCX，绝不覆盖原文件；当前版本采用清晰的统一排版，不承诺还原原文复杂版式。
+- 用户明确要求生成 Markdown 或 MD 文件时，使用“生成 Markdown 文件”。该功能会将当前整理出的正文写入新的 UTF-8 Markdown 文件并加入资料库，不覆盖原文件。
+- 用户明确要求生成 PDF 文件时，使用“生成 PDF 文件”。该功能会将当前整理出的正文排版为新的 A4 PDF 并加入资料库，不覆盖原文件；当前版本支持标题、段落、三级标题、列表和代码块等常用 Markdown 结构。
 - 输出格式必须精确匹配用户要求。某格式没有对应工具、工具不可用、生成失败或用户拒绝授权时，直接说明无法生成该格式；严禁调用其他文档工具作为降级方案，也不能更改扩展名冒充目标格式。
 - 用户要求 Excel（未指定后缀）或明确要求 XLSX 时，使用“生成 Excel 工作簿”，绝不能改用 Word 工具。将表格内容以 Markdown 表格传入；该工具只生成 XLSX。用户明确要求旧式 XLS 时，当前不支持生成，必须直接说明无法生成 XLS，不能改为生成 XLSX、DOCX、CSV 或其他格式。该功能可直接根据用户提供或当前整理出的内容生成，不要求存在原始文件。
 - 用户明确要求归档收集箱、重命名、删除资料或更新资料笔记时，先用对应工具执行；每一次写入都会在界面中等待用户确认，未确认时不得声称操作已完成。工具结束后的真实操作结果由界面按对话顺序展示；继续回复时仅补充后续建议，不重复复述操作结果。
@@ -172,6 +208,8 @@ function peizhi(options = {}) {
   if (typeof options.saveNote === 'function') saveNote = options.saveNote
   if (typeof options.createDocxCopy === 'function') createDocxCopy = options.createDocxCopy
   if (typeof options.createXlsxWorkbook === 'function') createXlsxWorkbook = options.createXlsxWorkbook
+  if (typeof options.createMarkdownFile === 'function') createMarkdownFile = options.createMarkdownFile
+  if (typeof options.createPdfDocument === 'function') createPdfDocument = options.createPdfDocument
   if (typeof options.requestLibraryApproval === 'function') requestLibraryApproval = options.requestLibraryApproval
   if (typeof options.listInbox === 'function') listInbox = options.listInbox
   if (typeof options.archiveInbox === 'function') archiveInbox = options.archiveInbox
@@ -527,6 +565,7 @@ function jiangzaoGongju(Type) {
           sourceItemId: String(params.sourceItemId ?? ''),
           title: String(params.title ?? ''),
           content: String(params.content ?? ''),
+          yixianShouquan: xiaofeiYuxianWenjianShouquan('create_docx_copy'),
         })
         if (!result.chenggong) {
           if (result.daima === 'user_declined') return { content: [{ type: 'text', text: '已拒绝生成，Word 副本未创建。' }], details: {} }
@@ -554,6 +593,7 @@ function jiangzaoGongju(Type) {
           sourceItemId: String(params.sourceItemId ?? ''),
           title: String(params.title ?? ''),
           content: String(params.content ?? ''),
+          yixianShouquan: xiaofeiYuxianWenjianShouquan('create_xlsx_workbook'),
         })
         if (!result.chenggong) {
           if (result.daima === 'user_declined') return { content: [{ type: 'text', text: '已拒绝生成，Excel 工作簿未创建。' }], details: {} }
@@ -566,7 +606,59 @@ function jiangzaoGongju(Type) {
     },
   })
 
-  return [webSearchTool, fetchUrlTool, librarySearchTool, libraryReadTool, inboxListTool, saveNoteTool, createDocxCopyTool, createXlsxWorkbookTool, inboxArchiveTool, inboxRemoveTool, libraryRenameTool, libraryDeleteTool, libraryUpdateNotesTool]
+  const createMarkdownFileTool = pi.defineTool({
+    name: 'create_markdown_file',
+    label: '生成 Markdown 文件',
+    description: '仅用于用户明确要求 Markdown 或 MD 文件的情况。根据用户提供或当前整理出的内容创建新的 UTF-8 Markdown 文件并加入资料库，不会覆盖任何原始资料。不得用于 PDF、DOCX、XLSX、CSV 或其他格式请求。',
+    parameters: Type.Object({
+      title: Type.String({ description: 'Markdown 文件标题，不需要扩展名' }),
+      content: Type.String({ description: '写入 Markdown 文件的正文' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      try {
+        const result = await createMarkdownFile({
+          title: String(params.title ?? ''),
+          content: String(params.content ?? ''),
+          yixianShouquan: xiaofeiYuxianWenjianShouquan('create_markdown_file'),
+        })
+        if (!result.chenggong) {
+          if (result.daima === 'user_declined') return { content: [{ type: 'text', text: '已拒绝生成，Markdown 文件未创建。' }], details: {} }
+          return { content: [{ type: 'text', text: `生成失败：${result.xiaoxi ?? '未知错误'}` }], details: {} }
+        }
+        return { content: [{ type: 'text', text: `已生成 Markdown 文件《${result.title}》并加入资料库。` }], details: {} }
+      } catch (error) {
+        return { content: [{ type: 'text', text: `生成失败：${error?.message ?? '未知错误'}` }], details: {} }
+      }
+    },
+  })
+
+  const createPdfDocumentTool = pi.defineTool({
+    name: 'create_pdf_document',
+    label: '生成 PDF 文件',
+    description: '仅用于用户明确要求 PDF 文件的情况。根据用户提供或当前整理出的内容创建新的 A4 PDF 文件并加入资料库，不会覆盖任何原始资料。支持常用 Markdown 的标题、段落、列表和代码块；不得用于 DOCX、XLSX、CSV 或其他格式请求。',
+    parameters: Type.Object({
+      title: Type.String({ description: 'PDF 文件标题，不需要扩展名' }),
+      content: Type.String({ description: '写入 PDF 文件的正文，支持常用 Markdown 结构' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      try {
+        const result = await createPdfDocument({
+          title: String(params.title ?? ''),
+          content: String(params.content ?? ''),
+          yixianShouquan: xiaofeiYuxianWenjianShouquan('create_pdf_document'),
+        })
+        if (!result.chenggong) {
+          if (result.daima === 'user_declined') return { content: [{ type: 'text', text: '已拒绝生成，PDF 文件未创建。' }], details: {} }
+          return { content: [{ type: 'text', text: `生成失败：${result.xiaoxi ?? '未知错误'}` }], details: {} }
+        }
+        return { content: [{ type: 'text', text: `已生成 PDF 文件《${result.title}》并加入资料库。` }], details: {} }
+      } catch (error) {
+        return { content: [{ type: 'text', text: `生成失败：${error?.message ?? '未知错误'}` }], details: {} }
+      }
+    },
+  })
+
+  return [webSearchTool, fetchUrlTool, librarySearchTool, libraryReadTool, inboxListTool, saveNoteTool, createDocxCopyTool, createXlsxWorkbookTool, createMarkdownFileTool, createPdfDocumentTool, inboxArchiveTool, inboxRemoveTool, libraryRenameTool, libraryDeleteTool, libraryUpdateNotesTool]
 }
 
 // 流式文本按短间隔聚合后统一推送，避免逐 token 触发主进程到渲染层的 IPC 洪峰。
@@ -608,6 +700,7 @@ function anzhuangDingyue() {
         break
       case 'agent_settled':
         qingkongTextDuilie()
+        yuxianShouquanWenjianToolName = ''
         sendEvent({ type: 'end' })
         break
       case 'message_update': {
@@ -898,18 +991,45 @@ function init(options = {}) {
 
 // 发送消息；运行中的会话按转向消息排队，避免覆盖当前回合。
 async function faSong(message) {
-  await querenJiuxu()
   const text = String(message ?? '').trim()
   if (!text) return { accepted: false, xiaoxi: '消息不能为空' }
+  const wenjianShengchengQingqiu = tiquWenjianShengchengQingqiu(text)
+  if (wenjianShengchengQingqiu) {
+    const approved = await querenZiliaokuXieru({
+      title: `允许生成 ${wenjianShengchengQingqiu.label} 文件？`,
+      message: `将根据当前对话整理标题和内容，并创建新的 ${wenjianShengchengQingqiu.label} 文件加入资料库。`,
+      detail: '不会修改任何原始资料。',
+      tone: 'default',
+    })
+    if (!approved) {
+      sendEvent({ type: 'text', delta: `已拒绝，未执行 ${wenjianShengchengQingqiu.label} 文件生成。` })
+      sendEvent({ type: 'end' })
+      return { accepted: true, mode: 'generation-declined' }
+    }
+    yuxianShouquanWenjianToolName = wenjianShengchengQingqiu.toolName
+    sendEvent({ type: 'document-preparing', label: '正在整理标题和内容' })
+  }
+  try {
+    await querenJiuxu()
+  } catch (error) {
+    yuxianShouquanWenjianToolName = ''
+    throw error
+  }
   const textWithInboxContext = zhuruJiantiebanShishiShangxiawen(text)
+  const textWithGenerationApproval = wenjianShengchengQingqiu
+    ? `${textWithInboxContext}\n\n[系统提示：用户已确认生成 ${wenjianShengchengQingqiu.label} 文件。请先整理标题和正文，再调用 ${wenjianShengchengQingqiu.toolName} 写入文件；本次对应格式的写入已获一次性授权，无需再次请求确认。]`
+    : textWithInboxContext
   if (session.isStreaming) {
-    void session.steer(textWithInboxContext).catch((error) => sendEvent({ type: 'error', message: error?.message ?? '发送失败' }))
+    void session.steer(textWithGenerationApproval).catch((error) => sendEvent({ type: 'error', message: error?.message ?? '发送失败' }))
     return { accepted: true, mode: 'steer' }
   }
   // Promise 完成是生命周期事件丢失时的最终兜底，确保授权后的会话不会永久卡在处理中。
-  void session.prompt(textWithInboxContext)
+  void session.prompt(textWithGenerationApproval)
     .then(() => sendEvent({ type: 'end' }))
-    .catch((error) => sendEvent({ type: 'error', message: error?.message ?? '请求失败' }))
+    .catch((error) => {
+      yuxianShouquanWenjianToolName = ''
+      sendEvent({ type: 'error', message: error?.message ?? '请求失败' })
+    })
   return { accepted: true, mode: 'prompt' }
 }
 
@@ -1266,6 +1386,7 @@ function close() {
     flushTextTimer = null
   }
   pendingText = ''
+  yuxianShouquanWenjianToolName = ''
   quxiaoSessionDingyue()
   quxiaoSessionDingyue = () => {}
   try {

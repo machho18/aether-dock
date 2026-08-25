@@ -361,12 +361,15 @@
             'assistant-bubble-inner--activity': message.role === 'assistant' && !message.content && message.pending,
           }"
         >
-          <div v-if="message.role === 'assistant' && yinggaiXianshiChuliGuocheng(message)" class="assistant-activity">
+          <div
+            v-if="message.role === 'assistant' && yinggaiXianshiChuliGuocheng(message)"
+            class="assistant-activity"
+            :class="{ 'assistant-activity--completed': Boolean(huoquChuliXiangqing(message)) }"
+          >
             <div class="assistant-reasoning" :class="{ 'assistant-reasoning--pending': message.pending, 'assistant-reasoning--failed': message.failed, 'assistant-reasoning--completed': !message.pending && !message.failed }">
               <div class="assistant-reasoning-trigger">
-                <span class="assistant-reasoning-state" aria-hidden="true"></span>
-                <span :class="{ 'assistant-reasoning-status--completed': !message.pending && !message.failed }">{{ huoquChuliZhuangtai(message) }}</span>
-                <span>{{ huoquChuliXiangqing(message) }}</span>
+                <span v-if="huoquChuliZhuangtai(message)" class="assistant-status-shimmer">{{ huoquChuliZhuangtai(message) }}</span>
+                <span class="assistant-reasoning-duration">{{ huoquChuliXiangqing(message) }}</span>
               </div>
             </div>
           </div>
@@ -384,18 +387,10 @@
                   <p>{{ huoquXieruJieguo(block.content, block.type === 'approval-result').content }}</p>
                 </div>
               </div>
-              <div v-else class="assistant-tool-event" :class="`assistant-tool-event--${block.tool.status}`">
-                <span class="assistant-tool-event-icon" aria-hidden="true">›_</span>
-                <span>{{ huoquShixuGongjuWenAn(block.tool) }}</span>
-              </div>
             </template>
           </template>
           <div v-else-if="message.role === 'assistant' && message.content" class="assistant-markdown" v-html="xuanzaiMarkdown(message.content)"></div>
           <p v-else>{{ message.content }}</p>
-          <div v-if="yinggaiXianshiJixuShengcheng(message)" class="assistant-stream-wait" role="status" aria-live="polite">
-            <span>正在继续生成</span>
-            <span class="assistant-stream-wait-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-          </div>
           <span v-if="message.role === 'assistant' && huoquTokenXiaohao(message)" class="assistant-token-usage">{{ huoquTokenXiaohao(message) }}</span>
         </div>
         <img v-if="message.role === 'user'" class="assistant-message-avatar assistant-message-avatar--user" :src="yonghuHuiFuIcon" alt="" aria-hidden="true">
@@ -636,18 +631,6 @@ function huoquXieruJieguo(rawContent, isShouquanJieguo) {
   return { tone: 'completed', title: isShouquanJieguo ? '已允许操作' : '操作已完成', content }
 }
 
-// 工具行只显示动作名称，执行状态交由图标与颜色表达。
-function huoquShixuGongjuWenAn(tool) {
-  return tool?.label || (tool?.name === 'bash' ? '命令' : '工具')
-}
-
-// 仅在文本与工具事件均停顿一小段时间后提示，避免流式输出期间闪现无效状态。
-function yinggaiXianshiJixuShengcheng(message) {
-  const lastActivityAt = Number(message?.lastActivityAt ?? message?.startedAt)
-  const isLiuShiZanting = Number.isFinite(lastActivityAt) && chuliJishiNow.value - lastActivityAt >= 750
-  return Boolean(message?.role === 'assistant' && message?.pending && !isGongjuJinxing(message) && isLiuShiZanting)
-}
-
 function yinggaiXianshiChuliGuocheng(message) {
   return Boolean(message?.pending || message?.toolCalls?.length || message?.completedAt)
 }
@@ -673,12 +656,13 @@ function geshiChuliShijian(startedAt, completedAt = 0) {
 }
 
 function huoquChuliZhuangtai(message) {
-  if (message?.pending) return isGongjuJinxing(message) ? '正在处理' : '正在思考'
+  if (message?.pending) return isGongjuJinxing(message) ? (message.toolLabel || '正在处理') : '正在思考'
   if (message?.failed) return '处理失败'
-  return '已完成'
+  return ''
 }
 
 function huoquChuliXiangqing(message) {
+  if (message?.pending) return ''
   const shijian = geshiChuliShijian(message?.startedAt, message?.completedAt)
   return shijian ? `耗时 ${shijian}` : ''
 }
@@ -716,7 +700,7 @@ function huoquShouquanAnniu(request) {
   if (title.includes('删除') || title.includes('移除')) return '确认删除'
   if (title.includes('重命名')) return '确认重命名'
   if (title.includes('笔记')) return '确认更新'
-  if (title.includes('Word')) return '确认生成'
+  if (['Word', 'Excel', 'Markdown', 'PDF'].some((keyword) => title.includes(keyword))) return '确认生成'
   if (title.includes('保存')) return '确认保存'
   return '确认执行'
 }
@@ -2394,6 +2378,8 @@ onUnmounted(() => {
 .assistant-config-hint-action { color: var(--assistant-graphite); }
 .assistant-config-hint-copy small { color: var(--assistant-pencil); }
 .assistant-bubble { gap: 9px; }
+.assistant-bubble--assistant { width: min(100%, 620px); }
+.assistant-bubble--assistant .assistant-bubble-inner { min-width: 0; flex: 1; }
 .assistant-message-avatar {
   width: 31px;
   height: 31px;
@@ -2409,11 +2395,12 @@ onUnmounted(() => {
   box-shadow: 0 3px 10px rgb(15 17 16 / 5%);
 }
 .assistant-bubble--assistant .assistant-bubble-inner:not(.assistant-bubble-inner--error) {
-  padding: 10px 13px;
-  border-color: rgb(69 86 69 / 16%);
-  border-radius: 12px 12px 12px 5px;
-  background: rgb(249 252 248 / 88%);
-  box-shadow: 0 3px 10px rgb(15 17 16 / 5%);
+  max-width: none;
+  padding: 0 0 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .assistant-bubble-inner::before {
   position: absolute;
@@ -2470,30 +2457,12 @@ onUnmounted(() => {
   min-width: 0;
   margin: 0 0 12px;
 }
-/* 工具行保留执行脉络，但不再展示重复的步骤明细。 */
-.assistant-tool-event {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px 0 12px;
-  color: #7f8a81;
-  font: 600 11px/1.35 var(--assistant-font-sans);
+/* 完成耗时与后续正文分隔，保持生成过程的阅读层级。 */
+.assistant-activity--completed {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgb(72 91 74 / 14%);
 }
-.assistant-tool-event-icon {
-  display: inline-grid;
-  width: 14px;
-  height: 14px;
-  place-items: center;
-  border: 1px solid #aeb8b0;
-  border-radius: 3px;
-  color: #7c877e;
-  font: 700 8px/1 var(--assistant-font-mono);
-  letter-spacing: -1px;
-}
-.assistant-tool-event--running { color: #5c8562; }
-.assistant-tool-event--running .assistant-tool-event-icon { border-color: #79a87f; color: #4f8558; animation: assistant-reasoning-pulse 1.2s ease-in-out infinite; }
-.assistant-tool-event--failed { color: #a45a50; }
-.assistant-tool-event--failed .assistant-tool-event-icon { border-color: #c8877d; color: #a45a50; }
 /* 授权结果单独呈现用户决定与实际影响，避免与助手正文混淆。 */
 .assistant-write-result {
   display: flex;
@@ -2517,60 +2486,40 @@ onUnmounted(() => {
 .assistant-write-result p { margin: 1px 0 0; color: #59665a; font: 11px/1.45 var(--assistant-font-sans); }
 .assistant-write-result--rejected strong { color: #86483f; }
 .assistant-write-result--failed strong { color: #806128; }
-/* 文本流暂时停顿时持续提示，直到下一段文本、工具事件或结束事件到达。 */
-.assistant-stream-wait {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 18px;
-  margin: 10px 0 8px;
-  color: #718074;
-  font: 600 10px/1.35 var(--assistant-font-sans);
-}
-.assistant-stream-wait-dots { display: inline-flex; align-items: center; gap: 3px; }
-.assistant-stream-wait-dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #6b9870;
-  animation: assistant-stream-wait-dot 1s ease-in-out infinite;
-}
-.assistant-stream-wait-dots i:nth-child(2) { animation-delay: .14s; }
-.assistant-stream-wait-dots i:nth-child(3) { animation-delay: .28s; }
 .assistant-reasoning {
   min-width: 0;
   color: var(--assistant-pencil);
 }
 .assistant-reasoning-trigger {
   display: flex;
-  width: 100%;
   align-items: center;
   gap: 7px;
   min-height: 24px;
   padding: 0;
   border: 0;
   background: transparent;
-  color: #566259;
+  color: #8c938c;
   cursor: default;
-  font: 700 11px/1.4 var(--assistant-font-sans);
+  font: 500 12px/1.5 var(--assistant-font-sans);
   letter-spacing: .005em;
   text-align: left;
   user-select: none;
 }
-.assistant-reasoning-state {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border: 2px solid #8d978e;
-  border-radius: 50%;
-  background: transparent;
+.assistant-status-shimmer {
+  color: #627064;
+  animation: assistant-tool-text-blink 3s ease-in-out infinite;
 }
-.assistant-reasoning--pending .assistant-reasoning-state { border-color: #5a9160; background: #5a9160; box-shadow: 0 0 0 3px rgb(90 145 96 / 12%); animation: assistant-reasoning-pulse 1.2s ease-in-out infinite; }
-.assistant-reasoning--failed .assistant-reasoning-state { border-color: #bd6a5c; background: #bd6a5c; }
-.assistant-reasoning--completed .assistant-reasoning-state { border-color: #629264; background: #629264; }
-.assistant-reasoning-status--completed { color: #2f7f38; }
-@keyframes assistant-reasoning-pulse { 50% { opacity: .4; } }
-@keyframes assistant-stream-wait-dot { 50% { opacity: .28; transform: translateY(-2px); } }
+.assistant-reasoning-duration {
+  color: #969d96;
+  font-weight: 400;
+}
+@keyframes assistant-tool-text-blink {
+  0%, 18%, 100% { opacity: 1; }
+  48%, 68% { opacity: .28; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-status-shimmer { animation: none; }
+}
 
 /* 输入区以统一的细分割线收束，保留纸张底色。 */
 .assistant-composer {
@@ -2683,9 +2632,7 @@ onUnmounted(() => {
   .assistant-latest-button { transition: none; }
   .assistant-document-enter-active,
   .assistant-document-leave-active { transition: none; }
-  .assistant-reasoning--pending .assistant-reasoning-state,
-  .assistant-conversation-loading,
-  .assistant-stream-wait-dots i { animation: none; }
+  .assistant-conversation-loading { animation: none; }
   .assistant-empty-cursor { animation: none; }
 }
 </style>
