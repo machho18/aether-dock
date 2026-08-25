@@ -24,6 +24,7 @@ const ipcTongdao = Object.freeze({
   importLibraryContent: 'library:import',
   captureClipboardContent: 'library:capture-clipboard',
   getClipboardItems: 'clipboard:read-items',
+  jiantiebanChanged: 'clipboard:changed',
   archiveClipboardItems: 'clipboard:archive-items',
   deleteClipboardItems: 'clipboard:delete-items',
   clearClipboardItems: 'clipboard:clear-items',
@@ -43,6 +44,23 @@ const ipcTongdao = Object.freeze({
   renameLibraryItem: 'library:rename-item',
   deleteLibraryItem: 'library:delete-item',
   shareLibraryItem: 'library:share-item',
+  piPrompt: 'pi:prompt',
+  piAbort: 'pi:abort',
+  piResolveLibraryApproval: 'pi:resolve-library-approval',
+  piGetStatus: 'pi:read-status',
+  piSetProviderKey: 'pi:set-provider-key',
+  piClearProviderKey: 'pi:clear-provider-key',
+  piSetModel: 'pi:set-model',
+  piSetThinking: 'pi:set-thinking',
+  piAddProvider: 'pi:add-provider',
+  piRemoveProvider: 'pi:remove-provider',
+  chatListConversations: 'chat:list-conversations',
+  chatGetConversation: 'chat:get-conversation',
+  chatCreateConversation: 'chat:create-conversation',
+  chatSaveConversation: 'chat:save-conversation',
+  chatSwitchConversation: 'chat:switch-conversation',
+  chatDeleteConversation: 'chat:delete-conversation',
+  piEvent: 'pi:event',
 })
 
 // 在预加载隔离层直接读取原生 File，避免跨 Context Bridge 后丢失文件路径
@@ -115,6 +133,12 @@ contextBridge.exposeInMainWorld('aetherDock', {
   },
   captureClipboardContent: () => ipcRenderer.invoke(ipcTongdao.captureClipboardContent),
   getClipboardItems: () => ipcRenderer.invoke(ipcTongdao.getClipboardItems),
+  onJiantiebanChanged: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = () => callback()
+    ipcRenderer.on(ipcTongdao.jiantiebanChanged, listener)
+    return () => ipcRenderer.removeListener(ipcTongdao.jiantiebanChanged, listener)
+  },
   archiveClipboardItems: (itemIds) => ipcRenderer.invoke(ipcTongdao.archiveClipboardItems, itemIds),
   deleteClipboardItems: (itemIds) => ipcRenderer.invoke(ipcTongdao.deleteClipboardItems, itemIds),
   clearClipboardItems: () => ipcRenderer.invoke(ipcTongdao.clearClipboardItems),
@@ -139,4 +163,26 @@ contextBridge.exposeInMainWorld('aetherDock', {
   renameLibraryItem: (itemId, title) => ipcRenderer.invoke(ipcTongdao.renameLibraryItem, itemId, title),
   deleteLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.deleteLibraryItem, itemId),
   shareLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.shareLibraryItem, itemId),
+  piPrompt: (message) => ipcRenderer.invoke(ipcTongdao.piPrompt, message),
+  piAbort: () => ipcRenderer.invoke(ipcTongdao.piAbort),
+  piResolveLibraryApproval: (requestId, approved) => ipcRenderer.invoke(ipcTongdao.piResolveLibraryApproval, requestId, approved),
+  piGetStatus: () => ipcRenderer.invoke(ipcTongdao.piGetStatus),
+  piSetProviderKey: (provider, key) => ipcRenderer.invoke(ipcTongdao.piSetProviderKey, provider, key),
+  piClearProviderKey: (provider) => ipcRenderer.invoke(ipcTongdao.piClearProviderKey, provider),
+  piSetModel: (provider, modelId) => ipcRenderer.invoke(ipcTongdao.piSetModel, provider, modelId),
+  piSetThinking: (level) => ipcRenderer.invoke(ipcTongdao.piSetThinking, level),
+  piAddProvider: (payload) => ipcRenderer.invoke(ipcTongdao.piAddProvider, payload),
+  piRemoveProvider: (provider) => ipcRenderer.invoke(ipcTongdao.piRemoveProvider, provider),
+  chatListConversations: () => ipcRenderer.invoke(ipcTongdao.chatListConversations),
+  chatGetConversation: (conversationId) => ipcRenderer.invoke(ipcTongdao.chatGetConversation, conversationId),
+  chatCreateConversation: () => ipcRenderer.invoke(ipcTongdao.chatCreateConversation),
+  chatSaveConversation: (conversationId, messages) => ipcRenderer.invoke(ipcTongdao.chatSaveConversation, conversationId, messages),
+  chatSwitchConversation: (conversationId) => ipcRenderer.invoke(ipcTongdao.chatSwitchConversation, conversationId),
+  chatDeleteConversation: (conversationId) => ipcRenderer.invoke(ipcTongdao.chatDeleteConversation, conversationId),
+  onPiEvent: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_, event) => callback(event)
+    ipcRenderer.on(ipcTongdao.piEvent, listener)
+    return () => ipcRenderer.removeListener(ipcTongdao.piEvent, listener)
+  },
 })

@@ -1,5 +1,6 @@
 import docIcon from '@/assets/icons/doc.svg'
 import pdfIcon from '@/assets/icons/pdf.svg'
+import txtIcon from '@/assets/icons/txt.svg'
 import xlsIcon from '@/assets/icons/xls.svg'
 import fileIcon from '@/assets/icons/wendang.svg'
 import imageIcon from '@/assets/icons/tupian.svg'
@@ -9,6 +10,7 @@ const fileIconRules = [
   { extensions: ['.pdf'], type: 'PDF', icon: pdfIcon },
   { extensions: ['.xls', '.xlsx'], type: 'XLS', icon: xlsIcon },
   { extensions: ['.doc', '.docx'], type: 'DOC', icon: docIcon },
+  { extensions: ['.txt'], type: 'TXT', icon: txtIcon },
 ]
 const cardTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',

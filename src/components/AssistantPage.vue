@@ -1,0 +1,2691 @@
+<template>
+  <section class="assistant-page" aria-label="AI 助手" @click="guanbiTuiliCaidan">
+    <header class="assistant-topbar">
+      <button class="assistant-back" type="button" aria-label="返回资料库" title="返回资料库" @click.stop="emit('back')">
+        <PhArrowLeft :size="16" weight="bold" />
+      </button>
+      <div class="assistant-identity">
+        <span class="assistant-identity-mascot" aria-hidden="true">
+          <img class="assistant-identity-icon" :src="aiBiaotiIcon" alt="">
+        </span>
+        <div class="assistant-heading">
+          <strong>AI 助手</strong>
+          <small>{{ currentModelName }}</small>
+        </div>
+      </div>
+      <button
+        class="assistant-action"
+        :class="{ 'assistant-action--active': isConfigOpen }"
+        type="button"
+        aria-label="配置模型"
+        :aria-pressed="isConfigOpen"
+        title="配置模型"
+        @click.stop="qiehuanConfigPanel"
+      >
+        <PhKey :size="15" weight="bold" />
+      </button>
+    </header>
+
+    <Transition name="assistant-config">
+      <section v-if="isConfigOpen" class="assistant-config-panel" aria-label="模型配置">
+        <nav class="assistant-config-tabs" aria-label="配置分类">
+          <button type="button" :class="{ 'is-active': configTab === 'model' }" :disabled="!status?.models?.length" @click="configTab = 'model'">模型</button>
+          <button type="button" :class="{ 'is-active': configTab === 'provider' }" @click="configTab = 'provider'">供应商</button>
+        </nav>
+
+        <div v-if="configTab === 'model'" class="assistant-config-view">
+          <div class="assistant-model-manager">
+            <section v-if="currentModel" class="assistant-current-model" aria-label="当前使用的模型">
+              <span class="assistant-current-model-dot" aria-hidden="true"></span>
+              <div class="assistant-current-model-copy">
+                <span class="assistant-section-label">正在使用</span>
+                <strong>{{ currentModel.name }}</strong>
+                <small>{{ currentModelProviderName }}</small>
+              </div>
+            </section>
+
+            <div class="assistant-model-list" aria-label="可用模型">
+              <div class="assistant-model-list-heading">
+                <span class="assistant-section-label">可用模型</span>
+                <span>{{ moxingMatchCount }} / {{ status.models.length }} 个</span>
+              </div>
+
+              <label class="assistant-field assistant-model-filter">
+                <span>筛选模型</span>
+                <span class="assistant-model-search">
+                  <PhMagnifyingGlass :size="14" aria-hidden="true" />
+                  <input v-model="moxingKeyword" type="search" placeholder="按名称或 ID 搜索" autocomplete="off">
+                </span>
+              </label>
+
+              <!-- 分批展示完整模型目录，避免大型供应商列表一次性创建大量节点。 -->
+              <section v-for="group in visibleModelGroups" :key="group.provider" class="assistant-provider-group">
+                <div class="assistant-provider-group-heading">
+                  <span>{{ group.name }}</span>
+                  <span v-if="modelGroups.length > 1">{{ group.matchedCount }} 个模型</span>
+                </div>
+                <div class="assistant-model-options">
+                  <button
+                    v-for="model in group.models"
+                    :key="`${model.provider}/${model.id}`"
+                    class="assistant-model-option"
+                    :class="{ 'assistant-model-option--current': isCurrentModel(model) }"
+                    type="button"
+                    :disabled="isSavingKey || isSwitchingModel || isCurrentModel(model)"
+                    @click="qiehuanModel(model)"
+                  >
+                    <span class="assistant-model-option-copy">
+                      <strong>{{ model.name }}</strong>
+                      <small>{{ model.id }}</small>
+                    </span>
+                    <span v-if="isCurrentModel(model)" class="assistant-model-option-current" aria-label="当前使用">
+                      <PhCheck :size="14" weight="bold" />
+                    </span>
+                    <span v-else class="assistant-model-option-action">切换</span>
+                  </button>
+                </div>
+                <button v-if="group.remainingCount" class="assistant-model-more" type="button" @click="zengjiaMoxingZhanshi(group.provider)">
+                  显示更多（剩余 {{ group.remainingCount }} 个）
+                </button>
+              </section>
+              <p v-if="!visibleModelGroups.length" class="assistant-configured assistant-configured--empty">没有匹配的模型。</p>
+            </div>
+
+          </div>
+        </div>
+
+        <div v-else class="assistant-config-view">
+          <div class="assistant-config-sub">
+            <div class="assistant-config-subtitle">供应商配置</div>
+            <div class="assistant-config-row">
+              <div class="assistant-field assistant-field--provider">
+                <span>供应商</span>
+                <div class="assistant-provider-picker">
+                  <button
+                    class="assistant-provider-trigger"
+                    type="button"
+                    :aria-expanded="isProviderMenuOpen"
+                    aria-haspopup="listbox"
+                    :disabled="isSavingKey || isRemovingProvider"
+                    @click="isProviderMenuOpen = !isProviderMenuOpen"
+                    @keydown.esc="isProviderMenuOpen = false"
+                  >
+                    <span>{{ selectedProviderName }}</span>
+                    <PhCaretDown :size="13" weight="bold" aria-hidden="true" />
+                  </button>
+
+                  <!-- 保持供应商列表在应用内呈现，避免系统下拉框样式割裂。 -->
+                  <div v-if="isProviderMenuOpen" class="assistant-provider-menu" role="listbox" aria-label="选择供应商">
+                    <section v-if="neizhiProviderList.length" class="assistant-provider-group" aria-label="内置供应商">
+                      <p class="assistant-provider-group-label">内置供应商</p>
+                      <button
+                        v-for="provider in neizhiProviderList"
+                        :key="provider.id"
+                        class="assistant-provider-option"
+                        :class="{ 'assistant-provider-option--selected': selectedProvider === provider.id }"
+                        type="button"
+                        role="option"
+                        :aria-selected="selectedProvider === provider.id"
+                        @click="qiehuanProvider(provider.id)"
+                      >
+                        <span>{{ provider.name }}</span>
+                        <PhCheck v-if="selectedProvider === provider.id" :size="13" weight="bold" aria-hidden="true" />
+                      </button>
+                    </section>
+                    <section v-if="zidingyiProviderList.length" class="assistant-provider-group" aria-label="自定义供应商">
+                      <p class="assistant-provider-group-label">自定义供应商</p>
+                      <button
+                        v-for="provider in zidingyiProviderList"
+                        :key="provider.id"
+                        class="assistant-provider-option"
+                        :class="{ 'assistant-provider-option--selected': selectedProvider === provider.id }"
+                        type="button"
+                        role="option"
+                        :aria-selected="selectedProvider === provider.id"
+                        @click="qiehuanProvider(provider.id)"
+                      >
+                        <span>{{ provider.name }}</span>
+                        <PhCheck v-if="selectedProvider === provider.id" :size="13" weight="bold" aria-hidden="true" />
+                      </button>
+                    </section>
+                  </div>
+                </div>
+              </div>
+              <label class="assistant-field assistant-field--key">
+                <span>API 密钥</span>
+                <input v-model="apiKey" :type="keyInputType" placeholder="sk-..." autocomplete="off" @focus="chuliApiKeyFocus" @blur="chuliApiKeyBlur">
+              </label>
+            </div>
+            <div class="assistant-provider-actions">
+              <button class="assistant-save" type="button" :disabled="isSavingKey || isRemovingProvider || !apiKey.trim()" @mousedown.prevent @click="baocunProviderKey">
+                {{ isSavingKey ? '保存中…' : '保存密钥' }}
+              </button>
+              <button
+                v-if="currentSelectedProvider"
+                class="assistant-provider-clean"
+                type="button"
+                :disabled="isSavingKey || isRemovingProvider || isBusy || (!currentSelectedProvider.custom && !currentSelectedProvider.configured)"
+                @click="qingqiuGongyingshangQingli"
+              >
+                <PhTrash :size="13" weight="bold" aria-hidden="true" />
+                {{ currentSelectedProvider.custom ? '删除供应商' : '移除供应商配置' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="assistant-config-sub">
+            <div class="assistant-config-subtitle">自定义供应商</div>
+            <div class="assistant-field">
+              <span>接口协议</span>
+              <div class="assistant-protocol-switch" role="group" aria-label="选择接口协议">
+                <button
+                  class="assistant-protocol-option"
+                  :class="{ 'assistant-protocol-option--selected': customXieyi === 'openai' }"
+                  type="button"
+                  :aria-pressed="customXieyi === 'openai'"
+                  @click="customXieyi = 'openai'"
+                >OpenAI 兼容</button>
+                <button
+                  class="assistant-protocol-option"
+                  :class="{ 'assistant-protocol-option--selected': customXieyi === 'anthropic' }"
+                  type="button"
+                  :aria-pressed="customXieyi === 'anthropic'"
+                  @click="customXieyi = 'anthropic'"
+                >Anthropic 兼容</button>
+              </div>
+            </div>
+            <label class="assistant-field">
+              <span>名称（可留空，按路径自动识别）</span>
+              <input v-model="customName" type="text" placeholder="自动识别" autocomplete="off">
+            </label>
+            <label class="assistant-field">
+              <span>API 路径</span>
+              <input v-model="customUrl" type="text" :placeholder="customLuJingPlaceholder" autocomplete="off">
+            </label>
+            <label class="assistant-field">
+              <span>模型 ID（选填）</span>
+              <input v-model="customModelId" type="text" :placeholder="customMoxingPlaceholder" autocomplete="off">
+            </label>
+            <label class="assistant-field">
+              <span>密钥</span>
+              <input v-model="customKey" type="password" placeholder="sk-..." autocomplete="off">
+            </label>
+            <button class="assistant-save assistant-save--primary" type="button" :disabled="isAddingProvider" @click="tianjiaCustomProvider">
+              {{ isAddingProvider ? '接入中…' : customModelId.trim() ? '接入模型' : '识别并接入' }}
+            </button>
+          </div>
+        </div>
+
+        <p v-if="statusError" class="assistant-configured assistant-configured--error" role="alert">{{ statusError }}</p>
+      </section>
+    </Transition>
+
+    <Transition name="assistant-document">
+      <section v-if="isDocumentationOpen" class="assistant-document-panel" aria-label="AI 助手使用文档">
+        <header class="assistant-document-header">
+          <div>
+            <strong>AI 助手使用文档</strong>
+            <small>从配置到第一次提问</small>
+          </div>
+          <button type="button" aria-label="关闭使用文档" title="关闭" @click="isDocumentationOpen = false">
+            <PhX :size="17" weight="bold" />
+          </button>
+        </header>
+        <div class="assistant-document-content">
+          <section class="assistant-document-hero" aria-labelledby="assistant-document-title">
+            <span>快速开始</span>
+            <h1 id="assistant-document-title">把想做的事直接告诉助手</h1>
+            <p>先配置模型，然后说明目标、材料和期待的结果。助手会根据需要检索资料库或联网查找。</p>
+          </section>
+
+          <ol class="assistant-document-steps" aria-label="开始使用步骤">
+            <li><strong>配置模型</strong><span>点击顶部钥匙图标，选择供应商并保存 API 密钥。</span></li>
+            <li><strong>描述任务</strong><span>在输入框说明你要整理、查找或生成什么。</span></li>
+            <li><strong>继续追问</strong><span>不满意时直接补充要求，例如“再精简一些”。</span></li>
+          </ol>
+
+          <section class="assistant-document-examples" aria-labelledby="assistant-document-example-title">
+            <div>
+              <h2 id="assistant-document-example-title">不知道怎么问？从这里开始</h2>
+              <p>点击示例会带入输入框，你可以先修改再发送。</p>
+            </div>
+            <div class="assistant-document-example-list">
+              <button v-for="example in shiyongWendangShili" :key="example.title" type="button" @click="shiyongWendangShiliTianru(example.prompt)">
+                <strong>{{ example.title }}</strong>
+                <span>{{ example.prompt }}</span>
+              </button>
+            </div>
+          </section>
+
+          <div class="assistant-document-body assistant-markdown" v-html="aiZhushouShiyongWendangHtml"></div>
+        </div>
+      </section>
+    </Transition>
+
+    <div class="assistant-conversation-layout" :class="{ 'assistant-conversation-layout--with-sidebar': isConversationPanelOpen }">
+      <aside
+        id="assistant-conversation-sidebar"
+        class="assistant-conversation-sidebar"
+        :class="{ 'assistant-conversation-sidebar--collapsed': !isConversationPanelOpen }"
+        :aria-hidden="!isConversationPanelOpen"
+        :inert="!isConversationPanelOpen"
+        aria-label="会话列表"
+      >
+        <div class="assistant-conversation-header">
+          <span>对话</span>
+          <small>{{ conversations.length }}</small>
+        </div>
+        <button class="assistant-new-conversation" type="button" :disabled="isBusy" @click="xinJianHuihua">
+          <PhPlus :size="15" weight="bold" />
+          <span>新建对话</span>
+        </button>
+        <div class="assistant-conversation-list">
+          <section v-for="group in huihuaFenZu" :key="group.label" class="assistant-conversation-group">
+            <h2>{{ group.label }}</h2>
+            <div v-for="conversation in group.items" :key="conversation.id" class="assistant-conversation-row" :class="{ 'is-active': conversation.id === currentConversationId }">
+              <button
+                class="assistant-conversation-item"
+                type="button"
+                :disabled="isBusy"
+                :title="conversation.title"
+                @click="qiehuanHuihua(conversation.id)"
+              >
+                <span class="assistant-conversation-title">{{ conversation.title }}</span>
+                <span
+                  v-if="isBusy && conversation.id === currentConversationId"
+                  class="assistant-conversation-loading"
+                  role="status"
+                  aria-label="正在生成回复"
+                ></span>
+              </button>
+              <button
+                class="assistant-conversation-delete"
+                type="button"
+                :disabled="isBusy"
+                :aria-label="`删除对话：${conversation.title}`"
+                title="删除对话"
+                @click.stop="qingqiuShanchuHuihua(conversation)"
+              >
+                <PhTrash :size="13" weight="bold" />
+              </button>
+            </div>
+          </section>
+          <p v-if="!huihuaFenZu.length" class="assistant-conversation-empty">还没有对话</p>
+        </div>
+      </aside>
+      <button
+        v-if="!isDocumentationOpen && !isConfigOpen"
+        class="assistant-conversation-toggle"
+        :class="{ 'assistant-conversation-toggle--open': isConversationPanelOpen }"
+        type="button"
+        aria-controls="assistant-conversation-sidebar"
+        :aria-expanded="isConversationPanelOpen"
+        :aria-label="isConversationPanelOpen ? '收起会话列表' : '展开会话列表'"
+        :title="isConversationPanelOpen ? '收起会话列表' : '展开会话列表'"
+        @click="isConversationPanelOpen = !isConversationPanelOpen"
+      >
+        <PhCaretRight class="assistant-conversation-toggle-icon" :class="{ 'assistant-conversation-toggle-icon--open': isConversationPanelOpen }" :size="14" weight="bold" aria-hidden="true" />
+      </button>
+
+      <main class="assistant-chat-pane">
+    <div ref="messagesLayer" class="assistant-messages" aria-live="polite" @scroll.passive="chuliXiaoxiGunDong">
+      <div v-if="!messages.length" class="assistant-empty">
+        <div class="assistant-empty-intro">
+          <div class="assistant-empty-copy">
+            <strong class="assistant-empty-title" :aria-label="huanyingYuanwen">
+              {{ huanyingYiShuru }}<span v-if="isHuanyingDaziWancheng" class="assistant-empty-cursor" aria-hidden="true">_</span>
+            </strong>
+            <button class="assistant-documentation-link" type="button" @click="dakaiShiyongWendang">
+              <PhBookOpen :size="14" weight="bold" aria-hidden="true" />
+              使用文档
+            </button>
+          </div>
+        </div>
+        <button v-if="!isStatusLoading && !currentModel" class="assistant-config-hint" type="button" @click="dakaiGongyingshangConfig">
+          <span class="assistant-config-hint-icon" aria-hidden="true"><PhKey :size="15" weight="bold" /></span>
+          <span class="assistant-config-hint-copy">
+            <strong>尚未配置可用模型</strong>
+            <small>点击添加供应商并保存 API 密钥</small>
+          </span>
+          <span class="assistant-config-hint-action">去配置</span>
+        </button>
+      </div>
+
+      <template v-for="(message, index) in messages" :key="message.id">
+      <article v-if="!yinggaiYincangShouquanQianXiaoxi(message, index)" class="assistant-bubble" :class="`assistant-bubble--${message.role}`">
+        <img v-if="message.role === 'assistant'" class="assistant-message-avatar" :src="aiHuiFuIcon" alt="" aria-hidden="true">
+        <div
+          class="assistant-bubble-inner"
+          :class="{
+            'assistant-bubble-inner--error': message.failed,
+            'assistant-bubble-inner--activity': message.role === 'assistant' && !message.content && message.pending,
+          }"
+        >
+          <div v-if="message.role === 'assistant' && yinggaiXianshiChuliGuocheng(message)" class="assistant-activity">
+            <div class="assistant-reasoning" :class="{ 'assistant-reasoning--pending': message.pending, 'assistant-reasoning--failed': message.failed, 'assistant-reasoning--completed': !message.pending && !message.failed }">
+              <div class="assistant-reasoning-trigger">
+                <span class="assistant-reasoning-state" aria-hidden="true"></span>
+                <span :class="{ 'assistant-reasoning-status--completed': !message.pending && !message.failed }">{{ huoquChuliZhuangtai(message) }}</span>
+                <span>{{ huoquChuliXiangqing(message) }}</span>
+              </div>
+            </div>
+          </div>
+          <template v-if="message.role === 'assistant' && huoquShixuKuai(message).length">
+            <template v-for="block in huoquShixuKuai(message)" :key="block.id">
+              <div v-if="block.type === 'text'" class="assistant-markdown" v-html="xuanzaiMarkdown(block.content)"></div>
+              <div v-else-if="block.type === 'approval-result' || block.type === 'operation-result'" class="assistant-write-result" :class="`assistant-write-result--${huoquXieruJieguo(block.content, block.type === 'approval-result').tone}`" role="status">
+                <span class="assistant-write-result-icon" aria-hidden="true">
+                  <PhX v-if="huoquXieruJieguo(block.content, block.type === 'approval-result').tone !== 'completed'" :size="13" weight="bold" />
+                  <PhCheck v-else :size="13" weight="bold" />
+                </span>
+                <div>
+                  <small>{{ block.type === 'approval-result' ? '授权结果' : '操作结果' }}</small>
+                  <strong>{{ huoquXieruJieguo(block.content, block.type === 'approval-result').title }}</strong>
+                  <p>{{ huoquXieruJieguo(block.content, block.type === 'approval-result').content }}</p>
+                </div>
+              </div>
+              <div v-else class="assistant-tool-event" :class="`assistant-tool-event--${block.tool.status}`">
+                <span class="assistant-tool-event-icon" aria-hidden="true">›_</span>
+                <span>{{ huoquShixuGongjuWenAn(block.tool) }}</span>
+              </div>
+            </template>
+          </template>
+          <div v-else-if="message.role === 'assistant' && message.content" class="assistant-markdown" v-html="xuanzaiMarkdown(message.content)"></div>
+          <p v-else>{{ message.content }}</p>
+          <div v-if="yinggaiXianshiJixuShengcheng(message)" class="assistant-stream-wait" role="status" aria-live="polite">
+            <span>正在继续生成</span>
+            <span class="assistant-stream-wait-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </div>
+          <span v-if="message.role === 'assistant' && huoquTokenXiaohao(message)" class="assistant-token-usage">{{ huoquTokenXiaohao(message) }}</span>
+        </div>
+        <img v-if="message.role === 'user'" class="assistant-message-avatar assistant-message-avatar--user" :src="yonghuHuiFuIcon" alt="" aria-hidden="true">
+      </article>
+      </template>
+
+      <!-- 资料库变更在对话流内等待授权，用户无需离开当前上下文。 -->
+      <section v-if="ziliaokuShouquanQingqiu" class="assistant-library-approval" :class="{ 'assistant-library-approval--danger': ziliaokuShouquanQingqiu.tone === 'danger' }" role="group" :aria-label="huoquShouquanBiaoti(ziliaokuShouquanQingqiu)">
+        <div class="assistant-library-approval-head">
+          <span class="assistant-library-approval-icon" aria-hidden="true"><PhCheck :size="15" weight="bold" /></span>
+          <div>
+            <strong>{{ huoquShouquanBiaoti(ziliaokuShouquanQingqiu) }}</strong>
+            <small>请确认后执行</small>
+          </div>
+        </div>
+        <p class="assistant-library-approval-message">{{ ziliaokuShouquanQingqiu.message }}</p>
+        <ul v-if="huoquShouquanMingxi(ziliaokuShouquanQingqiu).length" class="assistant-library-approval-detail" aria-label="操作对象">
+          <li v-for="detail in huoquShouquanMingxi(ziliaokuShouquanQingqiu)" :key="detail">{{ detail }}</li>
+        </ul>
+        <div class="assistant-library-approval-actions">
+          <button class="assistant-library-approval-reject" type="button" @click="huiyingZiliaokuShouquan(false)">暂不处理</button>
+          <button class="assistant-library-approval-allow" type="button" @click="huiyingZiliaokuShouquan(true)">{{ huoquShouquanAnniu(ziliaokuShouquanQingqiu) }}</button>
+        </div>
+      </section>
+    </div>
+
+    <button
+      v-if="isXianshiZuihouXiaoxi"
+      class="assistant-latest-button"
+      type="button"
+      aria-label="回到最新消息"
+      title="回到最新消息"
+      @click="gunDaoZuihou"
+    >
+      <PhArrowDown :size="14" weight="bold" />
+      <span>最新消息</span>
+    </button>
+
+    <footer class="assistant-composer">
+      <div class="assistant-composer-input">
+        <textarea
+          ref="shuruKuang"
+          v-model="draft"
+          rows="1"
+          :disabled="isStatusLoading || !currentModel"
+          :placeholder="isStatusLoading ? '正在准备助手…' : currentModel ? '输入消息…' : '请先配置模型后开始对话'"
+          aria-label="输入消息"
+          @keydown.enter.exact.prevent="tijiaoXiaoxi"
+          @input="zhengliShuruKuangGaodu"
+        ></textarea>
+        <div v-if="currentModel" class="assistant-composer-meta">
+          <button
+            class="assistant-thinking-trigger"
+            type="button"
+            :class="{ 'assistant-thinking-trigger--open': isThinkingMenuOpen }"
+            :disabled="!tuiliQiangduList.length || isBusy || isSwitchingThinking"
+            :aria-expanded="isThinkingMenuOpen"
+            :aria-label="`推理强度：${tuiliQiangduList.length ? huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) : '不可用'}`"
+            aria-haspopup="menu"
+            :title="tuiliQiangduList.length ? `推理强度：${huoquTuiliQiangduMingcheng(currentModel.thinkingLevel)}` : '当前模型不支持推理强度设置'"
+            @click.stop="isThinkingMenuOpen = !isThinkingMenuOpen"
+          >
+            <PhLightning :size="16" weight="fill" aria-hidden="true" />
+            <span v-if="tuiliQiangduList.length" class="assistant-thinking-level">{{ huoquTuiliQiangduMingcheng(currentModel.thinkingLevel) }}</span>
+          </button>
+          <div v-if="isThinkingMenuOpen" class="assistant-thinking-menu" role="menu" aria-label="选择推理强度" @click.stop>
+            <button
+              v-for="level in tuiliQiangduList"
+              :key="level"
+              type="button"
+              role="menuitemradio"
+              :class="{ 'is-active': level === currentModel.thinkingLevel }"
+              :aria-checked="level === currentModel.thinkingLevel"
+              :disabled="isSwitchingThinking || level === currentModel.thinkingLevel"
+              @click="qiehuanTuiliQiangdu(level)"
+            >
+              <span>{{ huoquTuiliQiangduMingcheng(level) }}</span>
+              <PhCheck v-if="level === currentModel.thinkingLevel" :size="13" weight="bold" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        <button
+          v-if="isBusy"
+          class="assistant-send assistant-send--stop"
+          type="button"
+          aria-label="停止生成"
+          title="停止生成"
+          @click="zhongzhi"
+        >
+          <PhStop :size="15" weight="fill" />
+        </button>
+        <button v-else class="assistant-send" type="button" aria-label="发送" title="发送" :disabled="isStatusLoading || !currentModel || !draft.trim()" @click="tijiaoXiaoxi">
+          <PhPaperPlaneRight :size="15" weight="bold" />
+        </button>
+      </div>
+    </footer>
+      </main>
+    </div>
+  </section>
+</template>
+
+<script setup>
+import { PhArrowDown, PhArrowLeft, PhBookOpen, PhCaretDown, PhCaretRight, PhCheck, PhKey, PhLightning, PhMagnifyingGlass, PhPaperPlaneRight, PhPlus, PhStop, PhTrash, PhX } from '@phosphor-icons/vue'
+import { useSessionStorage } from '@vueuse/core'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { usePiAssistant } from '@/composables/usePiAssistant'
+import { tuidaoCompatibleXieyi, tuidaoProviderName } from '@/utils/provider-name'
+import { xuanzaiMarkdown } from '@/utils/markdown'
+import aiBiaotiIcon from '@/assets/images/ai-title-mascot.png'
+import aiHuiFuIcon from '@/assets/images/chat-assistant-avatar.png'
+import yonghuHuiFuIcon from '@/assets/images/chat-user-avatar.png'
+import aiZhushouShiyongWendang from '../../docs/ai-assistant-guide.md?raw'
+
+const emit = defineEmits(['back', 'request-provider-cleanup', 'request-conversation-delete'])
+
+const {
+  messages,
+  isBusy,
+  status,
+  isStatusLoading,
+  statusError,
+  isSavingKey,
+  isRemovingProvider,
+  ziliaokuShouquanQingqiu,
+  conversations,
+  currentConversationId,
+  isConversationLoading,
+  jiazaiStatus,
+  jiazaiHuihua,
+  xinJianHuihua,
+  qiehuanHuihua,
+  shanchuHuihua,
+  faSong,
+  zhongzhi,
+  huiyingZiliaokuShouquan,
+  shezhiProviderKey,
+  xuanzeModel,
+  shezhiTuiliQiangdu,
+  addProvider,
+  qingliProvider,
+  kaishiJianting,
+} = usePiAssistant()
+
+// 授权卡片跟随对话流出现，并在渲染后自动滚动到可见位置。
+watch(ziliaokuShouquanQingqiu, (request) => {
+  if (request) nextTick(gunDaoZuihou)
+})
+
+onUnmounted(() => {
+  if (ziliaokuShouquanQingqiu.value) void huiyingZiliaokuShouquan(false)
+})
+
+const draft = ref('')
+const messagesLayer = ref(null)
+const shuruKuang = ref(null)
+// 默认收起会话记录，让首次进入时只保留当前对话。
+const isConversationPanelOpen = ref(false)
+const isConfigOpen = ref(false)
+const isDocumentationOpen = ref(false)
+const configTab = useSessionStorage('aetherdock:pi-config-tab', 'model')
+const selectedProvider = ref('')
+const apiKey = ref('')
+const keyInputType = ref('password')
+const isProviderMenuOpen = ref(false)
+const isSwitchingModel = ref(false)
+const isSwitchingThinking = ref(false)
+const isThinkingMenuOpen = ref(false)
+// 名称、路径与模型 ID 仅在当前应用会话暂存，API Key 不写入浏览器存储。
+const customName = useSessionStorage('aetherdock:pi-custom-provider-name', '')
+const customUrl = useSessionStorage('aetherdock:pi-custom-provider-url', '')
+const customModelId = useSessionStorage('aetherdock:pi-custom-provider-model-id', '')
+const customXieyi = useSessionStorage('aetherdock:pi-custom-provider-protocol', 'openai')
+const customKey = ref('')
+let zidingyiMingchengLastAuto = ''
+const isAddingProvider = ref(false)
+const keyMask = '••••••'
+const moxingKeyword = ref('')
+const moxingZhanshiCount = ref({})
+let scrollFrame = 0
+let chuliJishiTimer = 0
+let chushihuaZhen = 0
+let chushihuaTimer = 0
+const modelBatchSize = 80
+const isJinZuihou = ref(true)
+const zuihouJuliYuzhi = 72
+const chuliJishiNow = ref(Date.now())
+
+function isGongjuJinxing(message) {
+  return message?.toolCalls?.some((tool) => tool.status === 'running') ?? false
+}
+
+// 时序块直接映射到工具详情，确保工具与文本按流式事件抵达的先后显示。
+function huoquShixuKuai(message) {
+  const tools = new Map((message?.toolCalls ?? []).map((tool) => [tool.id, tool]))
+  return (message?.timeline ?? [])
+    .map((block) => block.type === 'tool'
+      ? { ...block, tool: tools.get(block.toolId) }
+      : { ...block, content: String(block.content ?? '') })
+    .filter((block) => block.type === 'tool'
+      ? Boolean(block.tool)
+      : ['text', 'approval-result', 'operation-result'].includes(block.type) && Boolean(block.content))
+    .reduce((blocks, block) => {
+      if (block.type !== 'tool') {
+        blocks.push(block)
+        return blocks
+      }
+      const lastBlock = blocks.at(-1)
+      if (lastBlock?.type !== 'tool' || lastBlock.tool.name !== block.tool.name) {
+        blocks.push({ ...block, tools: [block.tool], count: 1 })
+        return blocks
+      }
+      const tools = [...lastBlock.tools, block.tool]
+      const status = tools.some((tool) => tool.status === 'running')
+        ? 'running'
+        : tools.some((tool) => tool.status === 'failed')
+          ? 'failed'
+          : 'completed'
+      lastBlock.tools = tools
+      lastBlock.tool = { ...block.tool, status }
+      lastBlock.count = tools.length
+      return blocks
+    }, [])
+}
+
+// 写入结果需同时说明用户决定与最终影响，失败则明确区分为执行问题。
+function huoquXieruJieguo(rawContent, isShouquanJieguo) {
+  const content = String(rawContent ?? '').trim()
+  if (/^(已拒绝|用户未授权)/u.test(content)) {
+    return {
+      tone: 'rejected',
+      title: isShouquanJieguo ? '已拒绝授权' : '操作未执行',
+      content: content.replace(/^(?:已拒绝[^，。]*(?:[，,]\s*)?|用户未授权[^。]*。?)/u, '').trim() || '本次操作未执行。',
+    }
+  }
+  if (/(失败|未完成|未找到|不存在)/u.test(content)) {
+    return { tone: 'failed', title: '操作未完成', content }
+  }
+  return { tone: 'completed', title: isShouquanJieguo ? '已允许操作' : '操作已完成', content }
+}
+
+// 工具行只显示动作名称，执行状态交由图标与颜色表达。
+function huoquShixuGongjuWenAn(tool) {
+  return tool?.label || (tool?.name === 'bash' ? '命令' : '工具')
+}
+
+// 仅在文本与工具事件均停顿一小段时间后提示，避免流式输出期间闪现无效状态。
+function yinggaiXianshiJixuShengcheng(message) {
+  const lastActivityAt = Number(message?.lastActivityAt ?? message?.startedAt)
+  const isLiuShiZanting = Number.isFinite(lastActivityAt) && chuliJishiNow.value - lastActivityAt >= 750
+  return Boolean(message?.role === 'assistant' && message?.pending && !isGongjuJinxing(message) && isLiuShiZanting)
+}
+
+function yinggaiXianshiChuliGuocheng(message) {
+  return Boolean(message?.pending || message?.toolCalls?.length || message?.completedAt)
+}
+
+// 等待授权时仅保留授权卡，避免与当前助手的工具执行卡重复呈现同一项操作。
+function yinggaiYincangShouquanQianXiaoxi(message, index) {
+  return Boolean(
+    ziliaokuShouquanQingqiu.value
+    && message?.role === 'assistant'
+    && message?.pending
+    && index === messages.value.length - 1,
+  )
+}
+
+function geshiChuliShijian(startedAt, completedAt = 0) {
+  const start = Number(startedAt)
+  if (!Number.isFinite(start) || start <= 0) return ''
+  const end = Number(completedAt) || chuliJishiNow.value
+  const milliseconds = Math.max(0, end - start)
+  if (milliseconds < 1000) return '< 1 秒'
+  if (milliseconds < 10000) return `${(milliseconds / 1000).toFixed(1)} 秒`
+  return `${Math.round(milliseconds / 1000)} 秒`
+}
+
+function huoquChuliZhuangtai(message) {
+  if (message?.pending) return isGongjuJinxing(message) ? '正在处理' : '正在思考'
+  if (message?.failed) return '处理失败'
+  return '已完成'
+}
+
+function huoquChuliXiangqing(message) {
+  const shijian = geshiChuliShijian(message?.startedAt, message?.completedAt)
+  return shijian ? `耗时 ${shijian}` : ''
+}
+
+// 仅显示供应商返回的真实输出 token，避免把字符数或估算值当作消耗。
+function huoquTokenXiaohao(message) {
+  const outputTokens = Number(message?.outputTokens)
+  if (!Number.isFinite(outputTokens) || outputTokens <= 0) return ''
+  return `${Math.round(outputTokens).toLocaleString('zh-CN')} tokens`
+}
+
+function huoquToolZhuangtaiWenAn(tool) {
+  if (tool?.status === 'running') return '进行中'
+  if (tool?.status === 'failed') return '未完成'
+  return tool?.count > 1 ? `已执行 ${tool.count} 次` : '已完成'
+}
+
+// 授权卡只保留用户可判断的信息，内部条目 ID 不干扰阅读。
+function huoquShouquanMingxi(request) {
+  return String(request?.detail ?? '')
+    .split('\n')
+    .map((detail) => detail.replace(/^•\s*/u, '').trim())
+    .filter((detail) => detail && !detail.startsWith('条目 ID：'))
+}
+
+function huoquShouquanBiaoti(request) {
+  return String(request?.title ?? '确认操作')
+    .replace(/^允许/u, '')
+    .replace(/[？?]$/u, '')
+}
+
+function huoquShouquanAnniu(request) {
+  const title = huoquShouquanBiaoti(request)
+  if (title.includes('归档')) return '确认归档'
+  if (title.includes('删除') || title.includes('移除')) return '确认删除'
+  if (title.includes('重命名')) return '确认重命名'
+  if (title.includes('笔记')) return '确认更新'
+  if (title.includes('Word')) return '确认生成'
+  if (title.includes('保存')) return '确认保存'
+  return '确认执行'
+}
+
+const currentModel = computed(() => status.value?.current ?? null)
+const tuiliQiangduList = computed(() => currentModel.value?.thinkingLevels ?? [])
+const aiZhushouShiyongWendangHtml = computed(() => xuanzaiMarkdown(aiZhushouShiyongWendang))
+const shiyongWendangShili = [
+  { title: '整理会议记录', prompt: '把下面的会议记录整理成待办事项，并标注负责人和截止时间：' },
+  { title: '查找本地资料', prompt: '资料库里有哪些和产品设计有关的文档？请按相关性列出。' },
+  { title: '查询最新信息', prompt: '帮我搜索今天的 AI 行业新闻，并附上来源链接。' },
+  { title: '保存一份结果', prompt: '把这份总结保存到收集箱，标题叫“竞品调研要点”。' },
+]
+const currentModelName = computed(() => (isStatusLoading.value ? '正在准备' : currentModel.value ? currentModel.value.name : '未配置模型'))
+const huanyingYuanwen = computed(() => (isStatusLoading.value ? '正在准备助手…' : currentModel.value ? '有什么可以帮你?' : '配置模型后开始对话'))
+const huanyingYiShuru = ref('')
+const isHuanyingDaziWancheng = ref(false)
+let huanyingDaziTimer = 0
+
+// 欢迎语逐字显示，完成后再显示持续闪烁的光标。
+function kaishiHuanyingDazi(text) {
+  window.clearTimeout(huanyingDaziTimer)
+  huanyingYiShuru.value = ''
+  isHuanyingDaziWancheng.value = false
+
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    huanyingYiShuru.value = text
+    isHuanyingDaziWancheng.value = true
+    return
+  }
+
+  const zifuList = [...text]
+  let currentIndex = 0
+  const shuruXiaYiGeZifu = () => {
+    huanyingYiShuru.value += zifuList[currentIndex]
+    currentIndex += 1
+    if (currentIndex >= zifuList.length) {
+      isHuanyingDaziWancheng.value = true
+      return
+    }
+    huanyingDaziTimer = window.setTimeout(shuruXiaYiGeZifu, 68)
+  }
+  huanyingDaziTimer = window.setTimeout(shuruXiaYiGeZifu, 160)
+}
+
+const huihuaFenZu = computed(() => {
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekStart = todayStart - 6 * 24 * 60 * 60 * 1000
+  const groups = [
+    { label: '今天', items: [] },
+    { label: '最近 7 天', items: [] },
+    { label: '更早', items: [] },
+  ]
+  for (const conversation of conversations.value) {
+    const updatedAt = Number(conversation.updatedAt) || 0
+    const group = updatedAt >= todayStart ? groups[0] : updatedAt >= weekStart ? groups[1] : groups[2]
+    group.items.push(conversation)
+  }
+  return groups.filter((group) => group.items.length)
+})
+const customLuJingPlaceholder = computed(() => (
+  customXieyi.value === 'anthropic'
+    ? 'https://… 或 …/v1/messages'
+    : 'https://…/v1 或 …/chat/completions'
+))
+const customMoxingPlaceholder = computed(() => (
+  customXieyi.value === 'anthropic'
+    ? '自动识别失败时填写，例如 claude-sonnet-4-20250514'
+    : '自动识别失败时填写，例如 deepseek-chat'
+))
+const currentSelectedProvider = computed(() => (
+  status.value?.keyProviders?.find((item) => item.id === selectedProvider.value) ?? null
+))
+// 内置与自定义供应商的后续操作不同，选择器分组展示以减少误操作。
+const neizhiProviderList = computed(() => (status.value?.keyProviders ?? []).filter((provider) => !provider.custom))
+const zidingyiProviderList = computed(() => (status.value?.keyProviders ?? []).filter((provider) => provider.custom))
+const modelGroups = computed(() => {
+  const groups = new Map()
+  for (const model of status.value?.models ?? []) {
+    if (!groups.has(model.provider)) groups.set(model.provider, { provider: model.provider, name: model.providerName ?? model.provider, models: [] })
+    groups.get(model.provider).models.push(model)
+  }
+  return [...groups.values()]
+})
+const visibleModelGroups = computed(() => {
+  const keyword = moxingKeyword.value.trim().toLowerCase()
+  return modelGroups.value
+    .map((group) => {
+      const matchedModels = keyword
+        ? group.models.filter((model) => `${model.name} ${model.id}`.toLowerCase().includes(keyword))
+        : group.models
+      const shownCount = moxingZhanshiCount.value[group.provider] ?? modelBatchSize
+      return {
+        ...group,
+        models: matchedModels.slice(0, shownCount),
+        matchedCount: matchedModels.length,
+        remainingCount: Math.max(0, matchedModels.length - shownCount),
+      }
+    })
+    .filter((group) => group.models.length)
+})
+const moxingMatchCount = computed(() => (
+  visibleModelGroups.value.reduce((count, group) => count + group.matchedCount, 0)
+))
+const currentModelProviderName = computed(() => {
+  const provider = modelGroups.value.find((group) => group.provider === currentModel.value?.provider)
+  return provider?.name ?? currentModel.value?.provider ?? ''
+})
+const selectedProviderName = computed(() => {
+  const provider = status.value?.keyProviders?.find((item) => item.id === selectedProvider.value)
+  return provider?.name ?? '选择供应商'
+})
+const isXianshiZuihouXiaoxi = computed(() => messages.value.length && !isJinZuihou.value)
+
+// 仅在用户停留在底部附近时跟随流式回复，避免阅读历史内容时被强制拉回底部。
+watch(messages, () => {
+  if (scrollFrame || !isJinZuihou.value) return
+  scrollFrame = requestAnimationFrame(async () => {
+    scrollFrame = 0
+    await nextTick()
+    const layer = messagesLayer.value
+    if (layer && isJinZuihou.value) layer.scrollTop = layer.scrollHeight
+  })
+}, { deep: true })
+
+// 仅在生成期间刷新耗时，避免静态消息持续触发渲染。
+watch(isBusy, (busy) => {
+  if (chuliJishiTimer) window.clearInterval(chuliJishiTimer)
+  if (!busy) return
+  chuliJishiNow.value = Date.now()
+  chuliJishiTimer = window.setInterval(() => {
+    chuliJishiNow.value = Date.now()
+  }, 250)
+}, { immediate: true })
+
+watch(huanyingYuanwen, kaishiHuanyingDazi, { immediate: true })
+
+function chuliXiaoxiGunDong() {
+  const layer = messagesLayer.value
+  if (!layer) return
+  const juliZuihou = layer.scrollHeight - layer.clientHeight - layer.scrollTop
+  isJinZuihou.value = juliZuihou <= zuihouJuliYuzhi
+}
+
+// 输入框优先随文本增长，超过五行后再启用内部滚动，避免短内容过早显示滚动条。
+function zhengliShuruKuangGaodu() {
+  const textarea = shuruKuang.value
+  if (!textarea) return
+  const maxHeight = 128
+  textarea.style.height = 'auto'
+  textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+}
+
+// 用户主动发送或点击入口时回到最新位置，恢复后续流式内容跟随。
+async function gunDaoZuihou() {
+  isJinZuihou.value = true
+  await nextTick()
+  const layer = messagesLayer.value
+  layer?.scrollTo({ top: layer.scrollHeight, behavior: 'smooth' })
+}
+
+// 使用文档以内嵌面板展示，避免切出当前对话。
+function dakaiShiyongWendang() {
+  isDocumentationOpen.value = true
+}
+
+// 将示例带入输入框，让说明文档可以直接转化为一次可编辑的提问。
+async function shiyongWendangShiliTianru(prompt) {
+  draft.value = prompt
+  isDocumentationOpen.value = false
+  await nextTick()
+  zhengliShuruKuangGaodu()
+  shuruKuang.value?.focus()
+}
+
+onUnmounted(() => {
+  if (scrollFrame) cancelAnimationFrame(scrollFrame)
+  if (chuliJishiTimer) window.clearInterval(chuliJishiTimer)
+  window.clearTimeout(huanyingDaziTimer)
+})
+
+// 自动填入的名称会随路径补全持续修正；用户手动改名后则保持原值。
+watch(customUrl, () => {
+  const tuidaoName = tuidaoMingcheng(customUrl.value)
+  if (!customName.value.trim() || customName.value === zidingyiMingchengLastAuto) {
+    customName.value = tuidaoName
+  }
+  zidingyiMingchengLastAuto = tuidaoName
+  const xieyi = tuidaoCompatibleXieyi(customUrl.value)
+  if (xieyi) customXieyi.value = xieyi
+})
+
+watch(moxingKeyword, () => {
+  moxingZhanshiCount.value = {}
+})
+
+// 切换模型/供应商标签时关闭下拉菜单，避免菜单遗留在已切换的内容层上。
+watch(configTab, () => {
+  isProviderMenuOpen.value = false
+})
+
+function tuidaoMingcheng(rawUrl) {
+  return tuidaoProviderName(rawUrl)
+}
+
+function zengjiaMoxingZhanshi(provider) {
+  const count = moxingZhanshiCount.value[provider] ?? modelBatchSize
+  moxingZhanshiCount.value = { ...moxingZhanshiCount.value, [provider]: count + modelBatchSize }
+}
+
+async function chushihua() {
+  kaishiJianting()
+  await jiazaiHuihua()
+  await jiazaiStatus()
+  if (status.value?.keyProviders?.length) selectedProvider.value = status.value.keyProviders[0].id
+  chuliProviderBianhua()
+}
+
+// 首帧完成后再加载 Pi 运行时，避免首次进入助手页与主进程初始化争用界面响应。
+function anpaiChushihua() {
+  chushihuaZhen = window.requestAnimationFrame(() => {
+    chushihuaZhen = 0
+    chushihuaTimer = window.setTimeout(() => {
+      chushihuaTimer = 0
+      void chushihua()
+    }, 0)
+  })
+}
+
+// 未配置模型时打开配置面板，直接落在可执行下一步的供应商页。
+function qiehuanConfigPanel() {
+  const willOpen = !isConfigOpen.value
+  if (willOpen && !status.value?.models?.length) configTab.value = 'provider'
+  isConfigOpen.value = willOpen
+  if (willOpen) isThinkingMenuOpen.value = false
+}
+
+// 外层空状态的引导入口，始终打开可直接完成配置的供应商页。
+function dakaiGongyingshangConfig() {
+  isProviderMenuOpen.value = false
+  configTab.value = 'provider'
+  isConfigOpen.value = true
+  isThinkingMenuOpen.value = false
+}
+
+// 有密钥则显示打码，无密钥则为空；聚焦进入编辑态，失焦未保存则还原。
+function tianchongMask() {
+  if (currentSelectedProvider.value?.configured) {
+    apiKey.value = keyMask
+    keyInputType.value = 'text'
+  } else {
+    apiKey.value = ''
+    keyInputType.value = 'password'
+  }
+}
+
+function chuliProviderBianhua() {
+  tianchongMask()
+}
+
+function chuliApiKeyFocus() {
+  if (keyInputType.value === 'text') {
+    apiKey.value = ''
+    keyInputType.value = 'password'
+  }
+}
+
+function chuliApiKeyBlur() {
+  tianchongMask()
+}
+
+// 自定义选择菜单沿用原有供应商状态和密钥预填逻辑。
+function qiehuanProvider(providerId) {
+  if (!providerId || isSavingKey.value) return
+  selectedProvider.value = providerId
+  isProviderMenuOpen.value = false
+  chuliProviderBianhua()
+}
+
+async function baocunProviderKey() {
+  const provider = selectedProvider.value || status.value?.keyProviders?.[0]?.id
+  const value = apiKey.value.trim()
+  if (!provider || !value) return
+  if (currentSelectedProvider.value?.configured && value === keyMask) return
+  const chenggong = await shezhiProviderKey(provider, value)
+  if (chenggong) {
+    tianchongMask()
+    configTab.value = 'model'
+  }
+}
+
+// 清理前交由应用壳层统一二次确认，避免在配置页误触造成密钥丢失。
+function qingqiuGongyingshangQingli() {
+  if (!currentSelectedProvider.value || isSavingKey.value || isRemovingProvider.value || isBusy.value) return
+  emit('request-provider-cleanup', currentSelectedProvider.value)
+}
+
+// 确认后按供应商类型清理，并将选择器同步到仍可用的供应商。
+async function zhixingGongyingshangQingli() {
+  const provider = currentSelectedProvider.value
+  if (!provider) return false
+  const chenggong = await qingliProvider(provider)
+  if (!chenggong) return false
+  selectedProvider.value = status.value?.keyProviders?.[0]?.id ?? ''
+  isProviderMenuOpen.value = false
+  chuliProviderBianhua()
+  if (!status.value?.models?.length) configTab.value = 'provider'
+  return true
+}
+
+// 自定义供应商：填路径 + 密钥后自动识别可用模型并接入。
+async function tianjiaCustomProvider() {
+  if (isAddingProvider.value) return
+  isAddingProvider.value = true
+  try {
+    const result = await addProvider({
+      name: customName.value.trim(),
+      baseUrl: customUrl.value.trim(),
+      modelId: customModelId.value.trim(),
+      xieyi: customXieyi.value,
+      apiKey: customKey.value.trim(),
+    })
+    if (result?.chenggong) {
+      customName.value = ''
+      customUrl.value = ''
+      customModelId.value = ''
+      customXieyi.value = 'openai'
+      customKey.value = ''
+      zidingyiMingchengLastAuto = ''
+      configTab.value = 'model'
+    }
+  } finally {
+    isAddingProvider.value = false
+  }
+}
+
+function tijiaoXiaoxi() {
+  const text = draft.value.trim()
+  if (!currentModel.value || !text || isBusy.value) return
+  draft.value = ''
+  void nextTick(zhengliShuruKuangGaodu)
+  faSong(text)
+  gunDaoZuihou()
+}
+
+// 删除确认交给应用内弹窗，避免原生确认框触发窗口失焦后自动收起。
+function qingqiuShanchuHuihua(conversation) {
+  if (!conversation || isBusy.value || isConversationLoading.value) return
+  emit('request-conversation-delete', conversation)
+}
+
+function zhixingHuihuaShanchu(conversationId) {
+  return shanchuHuihua(conversationId)
+}
+
+function isCurrentModel(model) {
+  return model.provider === currentModel.value?.provider && model.id === currentModel.value?.id
+}
+
+function huoquTuiliQiangduMingcheng(level) {
+  return ({ off: '关闭', minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高' })[level] ?? level
+}
+
+// 点击推理菜单外的任意区域时收起菜单，避免浮层残留。
+function guanbiTuiliCaidan() {
+  isThinkingMenuOpen.value = false
+}
+
+// 切换模型期间锁定列表，避免连续点击造成状态错乱。
+async function qiehuanModel(model) {
+  if (!model || isSwitchingModel.value || isCurrentModel(model)) return
+  isSwitchingModel.value = true
+  try {
+    await xuanzeModel(model.provider, model.id)
+  } finally {
+    isSwitchingModel.value = false
+  }
+}
+
+// 推理强度切换期间锁定选项，避免连续点击产生竞态。
+async function qiehuanTuiliQiangdu(level) {
+  if (!level || isBusy.value || isSwitchingThinking.value || level === currentModel.value?.thinkingLevel) return
+  isSwitchingThinking.value = true
+  try {
+    if (await shezhiTuiliQiangdu(level)) isThinkingMenuOpen.value = false
+  } finally {
+    isSwitchingThinking.value = false
+  }
+}
+
+defineExpose({ zhixingGongyingshangQingli, zhixingHuihuaShanchu })
+
+onMounted(anpaiChushihua)
+onUnmounted(() => {
+  if (chushihuaZhen) window.cancelAnimationFrame(chushihuaZhen)
+  if (chushihuaTimer) window.clearTimeout(chushihuaTimer)
+})
+</script>
+
+<style scoped>
+.assistant-page {
+  /* 参考 Pi 的正文、标题与命令三级字体层级，并为中文保留本地回退。 */
+  --assistant-font-sans: var(--font-ui);
+  --assistant-font-reading: var(--font-reading);
+  --assistant-font-mono: var(--font-code);
+  --font-display: var(--assistant-font-sans);
+  --font-body: var(--assistant-font-reading);
+  --font-mono: var(--assistant-font-mono);
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  border-radius: 18px;
+  background: #eef1eb;
+  color: var(--ink);
+  color-scheme: light;
+  font-family: var(--assistant-font-reading);
+}
+
+.assistant-topbar {
+  display: flex;
+  min-height: 64px;
+  flex: 0 0 64px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+  background: #202420;
+}
+
+.assistant-back,
+.assistant-action {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .06);
+  color: rgba(255, 255, 255, .72);
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms var(--motion-easing);
+}
+
+.assistant-back:hover,
+.assistant-action:hover {
+  border-color: rgba(186, 255, 141, .48);
+  background: rgba(186, 255, 141, .1);
+  color: #c7ff9c;
+  transform: translateY(-1px);
+}
+
+/* 配置面板展开时保持按钮的选中反馈，明确当前操作状态。 */
+.assistant-action--active {
+  border-color: rgba(186, 255, 141, .6);
+  background: rgba(186, 255, 141, .16);
+  color: #c7ff9c;
+  box-shadow: inset 0 0 0 1px rgba(186, 255, 141, .12);
+}
+.assistant-action--active:hover { background: rgba(186, 255, 141, .2); }
+
+.assistant-identity { display: flex; min-width: 0; flex: 1; align-items: center; gap: 6px; }
+/* 收紧吉祥物素材的横向透明留白，使可见图形与标题保持视觉对齐。 */
+.assistant-identity-icon { display: block; width: 28px; height: 36px; flex: 0 0 28px; object-fit: cover; object-position: center; }
+.assistant-heading { display: grid; min-width: 0; min-height: 36px; align-content: center; gap: 3px; transform: translateY(2px); }
+.assistant-heading strong { color: #f7faf3; font: 800 14px/1.15 var(--font-display); letter-spacing: .02em; }
+
+.assistant-config-panel {
+  --font-body: var(--assistant-font-sans);
+  position: absolute;
+  z-index: 3;
+  inset: 64px 0 0;
+  display: grid;
+  gap: 7px;
+  align-content: start;
+  max-height: none;
+  padding: 9px 16px 11px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-bottom: 1px solid rgba(32, 36, 32, .12);
+  background: #f7f9f4;
+}
+
+.assistant-config-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(32, 36, 32, .12);
+  border-radius: 11px;
+  background: #e9ede5;
+}
+.assistant-config-tabs button {
+  height: 29px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #687168;
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  letter-spacing: .04em;
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.assistant-config-tabs button.is-active {
+  background: #202420;
+  box-shadow: none;
+  color: #eff8e9;
+}
+.assistant-config-tabs button:disabled { cursor: not-allowed; opacity: .46; }
+
+.assistant-config-view { display: grid; gap: 7px; }
+
+.assistant-config-sub {
+  display: grid;
+  gap: 7px;
+  padding: 10px 11px;
+  border: 1px solid rgba(32, 36, 32, .1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .74);
+}
+.assistant-config-subtitle { color: #667068; font: 650 10px var(--font-body); letter-spacing: .04em; }
+
+.assistant-config-row { display: grid; grid-template-columns: minmax(0, 160px) minmax(0, 1fr); gap: 10px; }
+.assistant-field { display: grid; gap: 4px; }
+.assistant-field > span { color: #687168; font: 650 10px var(--font-body); letter-spacing: .04em; }
+
+.assistant-configured { margin: 0; color: var(--ink-muted); font: 600 11px var(--font-body); }
+.assistant-configured--empty { color: var(--ink-faint); }
+.assistant-configured--error { color: #9a4d42; }
+
+/* 模型选择区以文字层级展示状态，避免状态色喧宾夺主。 */
+.assistant-model-manager { display: grid; gap: 7px; }
+.assistant-current-model {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid rgba(32, 36, 32, .13);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .76);
+}
+.assistant-current-model-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #397b32;
+}
+.assistant-current-model-copy { display: grid; min-width: 0; flex: 1; gap: 0; }
+.assistant-section-label { color: #788278; font: 650 8px/1.2 var(--font-body); letter-spacing: .08em; }
+.assistant-current-model-copy strong,
+.assistant-model-option-copy strong { overflow: hidden; color: var(--ink); font: 650 11px/1.25 var(--font-body); text-overflow: ellipsis; white-space: nowrap; }
+.assistant-current-model-copy small,
+.assistant-model-option-copy small { overflow: hidden; color: var(--ink-faint); font: 500 9px/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.assistant-current-model-state {
+  flex: 0 0 auto;
+  color: #397b32;
+  font: 650 8px var(--font-body);
+  letter-spacing: .03em;
+}
+.assistant-model-list { display: grid; gap: 4px; }
+.assistant-model-filter { margin: 2px 0; }
+.assistant-model-list-heading,
+.assistant-provider-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.assistant-model-list-heading > span:last-child,
+.assistant-provider-group-heading > span:last-child { color: #7b877c; font: 500 9px var(--font-mono); }
+.assistant-provider-group { display: grid; gap: 3px; }
+.assistant-provider-group-heading > span:first-child { color: #414a42; font: 700 10px var(--font-body); }
+.assistant-model-options {
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+  border: 1px solid rgba(32, 36, 32, .12);
+  border-radius: 10px;
+  background: #fff;
+}
+.assistant-model-option {
+  display: flex;
+  min-width: 0;
+  min-height: 35px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-model-option + .assistant-model-option { border-top: 1px solid rgba(32, 36, 32, .1); }
+.assistant-model-option:hover:not(:disabled) { background: #f5f8f2; transform: none; }
+.assistant-model-option:active:not(:disabled) { transform: translateY(0); }
+.assistant-model-option:focus-visible { outline: 2px solid rgba(61, 132, 48, .55); outline-offset: 2px; }
+.assistant-model-option--current { box-shadow: inset 2px 0 #4c9b42; background: #f2f8ee; cursor: default; }
+.assistant-model-option:disabled:not(.assistant-model-option--current) { cursor: wait; opacity: .55; }
+.assistant-model-option-copy { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.assistant-model-option-current,
+.assistant-model-option-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; color: #397b32; font: 650 9px var(--font-body); white-space: nowrap; }
+.assistant-model-option-action { color: #718073; }
+.assistant-model-more {
+  justify-self: start;
+  padding: 4px 7px;
+  border: 1px solid rgba(32, 36, 32, .14);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .72);
+  color: #687168;
+  cursor: pointer;
+  font: 600 9px var(--font-body);
+}
+.assistant-model-more:hover { border-color: rgba(74, 121, 62, .42); color: #397b32; }
+
+.assistant-field input {
+  width: 100%;
+  height: 33px;
+  padding: 0 9px;
+  border: 1px solid rgba(32, 36, 32, .16);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font: 600 11px var(--font-body);
+}
+.assistant-field input { font-family: var(--font-mono); }
+.assistant-provider-picker { position: relative; }
+.assistant-provider-trigger {
+  display: flex;
+  width: 100%;
+  height: 33px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  overflow: hidden;
+  border: 1px solid rgba(32, 36, 32, .16);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+.assistant-provider-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-provider-trigger > svg { flex: 0 0 auto; color: #677268; transition: transform 150ms var(--motion-easing); }
+.assistant-provider-trigger[aria-expanded="true"] { border-color: rgba(74, 121, 62, .62); background: #f8fcf5; }
+.assistant-provider-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.assistant-provider-trigger:disabled { cursor: wait; opacity: .55; }
+.assistant-provider-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: 154px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid rgba(32, 36, 32, .16);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(36, 49, 37, .14);
+  scrollbar-color: rgba(82, 96, 83, .52) transparent;
+  scrollbar-width: thin;
+}
+.assistant-provider-option {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #465046;
+  cursor: pointer;
+  font: 600 10px var(--font-body);
+  text-align: left;
+  transition: background 120ms ease, color 120ms ease;
+}
+.assistant-provider-option:hover { background: #f0f6ec; color: #2f6130; }
+.assistant-provider-option:focus-visible { outline: 2px solid rgba(74, 121, 62, .55); outline-offset: -1px; }
+.assistant-provider-option--selected { background: #eaf5e3; color: #397b32; }
+.assistant-provider-menu::-webkit-scrollbar { width: 6px; }
+.assistant-provider-menu::-webkit-scrollbar-track { background: transparent; }
+.assistant-provider-menu::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgba(82, 96, 83, .5); background-clip: padding-box; }
+.assistant-provider-menu::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.assistant-provider-group + .assistant-provider-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(32, 36, 32, .1); }
+.assistant-provider-group-label { margin: 3px 7px 4px; color: #758075; font: 700 9px var(--font-body); letter-spacing: .06em; }
+.assistant-field input:focus,
+.assistant-provider-trigger:focus-visible {
+  border-color: rgba(74, 121, 62, .62);
+  outline: 2px solid rgba(186, 255, 141, .48);
+  outline-offset: 1px;
+}
+.assistant-save {
+  width: fit-content;
+  padding: 7px 12px;
+  border: 1px solid #202420;
+  border-radius: 9px;
+  background: #202420;
+  color: #f4f8f0;
+  cursor: pointer;
+  font: 600 11px var(--font-body);
+}
+.assistant-save:hover { background: #353d35; color: #fff; }
+.assistant-save:disabled { cursor: wait; opacity: .55; }
+.assistant-save--primary { border-color: #202420; background: #202420; color: #c7ff9c; }
+.assistant-save--primary:hover { background: #353d35; color: #d8ffc0; }
+
+.assistant-messages {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.assistant-empty { display: grid; width: min(100%, 460px); align-content: center; gap: 15px; margin: auto; padding: 18px 6px; }
+.assistant-empty-intro { display: flex; align-items: flex-start; gap: 13px; }
+.assistant-empty-copy { display: grid; gap: 4px; padding-top: 2px; }
+.assistant-empty strong { color: #202420; font: 800 16px/1.3 var(--font-display); letter-spacing: .01em; }
+.assistant-config-hint {
+  display: flex;
+  width: min(100%, 382px);
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid rgba(146, 105, 24, .25);
+  border-radius: 11px;
+  background: rgba(255, 248, 221, .7);
+  color: #765515;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-config-hint:hover { border-color: rgba(146, 105, 24, .48); background: #fff8df; transform: translateY(-1px); }
+.assistant-config-hint:focus-visible { outline: 2px solid rgba(175, 133, 43, .5); outline-offset: 2px; }
+.assistant-config-hint-icon {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(146, 105, 24, .1);
+}
+.assistant-config-hint-copy { display: grid; min-width: 0; flex: 1; gap: 1px; }
+.assistant-config-hint-copy strong { color: #67501b; font: 700 10px/1.3 var(--font-body); letter-spacing: .02em; }
+.assistant-config-hint-copy small { overflow: hidden; color: #92783f; font: 500 9px/1.35 var(--font-body); text-overflow: ellipsis; white-space: nowrap; }
+.assistant-config-hint-action { flex: 0 0 auto; color: #7d5a12; font: 700 10px var(--font-body); }
+.assistant-bubble { display: flex; max-width: min(100%, 620px); align-items: flex-start; gap: 8px; }
+.assistant-bubble--user { justify-content: flex-end; }
+.assistant-bubble--assistant { justify-content: flex-start; }
+.assistant-message-avatar { display: block; width: 27px; height: 27px; flex: 0 0 27px; object-fit: contain; }
+.assistant-message-avatar--user { order: 2; }
+.assistant-bubble-inner {
+  max-width: calc(100% - 33px);
+  padding: 9px 12px;
+  border: 1px solid rgba(32, 36, 32, .11);
+  border-radius: 5px 14px 14px 14px;
+  background: rgba(255, 255, 255, .76);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .82);
+}
+.assistant-bubble--user .assistant-bubble-inner {
+  max-width: 82%;
+  border-color: #202420;
+  border-radius: 14px 5px 14px 14px;
+  background: #202420;
+  color: #f4f8f0;
+}
+.assistant-bubble-inner p { margin: 0; color: #3d463e; font: 12px/1.65 var(--font-body); overflow-wrap: anywhere; white-space: pre-wrap; }
+.assistant-bubble--user .assistant-bubble-inner p { color: #f4f8f0; }
+
+/* 资料库授权卡以对话延伸的方式呈现，信息优先于装饰。 */
+.assistant-library-approval {
+  display: grid;
+  width: min(100%, 430px);
+  gap: 9px;
+  padding: 12px 13px 11px;
+  border: 1px solid rgba(44, 65, 47, .17);
+  border-left: 3px solid #5c8f61;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .82);
+  box-shadow: 0 5px 16px rgba(39, 64, 42, .06), inset 0 1px rgba(255, 255, 255, .86);
+}
+.assistant-library-approval--danger { border-color: rgba(133, 69, 60, .2); border-left-color: #ad6258; }
+.assistant-library-approval-head { display: flex; align-items: center; gap: 7px; }
+.assistant-library-approval-icon { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid rgba(70, 120, 75, .22); border-radius: 7px; background: #edf6e9; color: #4c824f; }
+.assistant-library-approval--danger .assistant-library-approval-icon { border-color: rgba(173, 98, 88, .2); background: #fff0ed; color: #a34f46; }
+.assistant-library-approval-head div { display: grid; gap: 1px; }
+.assistant-library-approval-head strong { color: #2c392d; font: 750 12px/1.25 var(--assistant-font-sans); }
+.assistant-library-approval-head small { color: #738075; font: 600 9px/1.25 var(--assistant-font-sans); }
+.assistant-library-approval-message { margin: 1px 0 0; color: #49584b; font: 12px/1.5 var(--assistant-font-sans); }
+.assistant-library-approval-detail { display: grid; gap: 4px; max-height: 92px; margin: 0; padding: 8px 0 0; overflow: auto; border-top: 1px solid rgba(44, 65, 47, .1); color: #657268; font: 10px/1.45 var(--assistant-font-sans); list-style: none; }
+.assistant-library-approval-detail li { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-library-approval-actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 2px; }
+.assistant-library-approval-actions button { min-width: 72px; padding: 7px 10px; border-radius: 8px; cursor: pointer; font: 700 10px/1 var(--assistant-font-sans); transition: transform 150ms var(--motion-easing), background 150ms ease, border-color 150ms ease; white-space: nowrap; }
+.assistant-library-approval-actions button:hover { transform: translateY(-1px); }
+.assistant-library-approval-actions button:active { transform: translateY(0); }
+.assistant-library-approval-reject { border: 1px solid rgba(44, 65, 47, .16); background: transparent; color: #69756a; }
+.assistant-library-approval-reject:hover { border-color: rgba(44, 65, 47, .28); background: rgba(44, 65, 47, .04); color: #455246; }
+.assistant-library-approval-allow { border: 1px solid #263d29; background: #263d29; color: #fff; }
+.assistant-library-approval-allow:hover { border-color: #345d39; background: #345d39; }
+.assistant-library-approval--danger .assistant-library-approval-allow { border-color: #9d4e45; background: #9d4e45; }
+.assistant-library-approval--danger .assistant-library-approval-allow:hover { border-color: #b75c50; background: #b75c50; }
+.assistant-library-approval-actions button:focus-visible { outline: 2px solid rgba(74, 121, 62, .42); outline-offset: 2px; }
+
+.assistant-tool-chip {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #e2f1da;
+  color: #397b32;
+  font: 600 10px var(--font-mono);
+}
+
+.assistant-typing { display: inline-flex; gap: 3px; align-items: center; height: 16px; }
+.assistant-typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-faint); animation: assistant-typing-dot 900ms ease-in-out infinite; }
+.assistant-typing i:nth-child(2) { animation-delay: 150ms; }
+.assistant-typing i:nth-child(3) { animation-delay: 300ms; }
+
+@keyframes assistant-typing-dot {
+  0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+.assistant-composer {
+  --font-body: var(--assistant-font-mono);
+  display: flex;
+  gap: 9px;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  padding: 12px 16px 14px;
+  border-top: 1px solid rgba(32, 36, 32, .12);
+  background: #f7f9f4;
+}
+
+.assistant-composer textarea {
+  min-height: 39px;
+  max-height: 92px;
+  flex: 1;
+  padding: 9px 12px;
+  resize: none;
+  border: 1px solid rgba(32, 36, 32, .16);
+  border-radius: 12px;
+  background: #fff;
+  color: #293129;
+  font: 12px/1.5 var(--font-body);
+}
+.assistant-composer textarea::placeholder { color: #8a948a; }
+.assistant-composer textarea:focus { border-color: rgba(74, 121, 62, .65); outline: 2px solid rgba(186, 255, 141, .5); outline-offset: 1px; }
+.assistant-composer textarea:disabled { background: #f0f3ed; color: #929b92; cursor: not-allowed; }
+
+.assistant-send {
+  display: grid;
+  width: 39px;
+  height: 39px;
+  flex: 0 0 39px;
+  place-items: center;
+  border: 1px solid #202420;
+  border-radius: 12px;
+  background: #202420;
+  color: #c7ff9c;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-send:hover:not(:disabled) { background: #353d35; color: #e0ffc9; }
+.assistant-send:active:not(:disabled) { transform: scale(.95) translateY(1px); }
+.assistant-send:disabled { cursor: not-allowed; opacity: .45; }
+.assistant-send--stop { border-color: #aa4e4e; background: #f9e5e2; color: #a14343; }
+
+.assistant-config-enter-active, .assistant-config-leave-active { transition: opacity 160ms ease, transform 180ms var(--motion-easing); }
+.assistant-config-enter-from, .assistant-config-leave-to { opacity: 0; transform: translateY(-6px); }
+
+/* 滚动条保留可发现性，但不抢占模型与对话内容的注意力。 */
+.assistant-config-panel,
+.assistant-messages {
+  scrollbar-color: rgba(82, 96, 83, .52) transparent;
+  scrollbar-width: thin;
+}
+.assistant-config-panel::-webkit-scrollbar,
+.assistant-messages::-webkit-scrollbar { width: 6px; height: 6px; }
+.assistant-config-panel::-webkit-scrollbar-button,
+.assistant-messages::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.assistant-config-panel::-webkit-scrollbar-track,
+.assistant-messages::-webkit-scrollbar-track { background: transparent; }
+.assistant-config-panel::-webkit-scrollbar-thumb,
+.assistant-messages::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(82, 96, 83, .5);
+  background-clip: padding-box;
+}
+.assistant-config-panel::-webkit-scrollbar-thumb:hover,
+.assistant-messages::-webkit-scrollbar-thumb:hover { background-color: rgba(57, 72, 58, .72); }
+
+@media (max-width: 520px) {
+  .assistant-topbar,
+  .assistant-config-panel,
+  .assistant-composer { padding-right: 12px; padding-left: 12px; }
+  .assistant-messages { padding: 14px 12px; }
+  .assistant-config-row { grid-template-columns: 1fr; gap: 7px; }
+  .assistant-model-options { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-typing i { animation: none; opacity: .55; }
+}
+</style>
+
+<style scoped>
+/* AI 页面保留轻纸张质感，并复用主界面的中性灰与荧光绿。 */
+.assistant-page {
+  --assistant-paper: #fafafa;
+  --assistant-paper-deep: #f0f0f0;
+  --assistant-paper-white: #fbfcfa;
+  --assistant-sidebar-width: 216px;
+  --assistant-graphite: var(--ink);
+  --assistant-pencil: #657067;
+  --assistant-faint: #929b93;
+  --assistant-accent: var(--accent);
+  --assistant-accent-soft: rgba(99, 254, 19, .13);
+  --font-display: var(--assistant-font-sans);
+  --font-body: var(--assistant-font-sans);
+  --font-mono: var(--assistant-font-mono);
+  isolation: isolate;
+  border-radius: 18px;
+  background-color: var(--assistant-paper);
+  background-image: linear-gradient(112deg, rgb(255 255 255 / 58%), transparent 44%);
+  color: var(--assistant-graphite);
+  font-family: var(--assistant-font-sans);
+}
+
+/* 纸张压印覆盖在画布上，不拦截任何交互。 */
+.assistant-page::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(105deg, rgb(255 255 255 / 36%), transparent 38%, rgb(56 61 56 / 3%));
+  content: '';
+  pointer-events: none;
+}
+
+.assistant-topbar {
+  position: relative;
+  min-height: 60px;
+  flex-basis: 60px;
+  gap: 11px;
+  padding: 0 17px;
+  border-bottom: 1px solid var(--border-ink);
+  background: #ececec;
+  box-shadow: 0 4px 14px rgb(15 17 16 / 6%);
+}
+
+/* 会话列表保持简洁分组，当前对话和新建入口一眼可辨。 */
+.assistant-conversation-layout { position: relative; display: flex; min-height: 0; flex: 1; }
+.assistant-conversation-sidebar {
+  display: flex;
+  width: var(--assistant-sidebar-width);
+  flex: 0 0 var(--assistant-sidebar-width);
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 10px 12px;
+  border-right: 1px solid var(--border-ink);
+  background: #f4f6f2;
+  overflow: hidden;
+  transition: width 220ms var(--motion-easing), flex-basis 220ms var(--motion-easing), padding 220ms var(--motion-easing), border-color 160ms ease, opacity 160ms ease;
+}
+/* 收起时保留节点以维持会话滚动位置，视觉上平滑退出。 */
+.assistant-conversation-sidebar--collapsed {
+  width: 0;
+  flex-basis: 0;
+  padding-right: 0;
+  padding-left: 0;
+  border-right-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+.assistant-conversation-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0 5px;
+}
+.assistant-conversation-header span {
+  color: var(--assistant-graphite);
+  font: 750 12px/1 var(--assistant-font-sans);
+}
+.assistant-conversation-header small {
+  color: var(--assistant-faint);
+  font: 650 10px/1 var(--assistant-font-mono);
+}
+.assistant-new-conversation {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #29312a;
+  border-radius: 9px;
+  background: #29312a;
+  color: #f7faf3;
+  cursor: pointer;
+  font: 700 10px/1 var(--assistant-font-sans);
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms var(--motion-easing);
+}
+.assistant-new-conversation:hover:not(:disabled) { border-color: #3a5139; background: #3a5139; }
+.assistant-new-conversation:active:not(:disabled) { transform: scale(.98); }
+.assistant-new-conversation:disabled { cursor: wait; opacity: .5; }
+/* 会话列表使用细窄圆角滚动条，弱化系统默认箭头带来的割裂感。 */
+.assistant-conversation-list {
+  display: grid;
+  min-height: 0;
+  gap: 16px;
+  overflow: auto;
+  scrollbar-color: rgb(73 89 75 / 42%) transparent;
+  scrollbar-width: thin;
+}
+.assistant-conversation-list::-webkit-scrollbar { width: 8px; }
+.assistant-conversation-list::-webkit-scrollbar-track { margin-block: 4px; background: transparent; }
+.assistant-conversation-list::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgb(73 89 75 / 42%);
+  background-clip: padding-box;
+}
+.assistant-conversation-list::-webkit-scrollbar-thumb:hover { background-color: rgb(54 70 57 / 62%); }
+.assistant-conversation-list::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.assistant-conversation-group { display: grid; gap: 4px; }
+.assistant-conversation-group h2 { margin: 0 6px 2px; color: var(--assistant-faint); font: 750 9px/1.3 var(--assistant-font-sans); letter-spacing: .08em; }
+.assistant-conversation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.assistant-conversation-row:hover,
+.assistant-conversation-row.is-active { background: #e1eadc; }
+.assistant-conversation-row.is-active { border-color: rgb(62 101 57 / 13%); }
+.assistant-conversation-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--assistant-graphite);
+  cursor: pointer;
+  font: 600 10px/1.35 var(--assistant-font-sans);
+  text-align: left;
+}
+.assistant-conversation-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 当前会话生成时显示紧凑进度环，避免标题区发生布局跳动。 */
+.assistant-conversation-loading {
+  width: 11px;
+  height: 11px;
+  margin-right: 1px;
+  border: 2px solid rgb(40 93 42 / 22%);
+  border-top-color: #3c8642;
+  border-radius: 50%;
+  animation: assistant-conversation-spin .8s linear infinite;
+}
+.assistant-conversation-item:disabled { cursor: wait; }
+.assistant-conversation-row.is-active .assistant-conversation-item { color: #285d2a; font-weight: 750; }
+.assistant-conversation-delete {
+  display: grid;
+  width: 26px;
+  height: 29px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--assistant-faint);
+  cursor: pointer;
+  opacity: 0;
+}
+.assistant-conversation-row:hover .assistant-conversation-delete,
+.assistant-conversation-row.is-active .assistant-conversation-delete:focus-visible { opacity: 1; }
+.assistant-conversation-delete:hover:not(:disabled) { background: rgb(169 80 65 / 10%); color: #9a4d42; }
+.assistant-conversation-delete:disabled { cursor: wait; }
+@keyframes assistant-conversation-spin { to { transform: rotate(360deg); } }
+.assistant-conversation-empty {
+  margin: 2px 6px;
+  color: var(--assistant-faint);
+  font: 600 10px/1.5 var(--assistant-font-sans);
+}
+.assistant-conversation-toggle {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 0;
+  display: grid;
+  width: 22px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--border-ink);
+  border-radius: 0 9px 9px 0;
+  background: var(--assistant-paper-white);
+  box-shadow: 2px 3px 8px rgb(15 17 16 / 8%);
+  color: var(--assistant-pencil);
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: left 220ms var(--motion-easing), border-color 150ms ease, background 150ms ease, color 150ms ease, border-radius 220ms var(--motion-easing);
+}
+.assistant-conversation-toggle--open {
+  left: calc(var(--assistant-sidebar-width) - 7px);
+  border-radius: 9px;
+}
+.assistant-conversation-toggle-icon { transition: transform 220ms var(--motion-easing); }
+.assistant-conversation-toggle-icon--open { transform: rotate(180deg); }
+.assistant-conversation-toggle:hover {
+  border-color: rgba(33, 140, 0, .5);
+  background: #edf8e6;
+  color: var(--assistant-graphite);
+}
+.assistant-conversation-toggle:focus-visible {
+  outline: 2px solid var(--assistant-accent);
+  outline-offset: 2px;
+}
+.assistant-chat-pane { position: relative; display: flex; min-width: 0; flex: 1; flex-direction: column; }
+
+/* 工具按钮与资料库操作保持一致的圆角与轻阴影。 */
+.assistant-back,
+.assistant-action {
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 62%);
+  box-shadow: 0 3px 8px rgb(15 17 16 / 6%);
+  color: var(--assistant-graphite);
+}
+
+.assistant-back:hover,
+.assistant-action:hover,
+.assistant-action--active,
+.assistant-action--active:hover {
+  border-color: rgba(99, 254, 19, .6);
+  background: var(--assistant-accent-soft);
+  box-shadow: 0 3px 8px rgb(15 17 16 / 6%);
+  color: var(--assistant-graphite);
+  transform: translateY(-1px);
+}
+
+.assistant-identity { gap: 8px; }
+.assistant-identity-mascot {
+  display: block;
+  width: 28px;
+  height: 34px;
+  flex: 0 0 28px;
+  overflow: hidden;
+}
+.assistant-identity-icon {
+  display: block;
+  width: 43px;
+  height: 43px;
+  max-width: none;
+  transform: translate(-7px, -4px);
+  object-fit: cover;
+  object-position: center;
+}
+.assistant-heading { min-height: 34px; transform: none; }
+.assistant-heading strong {
+  color: var(--assistant-graphite);
+  font-family: var(--assistant-font-sans);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: .02em;
+}
+.assistant-heading small {
+  max-width: 260px;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--assistant-pencil);
+  font: 600 9px/1.3 var(--font-mono);
+  letter-spacing: .015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 配置层使用纯白表单画布，与资料库内容区保持一致。 */
+.assistant-config-panel {
+  --font-body: var(--assistant-font-sans);
+  inset: 60px 0 0;
+  gap: 9px;
+  padding: 12px 17px 15px;
+  border-bottom: 1px solid var(--border-ink);
+  background-color: var(--assistant-paper-white);
+  background-image: none;
+  box-shadow: 0 8px 18px rgb(15 17 16 / 10%);
+}
+.assistant-document-panel {
+  position: absolute;
+  z-index: 4;
+  inset: 60px 0 0;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  background:
+    linear-gradient(135deg, rgb(99 254 19 / 10%), transparent 31%),
+    var(--assistant-paper-white);
+}
+.assistant-document-header {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-ink);
+}
+.assistant-document-header div { display: grid; gap: 3px; }
+.assistant-document-header strong { color: var(--assistant-graphite); font: 750 14px/1.2 var(--assistant-font-sans); }
+.assistant-document-header small { color: var(--assistant-pencil); font: 600 10px/1.2 var(--assistant-font-sans); }
+.assistant-document-header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border-ink);
+  border-radius: 9px;
+  background: var(--assistant-paper-white);
+  color: var(--assistant-pencil);
+  cursor: pointer;
+}
+.assistant-document-header button:hover { border-color: rgba(33, 140, 0, .5); background: #edf8e6; color: var(--assistant-graphite); }
+.assistant-document-header button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
+.assistant-document-content {
+  min-height: 0;
+  flex: 1;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 28px 24px 40px;
+  overflow: auto;
+  scrollbar-color: rgb(41 48 45 / 48%) transparent;
+}
+/* 文档首屏先给行动路径，再提供完整说明，避免用户在长文本中寻找第一步。 */
+.assistant-document-hero {
+  padding: 24px;
+  border: 1px solid rgb(38 38 38 / 12%);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 12px 28px rgb(15 17 16 / 7%);
+}
+.assistant-document-hero > span {
+  display: inline-flex;
+  margin-bottom: 9px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--assistant-accent);
+  color: #1f2c1f;
+  font: 800 9px/1 var(--assistant-font-mono);
+  letter-spacing: .08em;
+}
+.assistant-document-hero h1 {
+  max-width: 15em;
+  margin: 0;
+  color: var(--assistant-graphite);
+  font: 800 clamp(24px, 5vw, 34px)/1.12 var(--assistant-font-sans);
+  letter-spacing: -.04em;
+}
+.assistant-document-hero p {
+  max-width: 48em;
+  margin: 12px 0 0;
+  color: var(--assistant-pencil);
+  font: 500 13px/1.75 var(--assistant-font-sans);
+}
+.assistant-document-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: document-step;
+}
+.assistant-document-steps li {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 14px 12px 13px 38px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 62%);
+  counter-increment: document-step;
+}
+.assistant-document-steps li::before {
+  position: absolute;
+  top: 14px;
+  left: 12px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--assistant-graphite);
+  color: var(--assistant-paper-white);
+  content: counter(document-step);
+  font: 800 9px/1 var(--assistant-font-mono);
+}
+.assistant-document-steps strong { color: var(--assistant-graphite); font: 750 11px/1.3 var(--assistant-font-sans); }
+.assistant-document-steps span { color: var(--assistant-pencil); font: 500 10px/1.55 var(--assistant-font-sans); }
+.assistant-document-examples { margin-top: 28px; }
+.assistant-document-examples h2 {
+  margin: 0;
+  color: var(--assistant-graphite);
+  font: 800 18px/1.3 var(--assistant-font-sans);
+  letter-spacing: -.02em;
+}
+.assistant-document-examples p { margin: 5px 0 0; color: var(--assistant-pencil); font: 500 11px/1.5 var(--assistant-font-sans); }
+.assistant-document-example-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.assistant-document-example-list button {
+  display: grid;
+  min-height: 76px;
+  gap: 5px;
+  padding: 13px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 64%);
+  color: var(--assistant-graphite);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-document-example-list button:hover {
+  border-color: rgb(33 140 0 / 42%);
+  background: rgb(99 254 19 / 9%);
+  transform: translateY(-1px);
+}
+.assistant-document-example-list button:active { transform: translateY(0) scale(.99); }
+.assistant-document-example-list button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
+.assistant-document-example-list strong { font: 800 11px/1.25 var(--assistant-font-sans); }
+.assistant-document-example-list span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--assistant-pencil);
+  font: 500 10px/1.5 var(--assistant-font-sans);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.assistant-document-body { margin-top: 34px; padding-top: 2px; }
+.assistant-document-body :deep(h2) { margin-top: 32px; }
+.assistant-document-body :deep(h3) { margin-top: 20px; color: var(--assistant-graphite); }
+.assistant-document-body :deep(h2 + p) { max-width: 58em; color: var(--assistant-pencil); }
+.assistant-document-body :deep(ol) { padding-left: 23px; }
+.assistant-document-body :deep(li) { padding-left: 2px; }
+.assistant-document-body :deep(blockquote) {
+  padding: 10px 12px;
+  border: 1px solid rgb(33 140 0 / 22%);
+  border-left: 3px solid var(--accent-deep);
+  border-radius: 9px;
+  background: rgb(99 254 19 / 7%);
+  color: var(--assistant-graphite);
+}
+.assistant-document-enter-active,
+.assistant-document-leave-active { transition: opacity 160ms ease, transform 180ms var(--motion-easing); }
+.assistant-document-enter-from,
+.assistant-document-leave-to { opacity: 0; transform: translateY(6px); }
+.assistant-config-tabs {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 62%);
+}
+.assistant-config-tabs button {
+  height: 34px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--assistant-pencil);
+  font: 750 11px var(--font-body);
+  letter-spacing: .05em;
+}
+.assistant-config-tabs button + button { border-left: 0; }
+.assistant-config-tabs button.is-active {
+  background: var(--assistant-graphite);
+  box-shadow: 0 2px 5px rgb(15 17 16 / 10%);
+  color: var(--assistant-paper-white);
+}
+
+.assistant-config-view,
+.assistant-model-manager { gap: 9px; }
+.assistant-config-sub {
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 54%);
+  box-shadow: 0 4px 12px rgb(15 17 16 / 5%);
+}
+.assistant-config-subtitle,
+.assistant-section-label,
+.assistant-field > span {
+  color: var(--assistant-pencil);
+  font: 750 9px var(--font-mono);
+  letter-spacing: .1em;
+}
+.assistant-configured { color: var(--assistant-pencil); }
+.assistant-configured--error { color: #9a4d42; }
+.assistant-current-model {
+  gap: 9px;
+  min-height: 58px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: var(--assistant-paper-white);
+  box-shadow: 0 3px 8px rgb(15 17 16 / 5%);
+}
+.assistant-current-model-dot {
+  width: 8px;
+  height: 8px;
+  flex-basis: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--assistant-accent);
+  box-shadow: 0 0 0 3px var(--assistant-accent-soft);
+}
+.assistant-current-model-copy strong,
+.assistant-model-option-copy strong { color: var(--assistant-graphite); font-weight: 750; }
+.assistant-current-model-copy small,
+.assistant-model-option-copy small { color: var(--assistant-pencil); }
+.assistant-model-option-current { color: var(--accent-deep); font-weight: 750; }
+.assistant-model-list { gap: 12px; }
+.assistant-model-filter {
+  gap: 6px;
+  margin-top: 1px;
+}
+.assistant-model-list-heading > span:last-child,
+.assistant-provider-group-heading > span:last-child { color: var(--assistant-pencil); }
+.assistant-provider-group { gap: 5px; }
+.assistant-provider-group-heading {
+  min-height: 22px;
+  padding: 0 3px;
+}
+.assistant-provider-group-heading > span:first-child {
+  color: var(--assistant-graphite);
+  font-size: 11px;
+}
+.assistant-model-options {
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 66%);
+  box-shadow: 0 3px 10px rgb(15 17 16 / 4%);
+}
+.assistant-model-option { min-height: 42px; padding: 7px 11px; color: var(--assistant-graphite); }
+.assistant-model-option + .assistant-model-option { border-top: 1px solid rgba(38, 38, 38, .08); }
+.assistant-model-option:hover:not(:disabled) { background: rgb(99 254 19 / 8%); }
+.assistant-model-option:focus-visible { outline-color: var(--assistant-accent); }
+.assistant-model-option--current { box-shadow: inset 3px 0 var(--assistant-accent); background: rgb(99 254 19 / 9%); }
+.assistant-model-option-action { color: var(--assistant-pencil); font-weight: 700; }
+.assistant-model-more {
+  padding: 5px 8px;
+  border: 1px solid var(--border-ink);
+  border-radius: 8px;
+  background: var(--assistant-paper-white);
+  box-shadow: 0 2px 6px rgb(15 17 16 / 6%);
+  color: var(--assistant-graphite);
+}
+.assistant-model-more:hover { border-color: var(--assistant-graphite); background: var(--assistant-accent-soft); color: var(--assistant-graphite); }
+
+.assistant-field input,
+.assistant-provider-trigger {
+  height: 34px;
+  border: 1px solid var(--border-ink);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 72%);
+  color: var(--assistant-graphite);
+  box-shadow: none;
+}
+.assistant-protocol-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-ink);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 72%);
+}
+.assistant-protocol-option {
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--assistant-pencil);
+  cursor: pointer;
+  font: 700 10px var(--font-body);
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.assistant-protocol-option:hover { color: var(--assistant-graphite); background: rgb(15 17 16 / 5%); }
+.assistant-protocol-option--selected {
+  background: var(--assistant-graphite);
+  box-shadow: 0 1px 3px rgb(15 17 16 / 14%);
+  color: var(--assistant-paper-white);
+}
+.assistant-protocol-option--selected:hover { background: var(--assistant-graphite); color: var(--assistant-paper-white); }
+
+/* 搜索图标独立定位，输入文字保持稳定的左侧对齐。 */
+.assistant-model-search {
+  position: relative;
+  display: grid;
+  align-items: center;
+}
+.assistant-model-search > svg {
+  position: absolute;
+  z-index: 1;
+  left: 11px;
+  color: var(--assistant-faint);
+  pointer-events: none;
+}
+.assistant-model-search input { padding-left: 33px; }
+.assistant-field input::placeholder { color: var(--assistant-faint); }
+.assistant-provider-trigger > svg { color: var(--assistant-pencil); }
+.assistant-provider-trigger[aria-expanded="true"] { border-color: rgba(33, 140, 0, .56); background: rgb(99 254 19 / 7%); }
+.assistant-provider-menu {
+  padding: 4px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: var(--assistant-paper-white);
+  box-shadow: 0 10px 24px rgb(15 17 16 / 14%);
+}
+.assistant-provider-option { border-radius: 7px; color: var(--assistant-graphite); }
+.assistant-provider-option:hover,
+.assistant-provider-option--selected { background: var(--assistant-accent-soft); color: var(--assistant-graphite); }
+.assistant-field input:focus,
+.assistant-provider-trigger:focus-visible {
+  border-color: rgba(33, 140, 0, .56);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(99 254 19 / 14%);
+}
+
+/* 配置页控件共享克制的键盘焦点，避免默认荧光描边喧宾夺主。 */
+.assistant-config-panel button:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(99 254 19 / 14%);
+}
+.assistant-save {
+  padding: 7px 12px;
+  border: 1px solid var(--assistant-graphite);
+  border-radius: 9px;
+  background: var(--assistant-graphite);
+  box-shadow: 0 3px 8px rgb(15 17 16 / 12%);
+  color: var(--assistant-paper-white);
+  font-weight: 750;
+}
+.assistant-save:hover,
+.assistant-save--primary,
+.assistant-save--primary:hover { background: #35413c; color: var(--assistant-paper-white); }
+.assistant-provider-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.assistant-provider-clean {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 1px solid rgb(164 69 57 / 34%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 52%);
+  color: #9a4d42;
+  cursor: pointer;
+  font: 700 11px var(--font-body);
+}
+.assistant-provider-clean:hover:not(:disabled) { border-color: rgb(164 69 57 / 52%); background: rgb(164 69 57 / 8%); }
+.assistant-provider-clean:disabled { cursor: wait; opacity: .52; }
+
+/* 空状态只保留一个明确问题，功能通过输入框自然发现。 */
+.assistant-messages { gap: 14px; padding: 22px 20px; }
+.assistant-empty {
+  width: min(100%, 360px);
+  justify-items: center;
+  text-align: center;
+}
+.assistant-empty-intro { justify-content: center; }
+.assistant-empty-copy { padding-top: 0; }
+.assistant-empty strong { font-size: 20px; }
+.assistant-documentation-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  justify-self: center;
+  gap: 5px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--assistant-pencil);
+  cursor: pointer;
+  font: 650 11px/1.4 var(--assistant-font-sans);
+  text-decoration: underline;
+  text-decoration-color: rgb(101 112 103 / 36%);
+  text-underline-offset: 3px;
+}
+.assistant-documentation-link:hover { color: var(--assistant-graphite); text-decoration-color: currentcolor; }
+.assistant-documentation-link:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 3px; }
+.assistant-empty-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--assistant-pencil);
+  animation: assistant-empty-cursor-blink 900ms steps(1, end) infinite;
+}
+@keyframes assistant-empty-cursor-blink {
+  50% { opacity: 0; }
+}
+.assistant-latest-button {
+  position: absolute;
+  z-index: 2;
+  right: 20px;
+  bottom: 80px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 29px;
+  padding: 0 9px;
+  border: 1px solid var(--border-ink);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 5px 16px rgb(15 17 16 / 14%);
+  color: var(--assistant-graphite);
+  cursor: pointer;
+  font: 700 10px var(--assistant-font-sans);
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-latest-button:hover { border-color: rgba(33, 140, 0, .5); background: var(--assistant-paper-white); transform: translateY(-1px); }
+.assistant-latest-button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
+.assistant-empty { width: min(100%, 470px); gap: 18px; padding: 20px 4px; }
+.assistant-empty-intro { gap: 15px; }
+.assistant-empty-copy { gap: 5px; padding-top: 4px; }
+.assistant-empty strong {
+  color: var(--assistant-graphite);
+  font: 800 20px/1.25 var(--font-display);
+  letter-spacing: .06em;
+}
+.assistant-config-hint {
+  justify-self: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 58%);
+  box-shadow: 0 4px 12px rgb(15 17 16 / 6%);
+  color: var(--assistant-graphite);
+}
+.assistant-config-hint:hover { border-color: rgba(99, 254, 19, .6); background: var(--assistant-accent-soft); transform: translateY(-1px); }
+.assistant-config-hint:focus-visible { outline-color: var(--assistant-accent); }
+.assistant-config-hint-icon {
+  border: 1px solid var(--assistant-graphite);
+  border-radius: 4px;
+  background: var(--assistant-accent-soft);
+}
+.assistant-config-hint-copy strong,
+.assistant-config-hint-action { color: var(--assistant-graphite); }
+.assistant-config-hint-copy small { color: var(--assistant-pencil); }
+.assistant-bubble { gap: 9px; }
+.assistant-message-avatar {
+  width: 31px;
+  height: 31px;
+  flex-basis: 31px;
+  filter: saturate(.8) contrast(1.04);
+}
+.assistant-bubble-inner {
+  position: relative;
+  padding: 10px 13px;
+  border: 1px solid var(--border-ink);
+  border-radius: 12px 12px 12px 5px;
+  background: rgb(255 255 255 / 72%);
+  box-shadow: 0 3px 10px rgb(15 17 16 / 5%);
+}
+.assistant-bubble--assistant .assistant-bubble-inner:not(.assistant-bubble-inner--error) {
+  padding: 10px 13px;
+  border-color: rgb(69 86 69 / 16%);
+  border-radius: 12px 12px 12px 5px;
+  background: rgb(249 252 248 / 88%);
+  box-shadow: 0 3px 10px rgb(15 17 16 / 5%);
+}
+.assistant-bubble-inner::before {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 14px;
+  height: 1px;
+  background: rgb(38 38 38 / 13%);
+  content: '';
+  transform: rotate(-12deg);
+}
+.assistant-bubble--assistant .assistant-bubble-inner:not(.assistant-bubble-inner--error)::before { display: none; }
+.assistant-bubble--user .assistant-bubble-inner {
+  border-color: var(--assistant-graphite);
+  border-radius: 12px 12px 5px;
+  background: var(--assistant-graphite);
+  box-shadow: 0 3px 10px rgb(15 17 16 / 12%);
+}
+.assistant-bubble-inner p { color: var(--assistant-graphite); font: 13px/1.7 var(--assistant-font-sans); }
+.assistant-bubble--user .assistant-bubble-inner p { color: var(--paper-white); }
+.assistant-bubble--user .assistant-bubble-inner::before { background: rgb(255 255 255 / 22%); }
+.assistant-bubble-inner--error { border-color: rgb(164 69 57 / 42%); background: rgb(255 247 245 / 88%); }
+.assistant-bubble-inner--error p { color: #9a4d42; }
+.assistant-markdown { color: var(--assistant-graphite); font: 13px/1.7 var(--assistant-font-sans); overflow-wrap: anywhere; }
+.assistant-bubble-inner--error .assistant-markdown { color: #9a4d42; }
+.assistant-token-usage {
+  display: block;
+  margin-top: 8px;
+  color: rgb(72 91 74 / 64%);
+  font: 600 10px/1 var(--font-mono);
+  text-align: right;
+}
+:deep(.assistant-markdown > :first-child) { margin-top: 0; }
+:deep(.assistant-markdown > :last-child) { margin-bottom: 0; }
+:deep(.assistant-markdown p) { margin: 0 0 9px; }
+:deep(.assistant-markdown h1),
+:deep(.assistant-markdown h2),
+:deep(.assistant-markdown h3),
+:deep(.assistant-markdown h4) { margin: 15px 0 7px; color: var(--ink-deep); font-family: var(--assistant-font-sans); line-height: 1.35; }
+:deep(.assistant-markdown h1) { font-size: 18px; }
+:deep(.assistant-markdown h2) { padding-bottom: 4px; border-bottom: 1px solid var(--border-ink); font-size: 16px; }
+:deep(.assistant-markdown h3) { font-size: 14px; }
+:deep(.assistant-markdown h4) { font-size: 13px; }
+:deep(.assistant-markdown ul),
+:deep(.assistant-markdown ol) { margin: 7px 0 10px; padding-left: 20px; }
+:deep(.assistant-markdown li + li) { margin-top: 3px; }
+:deep(.assistant-markdown strong) { color: var(--ink-deep); font-weight: 750; }
+:deep(.assistant-markdown code) { padding: 1px 4px; border-radius: 4px; background: rgb(15 17 16 / 7%); color: #35652f; font: 12px/1.5 var(--font-mono); }
+:deep(.assistant-markdown pre) { margin: 10px 0; padding: 10px; overflow: auto; border: 1px solid var(--border-ink); border-radius: 8px; background: #f4f6f1; }
+:deep(.assistant-markdown pre code) { padding: 0; background: transparent; color: var(--ink); }
+:deep(.assistant-markdown blockquote) { margin: 9px 0; padding: 5px 0 5px 10px; border-left: 3px solid var(--accent-deep); color: var(--ink-soft); }
+/* 执行过程使用紧凑任务清单，避免呈现为调试日志。 */
+.assistant-activity {
+  min-width: 0;
+  margin: 0 0 12px;
+}
+/* 工具行保留执行脉络，但不再展示重复的步骤明细。 */
+.assistant-tool-event {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+  color: #7f8a81;
+  font: 600 11px/1.35 var(--assistant-font-sans);
+}
+.assistant-tool-event-icon {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  border: 1px solid #aeb8b0;
+  border-radius: 3px;
+  color: #7c877e;
+  font: 700 8px/1 var(--assistant-font-mono);
+  letter-spacing: -1px;
+}
+.assistant-tool-event--running { color: #5c8562; }
+.assistant-tool-event--running .assistant-tool-event-icon { border-color: #79a87f; color: #4f8558; animation: assistant-reasoning-pulse 1.2s ease-in-out infinite; }
+.assistant-tool-event--failed { color: #a45a50; }
+.assistant-tool-event--failed .assistant-tool-event-icon { border-color: #c8877d; color: #a45a50; }
+/* 授权结果单独呈现用户决定与实际影响，避免与助手正文混淆。 */
+.assistant-write-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 9px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(68, 117, 73, .16);
+  border-left: 3px solid #5c8f61;
+  border-radius: 8px;
+  background: #f6faf3;
+}
+.assistant-write-result--rejected { border-color: rgba(151, 89, 79, .17); border-left-color: #ae6359; background: #fff8f6; }
+.assistant-write-result--failed { border-color: rgba(164, 126, 55, .18); border-left-color: #a57c38; background: #fffbf2; }
+.assistant-write-result-icon { display: grid; flex: 0 0 auto; width: 19px; height: 19px; place-items: center; border-radius: 50%; background: #e5f2df; color: #4f8558; }
+.assistant-write-result--rejected .assistant-write-result-icon { background: #fde8e4; color: #a55047; }
+.assistant-write-result--failed .assistant-write-result-icon { background: #f9edcf; color: #98702e; }
+.assistant-write-result > div { display: grid; gap: 1px; min-width: 0; }
+.assistant-write-result small { color: #758276; font: 650 9px/1.3 var(--assistant-font-sans); }
+.assistant-write-result strong { color: #354236; font: 750 11px/1.35 var(--assistant-font-sans); }
+.assistant-write-result p { margin: 1px 0 0; color: #59665a; font: 11px/1.45 var(--assistant-font-sans); }
+.assistant-write-result--rejected strong { color: #86483f; }
+.assistant-write-result--failed strong { color: #806128; }
+/* 文本流暂时停顿时持续提示，直到下一段文本、工具事件或结束事件到达。 */
+.assistant-stream-wait {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 18px;
+  margin: 10px 0 8px;
+  color: #718074;
+  font: 600 10px/1.35 var(--assistant-font-sans);
+}
+.assistant-stream-wait-dots { display: inline-flex; align-items: center; gap: 3px; }
+.assistant-stream-wait-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #6b9870;
+  animation: assistant-stream-wait-dot 1s ease-in-out infinite;
+}
+.assistant-stream-wait-dots i:nth-child(2) { animation-delay: .14s; }
+.assistant-stream-wait-dots i:nth-child(3) { animation-delay: .28s; }
+.assistant-reasoning {
+  min-width: 0;
+  color: var(--assistant-pencil);
+}
+.assistant-reasoning-trigger {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #566259;
+  cursor: default;
+  font: 700 11px/1.4 var(--assistant-font-sans);
+  letter-spacing: .005em;
+  text-align: left;
+  user-select: none;
+}
+.assistant-reasoning-state {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border: 2px solid #8d978e;
+  border-radius: 50%;
+  background: transparent;
+}
+.assistant-reasoning--pending .assistant-reasoning-state { border-color: #5a9160; background: #5a9160; box-shadow: 0 0 0 3px rgb(90 145 96 / 12%); animation: assistant-reasoning-pulse 1.2s ease-in-out infinite; }
+.assistant-reasoning--failed .assistant-reasoning-state { border-color: #bd6a5c; background: #bd6a5c; }
+.assistant-reasoning--completed .assistant-reasoning-state { border-color: #629264; background: #629264; }
+.assistant-reasoning-status--completed { color: #2f7f38; }
+@keyframes assistant-reasoning-pulse { 50% { opacity: .4; } }
+@keyframes assistant-stream-wait-dot { 50% { opacity: .28; transform: translateY(-2px); } }
+
+/* 输入区以统一的细分割线收束，保留纸张底色。 */
+.assistant-composer {
+  display: grid;
+  gap: 10px;
+  align-items: stretch;
+  padding: 13px 17px 15px;
+  border-top: 1px solid var(--border-ink);
+  background: rgb(250 250 250 / 94%);
+  box-shadow: 0 -4px 14px rgb(15 17 16 / 4%);
+}
+.assistant-composer-meta { position: relative; display: flex; width: auto; height: 40px; flex: 0 0 auto; align-items: center; }
+/* 输入区操作仅保留图标，避免按钮底色打断输入框的整体感。 */
+.assistant-thinking-trigger { display: flex; width: auto; min-width: 40px; height: 40px; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); transition: color 150ms ease, transform 150ms var(--motion-easing); }
+.assistant-thinking-trigger:hover:not(:disabled),
+.assistant-thinking-trigger--open { background: transparent; color: var(--assistant-graphite); }
+.assistant-thinking-trigger:active:not(:disabled) { transform: translateY(0) scale(.98); }
+.assistant-thinking-trigger:disabled { cursor: not-allowed; opacity: .58; }
+.assistant-thinking-level { white-space: nowrap; }
+.assistant-thinking-trigger:focus-visible,
+.assistant-send:focus-visible { outline: 2px solid rgb(99 254 19 / 46%); outline-offset: -2px; }
+.assistant-thinking-menu { position: absolute; z-index: 8; right: 0; bottom: calc(100% + 7px); display: grid; width: 96px; gap: 2px; padding: 4px; border: 1px solid var(--border-ink); border-radius: 10px; background: var(--assistant-paper-white); box-shadow: 0 8px 20px rgb(15 17 16 / 12%); }
+.assistant-thinking-menu button { display: flex; width: 100%; min-height: 30px; align-items: center; justify-content: space-between; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); text-align: left; }
+.assistant-thinking-menu button:hover:not(:disabled) { background: rgb(15 17 16 / 5%); color: var(--assistant-graphite); }
+.assistant-thinking-menu button.is-active { background: var(--assistant-accent-soft); color: var(--assistant-graphite); cursor: default; }
+.assistant-composer-input { display: flex; min-width: 0; align-items: flex-end; gap: 10px; }
+/* 推理与发送属于同一操作组，间距比输入框侧更紧凑。 */
+.assistant-composer-meta + .assistant-send { margin-left: -6px; }
+.assistant-composer textarea {
+  box-sizing: border-box;
+  min-height: 40px;
+  max-height: 128px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 76%);
+  box-shadow: inset 0 -2px rgb(41 48 45 / 6%);
+  color: var(--assistant-graphite);
+  font: 12px/1.5 var(--assistant-font-mono);
+  overflow-y: hidden;
+  resize: none;
+}
+.assistant-composer textarea::placeholder { color: var(--assistant-faint); }
+.assistant-composer textarea:focus {
+  border-color: rgba(33, 140, 0, .56);
+  background: var(--paper-white);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(99 254 19 / 14%);
+}
+.assistant-composer textarea:disabled { background: var(--assistant-paper-deep); color: var(--assistant-faint); }
+.assistant-send {
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: #43a854;
+  transition: color 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-send:hover:not(:disabled) { background: transparent; color: #27833a; transform: translateY(-1px); }
+.assistant-send:active:not(:disabled) { transform: translateY(0) scale(.98); }
+/* 终止控制保留清晰边界，避免只显示孤立的红色方块。 */
+.assistant-send--stop {
+  border: 1px solid rgb(181 74 64 / 38%);
+  border-radius: 10px;
+  background: linear-gradient(145deg, #fff7f5, #fae8e5);
+  box-shadow: inset 0 1px rgb(255 255 255 / 82%), 0 2px 5px rgb(150 57 48 / 10%);
+  color: #a34039;
+}
+.assistant-send--stop:hover:not(:disabled) {
+  background: #f6dcd8;
+  color: #872f29;
+  transform: translateY(-1px);
+}
+.assistant-send--stop:active:not(:disabled) { transform: translateY(0) scale(.96); }
+
+.assistant-config-panel,
+.assistant-messages { scrollbar-color: rgb(41 48 45 / 48%) transparent; }
+.assistant-config-panel::-webkit-scrollbar-thumb,
+.assistant-messages::-webkit-scrollbar-thumb { background-color: rgb(41 48 45 / 48%); }
+.assistant-config-panel::-webkit-scrollbar-thumb:hover,
+.assistant-messages::-webkit-scrollbar-thumb:hover { background-color: rgb(41 48 45 / 68%); }
+
+@media (max-width: 520px) {
+  .assistant-topbar,
+  .assistant-config-panel,
+  .assistant-composer { padding-right: 12px; padding-left: 12px; }
+  .assistant-messages { padding: 16px 12px; }
+  .assistant-document-header { padding: 0 12px; }
+  .assistant-document-content { padding: 18px 14px 28px; }
+  .assistant-document-hero { padding: 19px 17px; }
+  .assistant-document-steps,
+  .assistant-document-example-list { grid-template-columns: 1fr; }
+  .assistant-document-examples { margin-top: 24px; }
+  .assistant-document-body { margin-top: 28px; }
+  .assistant-latest-button { right: 12px; }
+  .assistant-empty strong { font-size: 18px; }
+  .assistant-page { --assistant-sidebar-width: 170px; }
+  .assistant-conversation-sidebar { padding: 10px 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-back,
+  .assistant-action,
+  .assistant-conversation-toggle,
+  .assistant-config-hint,
+  .assistant-send,
+  .assistant-latest-button { transition: none; }
+  .assistant-document-enter-active,
+  .assistant-document-leave-active { transition: none; }
+  .assistant-reasoning--pending .assistant-reasoning-state,
+  .assistant-conversation-loading,
+  .assistant-stream-wait-dots i { animation: none; }
+  .assistant-empty-cursor { animation: none; }
+}
+</style>

@@ -20,6 +20,9 @@
           <img class="expanded-clipboard-icon" :src="collectionIcon" alt="" aria-hidden="true" draggable="false">
           <b v-if="props.clipboardCount">{{ props.clipboardCount }}</b>
         </button>
+        <button class="expanded-assistant" type="button" aria-label="打开 AI 助手" title="打开 AI 助手" @click.stop="emit('open-assistant')">
+          <PhSparkle class="expanded-assistant-icon" :size="15" weight="bold" />
+        </button>
         <div ref="gengduoCaozuo" class="expanded-more-wrap">
           <button class="expanded-more" type="button" aria-label="更多操作" :aria-expanded="isGengduoVisible" @click.stop="qiehuanGengduo">
             <svg class="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="11" cy="17" r="2" /></svg>
@@ -152,10 +155,7 @@
                   :class="{
                     'box-border rounded-xl border border-white/80 bg-white p-2 shadow-lg': item.type === 'url',
                     'box-border rounded-xl border p-2 shadow-lg': item.type === 'document',
-                    'border-red-200/80 bg-red-50': item.type === 'document' && cardInfo.type === 'PDF',
-                    'border-blue-200/80 bg-blue-50': item.type === 'document' && cardInfo.type === 'DOC',
-                    'border-green-200/80 bg-green-50': item.type === 'document' && cardInfo.type === 'XLS',
-                    'border-slate-200/80 bg-slate-50': item.type === 'document' && cardInfo.type === 'FILE',
+                    'border-white/80 bg-white': item.type === 'document',
                   }"
                   :src="cardInfo.icon"
                   alt=""
@@ -282,6 +282,7 @@
     <Transition name="library-detail">
       <aside
         v-if="isDetailVisible"
+        ref="kuaishuYulanMianban"
         class="library-detail-panel"
         :class="{ 'library-detail-panel--brief': detailData?.preview.type === 'none' }"
         aria-label="资料详情"
@@ -317,6 +318,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue'
 import { onClickOutside, onKeyStroke } from '@vueuse/core'
+import { PhSparkle } from '@phosphor-icons/vue'
 import searchLensIcon from '@/assets/icons/sousuo-lens.svg'
 import clipboardIcon from '@/assets/icons/jiantieban.svg'
 import collectionIcon from '@/assets/icons/shoujixiang.svg'
@@ -343,10 +345,11 @@ const props = defineProps({
   clipboardCount: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['open-settings', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
+const emit = defineEmits(['open-settings', 'open-assistant', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
 const gengduoCaozuo = useTemplateRef('gengduoCaozuo')
 const paixuCaozuo = useTemplateRef('paixuCaozuo')
 const cardCaozuoCaidan = useTemplateRef('cardCaozuoCaidan')
+const kuaishuYulanMianban = useTemplateRef('kuaishuYulanMianban')
 const ziliaokuYemian = useTemplateRef('ziliaokuYemian')
 const searchKeyword = shallowRef('')
 const isGengduoVisible = shallowRef(false)
@@ -718,6 +721,10 @@ onClickOutside(gengduoCaozuo, () => {
 })
 onClickOutside(paixuCaozuo, () => {
   isPaixuVisible.value = false
+})
+// 详情面板点击外部即关闭，和其他悬浮菜单保持一致的退出方式。
+onClickOutside(kuaishuYulanMianban, () => {
+  if (isDetailVisible.value) guanbiKuaishuYulan()
 })
 
 function qiehuanGengduo() {
@@ -1535,11 +1542,16 @@ onKeyStroke('Escape', () => {
 .expanded-clipboard b { position: absolute; top: -5px; right: -5px; display: grid; min-width: 15px; height: 15px; padding: 0 3px; place-items: center; border: 1px solid rgba(255, 255, 255, .82); border-radius: 8px; background: var(--ink); color: white; font: 700 9px var(--font-display); }
 .expanded-clipboard:hover { border-color: rgba(80, 145, 63, .34); background: rgba(238, 255, 232, .88); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); color: var(--ink); transform: translateY(-1px); }
 .expanded-clipboard:active { transform: translateY(0) scale(.98); }
+.expanded-assistant { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; padding: 0; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); color: var(--ink-soft); cursor: pointer; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }
+.expanded-assistant-icon { width: 15px; height: 15px; }
+.expanded-assistant:hover { border-color: rgba(80, 145, 63, .34); background: rgba(238, 255, 232, .88); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); color: var(--ink); transform: translateY(-1px); }
+.expanded-assistant:active { transform: translateY(0) scale(.98); }
 
 /* 窄窗口将操作收为图标，并让搜索框为它们预留固定空间。 */
 @media (max-width: 780px) {
   .expanded-capture,
-  .expanded-clipboard { width: 32px; }
+  .expanded-clipboard,
+  .expanded-assistant { width: 32px; }
   .expanded-search { left: 0; width: min(260px, calc(100% - 118px)); min-width: 0; transform: none; }
   .expanded-search input { min-width: 0; }
 }

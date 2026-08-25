@@ -706,6 +706,12 @@ export function useZiliaokuLibrary(xianshiToast, xianshiMigrationReport) {
   })
   onBeforeUnmount(() => stopLibraryChangedListener?.())
 
+  // Pi 助手保存知识后，刷新收集箱计数与内容。
+  const stopJiantiebanChangedListener = huoquBridge()?.onJiantiebanChanged?.(() => {
+    void shuaxinJiantieban()
+  })
+  onBeforeUnmount(() => stopJiantiebanChangedListener?.())
+
   return {
     libraryItems,
     categoryCounts,
