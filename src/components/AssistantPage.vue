@@ -224,30 +224,44 @@
       <section v-if="isDocumentationOpen" class="assistant-document-panel" aria-label="AI 助手使用文档">
         <header class="assistant-document-header">
           <div>
-            <strong>AI 助手使用文档</strong>
-            <small>从配置到第一次提问</small>
+            <strong>使用说明</strong>
+            <small>AI 助手</small>
           </div>
           <button type="button" aria-label="关闭使用文档" title="关闭" @click="isDocumentationOpen = false">
             <PhX :size="17" weight="bold" />
           </button>
         </header>
         <div class="assistant-document-content">
-          <section class="assistant-document-hero" aria-labelledby="assistant-document-title">
-            <span>快速开始</span>
-            <h1 id="assistant-document-title">把想做的事直接告诉助手</h1>
+          <section class="assistant-document-intro" aria-labelledby="assistant-document-title">
+            <h1 id="assistant-document-title">AI 助手使用说明</h1>
+            <p class="assistant-document-subtitle">从配置模型到完成一个任务</p>
             <p>先配置模型，然后说明目标、材料和期待的结果。助手会根据需要检索资料库或联网查找。</p>
+            <div class="assistant-document-ready">
+              <span class="assistant-document-ready-dot" :class="{ 'assistant-document-ready-dot--active': currentModel }" aria-hidden="true"></span>
+              <div>
+                <small>当前状态</small>
+                <strong>{{ currentModel ? `已连接 ${currentModel.name}` : '尚未配置模型' }}</strong>
+              </div>
+              <button type="button" @click="dakaiWendangPeizhi">
+                {{ currentModel ? '管理模型' : '配置模型' }}
+                <PhKey :size="13" weight="bold" aria-hidden="true" />
+              </button>
+            </div>
           </section>
 
-          <ol class="assistant-document-steps" aria-label="开始使用步骤">
-            <li><strong>配置模型</strong><span>点击顶部钥匙图标，选择供应商并保存 API 密钥。</span></li>
-            <li><strong>描述任务</strong><span>在输入框说明你要整理、查找或生成什么。</span></li>
-            <li><strong>继续追问</strong><span>不满意时直接补充要求，例如“再精简一些”。</span></li>
-          </ol>
+          <section class="assistant-document-section" aria-labelledby="assistant-document-step-title">
+            <h2 id="assistant-document-step-title">开始使用</h2>
+            <ol class="assistant-document-steps" aria-label="开始使用步骤">
+              <li><strong>配置模型</strong><span>点击顶部钥匙图标，选择供应商并保存 API 密钥。</span></li>
+              <li><strong>描述任务</strong><span>在输入框说明你要整理、查找或生成什么。</span></li>
+              <li><strong>继续追问</strong><span>不满意时直接补充要求，例如“再精简一些”。</span></li>
+            </ol>
+          </section>
 
-          <section class="assistant-document-examples" aria-labelledby="assistant-document-example-title">
+          <section class="assistant-document-section" aria-labelledby="assistant-document-example-title">
             <div>
-              <h2 id="assistant-document-example-title">不知道怎么问？从这里开始</h2>
-              <p>点击示例会带入输入框，你可以先修改再发送。</p>
+            <h2 id="assistant-document-example-title">示例提问</h2>
+            <p>点击示例会带入输入框，你可以先修改再发送。</p>
             </div>
             <div class="assistant-document-example-list">
               <button v-for="example in shiyongWendangShili" :key="example.title" type="button" @click="shiyongWendangShiliTianru(example.prompt)">
@@ -257,7 +271,7 @@
             </div>
           </section>
 
-          <div class="assistant-document-body assistant-markdown" v-html="aiZhushouShiyongWendangHtml"></div>
+          <div class="assistant-document-body assistant-markdown" aria-label="详细使用说明" v-html="aiZhushouShiyongWendangHtml"></div>
         </div>
       </section>
     </Transition>
@@ -867,6 +881,12 @@ async function gunDaoZuihou() {
 // 使用文档以内嵌面板展示，避免切出当前对话。
 function dakaiShiyongWendang() {
   isDocumentationOpen.value = true
+}
+
+// 文档中的主操作直接打开供应商配置，避免用户返回后再次寻找入口。
+function dakaiWendangPeizhi() {
+  isDocumentationOpen.value = false
+  dakaiGongyingshangConfig()
 }
 
 // 将示例带入输入框，让说明文档可以直接转化为一次可编辑的提问。
@@ -1925,9 +1945,7 @@ onUnmounted(() => {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  background:
-    linear-gradient(135deg, rgb(99 254 19 / 10%), transparent 31%),
-    var(--assistant-paper-white);
+  background: var(--assistant-paper-white);
 }
 .assistant-document-header {
   display: flex;
@@ -1946,141 +1964,140 @@ onUnmounted(() => {
   height: 32px;
   place-items: center;
   border: 1px solid var(--border-ink);
-  border-radius: 9px;
-  background: var(--assistant-paper-white);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--assistant-pencil);
   cursor: pointer;
 }
-.assistant-document-header button:hover { border-color: rgba(33, 140, 0, .5); background: #edf8e6; color: var(--assistant-graphite); }
+.assistant-document-header button:hover { background: rgb(15 17 16 / 6%); color: var(--assistant-graphite); }
 .assistant-document-header button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
 .assistant-document-content {
   min-height: 0;
   flex: 1;
-  max-width: 760px;
+  max-width: 720px;
   width: 100%;
   margin: 0 auto;
-  padding: 28px 24px 40px;
+  padding: 28px 24px 48px;
   overflow: auto;
   scrollbar-color: rgb(41 48 45 / 48%) transparent;
 }
-/* 文档首屏先给行动路径，再提供完整说明，避免用户在长文本中寻找第一步。 */
-.assistant-document-hero {
-  padding: 24px;
-  border: 1px solid rgb(38 38 38 / 12%);
-  border-radius: 16px;
-  background: rgb(255 255 255 / 78%);
-  box-shadow: 0 12px 28px rgb(15 17 16 / 7%);
-}
-.assistant-document-hero > span {
-  display: inline-flex;
-  margin-bottom: 9px;
-  padding: 4px 7px;
-  border-radius: 5px;
-  background: var(--assistant-accent);
-  color: #1f2c1f;
-  font: 800 9px/1 var(--assistant-font-mono);
-  letter-spacing: .08em;
-}
-.assistant-document-hero h1 {
-  max-width: 15em;
+/* 使用普通文档层级，避免说明页和对话内容争夺视觉注意力。 */
+.assistant-document-intro h1 {
   margin: 0;
   color: var(--assistant-graphite);
-  font: 800 clamp(24px, 5vw, 34px)/1.12 var(--assistant-font-sans);
-  letter-spacing: -.04em;
-}
-.assistant-document-hero p {
-  max-width: 48em;
-  margin: 12px 0 0;
-  color: var(--assistant-pencil);
-  font: 500 13px/1.75 var(--assistant-font-sans);
-}
-.assistant-document-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 12px 0 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: document-step;
-}
-.assistant-document-steps li {
-  position: relative;
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-  padding: 14px 12px 13px 38px;
-  border: 1px solid var(--border-ink);
-  border-radius: 12px;
-  background: rgb(255 255 255 / 62%);
-  counter-increment: document-step;
-}
-.assistant-document-steps li::before {
-  position: absolute;
-  top: 14px;
-  left: 12px;
-  display: grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--assistant-graphite);
-  color: var(--assistant-paper-white);
-  content: counter(document-step);
-  font: 800 9px/1 var(--assistant-font-mono);
-}
-.assistant-document-steps strong { color: var(--assistant-graphite); font: 750 11px/1.3 var(--assistant-font-sans); }
-.assistant-document-steps span { color: var(--assistant-pencil); font: 500 10px/1.55 var(--assistant-font-sans); }
-.assistant-document-examples { margin-top: 28px; }
-.assistant-document-examples h2 {
-  margin: 0;
-  color: var(--assistant-graphite);
-  font: 800 18px/1.3 var(--assistant-font-sans);
+  font: 750 24px/1.25 var(--assistant-font-sans);
   letter-spacing: -.02em;
 }
-.assistant-document-examples p { margin: 5px 0 0; color: var(--assistant-pencil); font: 500 11px/1.5 var(--assistant-font-sans); }
-.assistant-document-example-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.assistant-document-intro p {
+  margin: 9px 0 0;
+  color: var(--assistant-pencil);
+  font: 400 13px/1.7 var(--assistant-font-sans);
+}
+.assistant-document-subtitle {
+  color: var(--assistant-graphite) !important;
+  font: 500 14px/1.45 var(--assistant-font-sans) !important;
+}
+.assistant-document-subtitle + p { margin-top: 12px; }
+/* 状态与主操作放在说明首屏，帮助用户立即进入下一步。 */
+.assistant-document-ready {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 9px;
+  margin-top: 18px;
+  padding: 8px 9px 8px 11px;
+  border: 1px solid var(--border-ink);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 58%);
+}
+.assistant-document-ready-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #a6ada9;
+}
+.assistant-document-ready-dot--active {
+  background: #4e9e43;
+  box-shadow: 0 0 0 3px rgb(78 158 67 / 13%);
+}
+.assistant-document-ready > div { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.assistant-document-ready small { color: var(--assistant-pencil); font: 600 9px/1 var(--assistant-font-mono); letter-spacing: .08em; }
+.assistant-document-ready strong { overflow: hidden; color: var(--assistant-graphite); font: 650 11px/1.35 var(--assistant-font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.assistant-document-ready button {
+  display: inline-flex;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid rgba(38, 38, 38, .16);
+  border-radius: 7px;
+  background: var(--assistant-graphite);
+  color: var(--assistant-paper-white);
+  cursor: pointer;
+  font: 650 10px var(--assistant-font-sans);
+}
+.assistant-document-ready button:hover { background: #3d423f; }
+.assistant-document-ready button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
+.assistant-document-section {
+  margin-top: 30px;
+}
+.assistant-document-section h2 {
+  margin: 0;
+  color: var(--assistant-graphite);
+  font: 700 15px/1.4 var(--assistant-font-sans);
+}
+.assistant-document-section > div > p {
+  margin: 5px 0 0;
+  color: var(--assistant-pencil);
+  font: 400 12px/1.55 var(--assistant-font-sans);
+}
+.assistant-document-steps {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+.assistant-document-steps li {
+  padding: 5px 0 5px 2px;
+}
+.assistant-document-steps strong { color: var(--assistant-graphite); font: 650 12px/1.5 var(--assistant-font-sans); }
+.assistant-document-steps span { margin-left: 5px; color: var(--assistant-pencil); font: 400 12px/1.5 var(--assistant-font-sans); }
+.assistant-document-example-list { display: grid; gap: 1px; margin-top: 10px; border-top: 1px solid var(--border-ink); }
 .assistant-document-example-list button {
   display: grid;
-  min-height: 76px;
-  gap: 5px;
-  padding: 13px;
-  border: 1px solid var(--border-ink);
-  border-radius: 12px;
-  background: rgb(255 255 255 / 64%);
+  gap: 3px;
+  padding: 11px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border-ink);
+  background: transparent;
   color: var(--assistant-graphite);
   cursor: pointer;
   text-align: left;
-  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
+  transition: color 150ms ease, background 150ms ease;
 }
 .assistant-document-example-list button:hover {
-  border-color: rgb(33 140 0 / 42%);
-  background: rgb(99 254 19 / 9%);
-  transform: translateY(-1px);
+  background: rgb(15 17 16 / 4%);
+  color: #315136;
 }
-.assistant-document-example-list button:active { transform: translateY(0) scale(.99); }
 .assistant-document-example-list button:focus-visible { outline: 2px solid var(--assistant-accent); outline-offset: 2px; }
-.assistant-document-example-list strong { font: 800 11px/1.25 var(--assistant-font-sans); }
+.assistant-document-example-list strong { font: 650 12px/1.45 var(--assistant-font-sans); }
 .assistant-document-example-list span {
-  display: -webkit-box;
-  overflow: hidden;
+  min-width: 0;
   color: var(--assistant-pencil);
-  font: 500 10px/1.5 var(--assistant-font-sans);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font: 400 12px/1.5 var(--assistant-font-sans);
 }
-.assistant-document-body { margin-top: 34px; padding-top: 2px; }
-.assistant-document-body :deep(h2) { margin-top: 32px; }
-.assistant-document-body :deep(h3) { margin-top: 20px; color: var(--assistant-graphite); }
+.assistant-document-body { margin-top: 30px; }
+.assistant-document-body :deep(h2) { margin-top: 28px; padding-bottom: 0; border-bottom: 0; font-size: 17px; }
+.assistant-document-body :deep(h3) { margin-top: 18px; color: var(--assistant-graphite); }
 .assistant-document-body :deep(h2 + p) { max-width: 58em; color: var(--assistant-pencil); }
 .assistant-document-body :deep(ol) { padding-left: 23px; }
 .assistant-document-body :deep(li) { padding-left: 2px; }
 .assistant-document-body :deep(blockquote) {
-  padding: 10px 12px;
-  border: 1px solid rgb(33 140 0 / 22%);
-  border-left: 3px solid var(--accent-deep);
-  border-radius: 9px;
-  background: rgb(99 254 19 / 7%);
-  color: var(--assistant-graphite);
+  padding: 4px 0 4px 10px;
+  border: 0;
+  border-left: 2px solid rgb(72 91 74 / 32%);
+  color: var(--assistant-pencil);
 }
 .assistant-document-enter-active,
 .assistant-document-leave-active { transition: opacity 160ms ease, transform 180ms var(--motion-easing); }
@@ -2612,10 +2629,9 @@ onUnmounted(() => {
   .assistant-messages { padding: 16px 12px; }
   .assistant-document-header { padding: 0 12px; }
   .assistant-document-content { padding: 18px 14px 28px; }
-  .assistant-document-hero { padding: 19px 17px; }
-  .assistant-document-steps,
-  .assistant-document-example-list { grid-template-columns: 1fr; }
-  .assistant-document-examples { margin-top: 24px; }
+  .assistant-document-ready { margin-top: 16px; }
+  .assistant-document-section { margin-top: 24px; }
+  .assistant-document-example-list button { gap: 2px; }
   .assistant-document-body { margin-top: 28px; }
   .assistant-latest-button { right: 12px; }
   .assistant-empty strong { font-size: 18px; }
