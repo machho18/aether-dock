@@ -139,7 +139,8 @@ function geshiBuhuoShijian(timestamp) {
   overflow: hidden;
   flex-direction: column;
   border-radius: 18px;
-  background: linear-gradient(150deg, #f4f5f1, #e9ede6 56%, #e5eae2);
+  /* 收集箱复用资料库的中性暖灰顶栏，内容区透出主页面画布。 */
+  background: linear-gradient(to bottom, #ececec 0 60px, transparent 60px);
   color: var(--ink);
   color-scheme: light;
 }
@@ -178,7 +179,7 @@ function geshiBuhuoShijian(timestamp) {
 button:disabled { cursor: not-allowed; opacity: .45; transform: none !important; }
 
 .clipboard-identity { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; }
-.clipboard-identity-icon { display: grid; width: 29px; height: 29px; flex: 0 0 29px; place-items: center; border-radius: 9px; background: rgba(99, 254, 19, .18); }
+.clipboard-identity-icon { display: grid; width: 29px; height: 29px; flex: 0 0 29px; place-items: center; border-radius: 9px; background: rgba(38, 38, 38, .065); }
 .clipboard-identity-icon img { width: 17px; height: 17px; object-fit: contain; }
 .clipboard-heading { display: grid; min-width: 0; }
 .clipboard-heading strong { color: var(--ink); font: 700 15px/1.15 var(--font-display); letter-spacing: .035em; }
@@ -193,22 +194,23 @@ button:disabled { cursor: not-allowed; opacity: .45; transform: none !important;
 .clipboard-list { display: grid; min-height: 0; flex: 1; align-content: start; gap: 7px; padding: 12px 18px 18px; overflow: auto; overscroll-behavior: contain; }
 .clipboard-item { display: flex; min-width: 0; min-height: 70px; align-items: center; gap: 11px; padding: 10px; border: 1px solid rgba(38, 38, 38, .11); border-radius: 12px; background: rgba(255, 255, 255, .68); box-shadow: inset 0 1px rgba(255, 255, 255, .7); }
 .clipboard-item-icon { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border-radius: 10px; background: rgba(38, 38, 38, .055); color: var(--ink-muted); }
-.clipboard-item--text .clipboard-item-icon { background: rgba(99, 254, 19, .13); color: #34772e; }
-.clipboard-item--url .clipboard-item-icon { background: rgba(88, 164, 117, .12); color: #397357; }
+.clipboard-item--text .clipboard-item-icon,
+.clipboard-item--url .clipboard-item-icon { background: rgba(38, 38, 38, .055); color: var(--ink-soft); }
 .clipboard-image-preview { width: 53px; height: 42px; flex: 0 0 53px; border: 1px solid rgba(38, 38, 38, .1); border-radius: 8px; background: #eceeea; object-fit: cover; }
 .clipboard-item-content { min-width: 0; flex: 1; }
 .clipboard-item-title-row { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
 .clipboard-item-title { min-width: 0; flex: 1; overflow: hidden; color: var(--ink); font: 700 12px/1.35 var(--font-body); letter-spacing: .015em; text-overflow: ellipsis; white-space: nowrap; }
 .clipboard-item-title-row time { flex: 0 0 auto; color: var(--ink-faint); font: 10px var(--font-body); white-space: nowrap; }
 .clipboard-item-preview { display: -webkit-box; margin: 3px 0 0; overflow: hidden; color: var(--ink-muted); font: 11px/1.42 var(--font-body); overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
-.clipboard-item-preview--url { color: #46735d; }
+.clipboard-item-preview--url { color: var(--ink-muted); }
 .clipboard-item-actions { display: flex; flex: 0 0 auto; gap: 4px; }
 .clipboard-item-actions button { width: 29px; height: 29px; padding: 0; border-radius: 8px; }
 .clipboard-item-archive { border-color: rgba(61, 132, 48, .25) !important; background: rgba(99, 254, 19, .1) !important; color: #32712b !important; }
 .clipboard-item-archive:hover:not(:disabled) { background: rgba(99, 254, 19, .2) !important; }
 
 .clipboard-empty { display: grid; min-height: 0; flex: 1; align-content: center; justify-items: center; padding: 30px; text-align: center; }
-.clipboard-empty-icon { display: grid; width: 48px; height: 48px; margin-bottom: 10px; place-items: center; border-radius: 14px; background: rgba(99, 254, 19, .14); }
+/* 非操作性图标保持石墨灰，避免与主操作争夺视觉注意力。 */
+.clipboard-empty-icon { display: grid; width: 48px; height: 48px; margin-bottom: 10px; place-items: center; border-radius: 14px; background: rgba(38, 38, 38, .055); }
 .clipboard-empty-icon img { width: 26px; height: 26px; object-fit: contain; }
 .clipboard-empty strong { font: 700 15px var(--font-display); letter-spacing: .04em; }
 .clipboard-empty p { max-width: 310px; margin: 6px 0 0; color: var(--ink-muted); font: 12px/1.6 var(--font-body); }

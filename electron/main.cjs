@@ -1,6 +1,6 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net: electronNet, protocol, screen, session, shell, Tray } = require('electron')
 const { execFile, spawn } = require('node:child_process')
-const { createHash } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
 const dns = require('node:dns/promises')
 const fs = require('node:fs')
 const http = require('node:http')
@@ -12,16 +12,27 @@ const fsp = require('node:fs/promises')
 const { promisify } = require('node:util')
 const { autoUpdater } = require('electron-updater')
 const { createLibrary } = require('./ziliaoku.cjs')
+const { createHuihuaStore } = require('./huihua.cjs')
+const { shengchengDocxBuffer } = require('./docx-generator.cjs')
+const { shengchengMarkdownBuffer } = require('./markdown-generator.cjs')
+const { shengchengPdfBuffer } = require('./pdf-generator.cjs')
+const { shengchengXlsxBuffer } = require('./xlsx-generator.cjs')
 const { ipcTongdao } = require('./ipc.cjs')
+const piJicheng = require('./pi.cjs')
 
 // 持有主窗口引用，避免被垃圾回收后自动关闭
 let mainWindow = null
+let isMainWindowReady = false
 let startupWindow = null
+let startupWindowFallbackTimer = null
+let isStartupCompleted = false
 let xuanfuqiuWindow = null
 let isXuanfuqiuWindowReady = false
 let tuopan = null
 let lastCpuStat = null
 let library = null
+let huihuaStore = null
+const piZiliaokuShouquanMap = new Map()
 let yingyongSyncPromise = null
 let managedReconcilePromise = null
 let managedReconcileKey = ''
@@ -77,6 +88,7 @@ let mainIslandAnchor = { horizontal: 'right', vertical: 'bottom' }
 let mainIslandMoveTimer = null
 let mainIslandMoveContext = null
 let isMainIslandShapeReady = false
+let mainIslandShapeCacheKey = ''
 const startupWindowSize = { width: 360, height: 360 }
 const shouqikouWindowSize = { width: 226, height: 64 }
 const shouqikouMargin = 24
@@ -103,6 +115,10 @@ const websiteDataIconMimeTypes = new Set([
   'image/svg+xml', 'image/webp', 'image/gif',
 ])
 const websiteBrowserIconExtensions = ['svg', 'webp', 'gif']
+const yingyongIconCacheSizes = [64, 128, 256]
+// 图标缓存版本：升级时让异常图标重新生成
+const yingyongIconCacheVersion = 'v3'
+const windowsIconResourceExts = new Set(['.dll', '.exe', '.ico'])
 const websiteIconMaxCandidates = 10
 const websiteIconTotalTimeoutMs = 15000
 const websiteIconPageTimeoutMs = 7000
@@ -254,21 +270,19 @@ function huoquMainIslandStateRect(state, anchor = mainIslandAnchor) {
   return stateRects[state]?.[0] ?? stateRects.collapsed[0]
 }
 
-// 原生裁剪区域覆盖所有状态的并集，运行期间不再重建以避免透明窗口闪烁。
-function shezhiMainIslandStableShape() {
-  if (isMainIslandShapeReady || !mainWindow || mainWindow.isDestroyed()) return
+// 窗口形状与当前交互状态保持一致，收起态仅保留宠物本体的可点击区域。
+function tongbuMainIslandWindowShape(state, anchor = mainIslandAnchor) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
   if (!['win32', 'linux'].includes(process.platform)) {
     isMainIslandShapeReady = true
     return
   }
 
-  const { islandOriginX, islandOriginY } = huoquMainIslandLayout()
-  mainWindow.setShape([{
-    x: islandOriginX,
-    y: islandOriginY - 2,
-    width: mainIslandSize.width,
-    height: mainIslandSize.height + 2,
-  }])
+  const rect = huoquMainIslandStateRect(state, anchor)
+  const shapeKey = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`
+  if (shapeKey === mainIslandShapeCacheKey) return
+  mainWindow.setShape([rect])
+  mainIslandShapeCacheKey = shapeKey
   isMainIslandShapeReady = true
 }
 
@@ -373,14 +387,12 @@ function youhuaMainIslandAnchor(position) {
   }
 }
 
-// 状态切换只更新位置与锚点，原生裁剪区域始终保持稳定。
+// 状态切换同步位置、锚点和可点击区域，透明画布不会再吞掉宠物的首次点击。
 function shezhiMainIslandWindowShape(state = 'collapsed', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return null
 
   const targetState = ['collapsed', 'moving', 'expanded', 'drop'].includes(state) ? state : 'collapsed'
-  // 窗口展开、拖动和接收投放时必须直接接收鼠标，不能等待渲染层异步解除穿透。
-  const shouldPassthrough = targetState === 'collapsed'
-  mainWindow.setIgnoreMouseEvents(shouldPassthrough, { forward: shouldPassthrough })
+  mainWindow.setIgnoreMouseEvents(false)
   const [currentX, currentY] = mainWindow.getPosition()
   const optimizedPosition = options?.optimizeAnchor
     ? youhuaMainIslandAnchor({ x: currentX, y: currentY })
@@ -390,7 +402,7 @@ function shezhiMainIslandWindowShape(state = 'collapsed', options = {}) {
     mainWindow.setPosition(targetPosition.x, targetPosition.y)
   }
 
-  shezhiMainIslandStableShape()
+  tongbuMainIslandWindowShape(targetState)
   return { anchor: { ...mainIslandAnchor } }
 }
 
@@ -483,7 +495,7 @@ async function qiehuanXuanfuqiuMoshi(enabled) {
     xuanfuqiuWindow.hide()
     positionMainWindow()
     shezhiMainIslandWindowShape()
-    mainWindow.setIgnoreMouseEvents(true, { forward: true })
+    mainWindow.setIgnoreMouseEvents(false)
     mainWindow.showInactive()
   }
 }
@@ -955,6 +967,468 @@ function huoquRemoteReferer(currentUrl, requestContext = {}) {
     return refererUrl.protocol === 'https:' && isSameSite ? `${refererUrl.origin}/` : ''
   } catch {
     return ''
+  }
+}
+
+// 将 Pi 助手事件推送到主窗口渲染层。
+function piFaSongEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.piEvent, event)
+}
+
+// 资料库写操作必须经由渲染层确认，模型本身不能绕过此关卡。
+function piQingqiuZiliaokuShouquan(payload) {
+  const requestId = randomUUID()
+  return new Promise((resolve) => {
+    piZiliaokuShouquanMap.set(requestId, resolve)
+    piFaSongEvent({ type: 'library-approval', requestId, ...payload })
+  })
+}
+
+// 中止会话或离开页面时拒绝所有待确认操作，避免后台遗留写入请求。
+function piQuxiaoZiliaokuShouquan() {
+  for (const resolve of piZiliaokuShouquanMap.values()) resolve({ approved: false })
+  piZiliaokuShouquanMap.clear()
+}
+
+function piLiebiaoJiantieban() {
+  return {
+    items: library.huoquJiantiebanItems().slice(0, 50).map((item) => ({
+      id: item.id,
+      title: item.title,
+      type: item.type,
+    })),
+  }
+}
+
+function piHuoquZiliaokuTiaomu(itemId) {
+  const item = library.getItemDetail(itemId)
+  if (!item) return null
+  return { id: item.id, title: item.title, type: item.type, storageMode: item.storageMode }
+}
+
+async function piGuidangJiantiebanItems(itemIds) {
+  const result = await guidangJiantiebanItems(itemIds)
+  if (result.removedIds.length && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(ipcTongdao.jiantiebanChanged)
+    mainWindow.webContents.send(ipcTongdao.libraryChanged)
+  }
+  return { chenggong: Boolean(result.removedIds.length), ...result }
+}
+
+function piYichuJiantiebanItems(itemIds) {
+  const removedIds = library.shanchuJiantiebanItems(itemIds)?.removedIds ?? []
+  if (removedIds.length && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.jiantiebanChanged)
+  return { chenggong: true, removedIds }
+}
+
+async function piChongmingmingZiliaokuTiaomu(itemId, title) {
+  const result = await library.renameItem(itemId, title)
+  if (result.chenggong && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+  return result
+}
+
+async function piShanchuZiliaokuTiaomu(itemId) {
+  const item = library.getItemDetail(itemId)
+  const thumbnailCacheKey = item?.type === 'image' ? huoquThumbnailCacheKey(item) : ''
+  const result = await library.deleteItem(itemId)
+  if (result.chenggong && thumbnailCacheKey) await shanchuThumbnailCache(thumbnailCacheKey)
+  if (result.chenggong && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+  return result
+}
+
+function piGengxinZiliaokuBiji(itemId, notes) {
+  const result = library.setItemNotes(itemId, notes)
+  if (result && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+  return result ? { chenggong: true, ...result } : { chenggong: false, xiaoxi: '未找到该资料库条目' }
+}
+
+// Pi 助手保存知识：写入收集箱，供用户确认后归档，不直接修改资料库文件。
+async function piBaocunBiji(payload) {
+  const title = String(payload?.title ?? '').trim().slice(0, 120)
+  const content = String(payload?.content ?? '').trim()
+  const sourceUrl = String(payload?.sourceUrl ?? '').trim()
+  const approval = await piQingqiuZiliaokuShouquan({
+    title: '允许保存到收集箱？',
+    message: `将保存“${title || '未命名内容'}”到收集箱。`,
+    detail: sourceUrl ? `来源：${sourceUrl}` : '内容将保存为本地笔记。',
+    tone: 'default',
+  })
+  if (!approval.approved) return { chenggong: false, xiaoxi: '用户未授权保存操作' }
+  try {
+    let result
+    if (sourceUrl) {
+      if (!/^https?:\/\//i.test(sourceUrl)) return { chenggong: false, xiaoxi: '来源链接无效' }
+      if (!content) {
+        result = library.tianjiaJiantiebanItem({
+          type: 'url',
+          title: title || huoquJiantiebanLianjieBiaoti(sourceUrl, Date.now()),
+          sourceUrl,
+          contentHash: huoquNeirongZhizhen(sourceUrl),
+        })
+      } else {
+        const textContent = `${content}\n\n来源：${sourceUrl}`
+        result = library.tianjiaJiantiebanItem({
+          type: 'text',
+          title: title || huoquJiantiebanBijiBiaoti(content, Date.now()),
+          textContent,
+          contentHash: huoquNeirongZhizhen(textContent),
+        })
+      }
+    } else {
+      if (!title || !content) return { chenggong: false, xiaoxi: '标题与正文不能为空' }
+      result = library.tianjiaJiantiebanItem({
+        type: 'text',
+        title,
+        textContent: content,
+        contentHash: huoquNeirongZhizhen(content),
+      })
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.jiantiebanChanged)
+    return { chenggong: true, title: result.item.title, duplicate: Boolean(result.duplicate) }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? '保存失败' }
+  }
+}
+
+// Pi 仅生成新的 Word 修订副本，再通过资料库受管导入保存，确保原文件始终不被覆盖。
+async function piShengchengDocxFuben(payload) {
+  const sourceItemId = String(payload?.sourceItemId ?? '').trim()
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  const sourceItem = library.getItemDetail(sourceItemId)
+  if (!sourceItem) return { chenggong: false, xiaoxi: '未找到原始资料库文档' }
+  const sourceExtension = path.extname(sourceItem.title || sourceItem.sourcePath || '').toLowerCase()
+  if (!['.docx', '.md', '.txt'].includes(sourceExtension)) {
+    return { chenggong: false, xiaoxi: '当前支持基于 DOCX、Markdown 或 TXT 生成 Word 修订副本' }
+  }
+  if (!content) return { chenggong: false, xiaoxi: '修订内容不能为空' }
+  if (!(await library.getValidatedItemLocalPath(sourceItem))) return { chenggong: false, xiaoxi: '原始文档不可用或已移动' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const sourceTitle = path.basename(sourceItem.title || '文档', sourceExtension)
+  const title = (rawTitle || `${sourceTitle} - 修订版`).replace(/\.docx$/i, '').trim().slice(0, 100) || 'Word 修订副本'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Word 副本？',
+      message: `将根据“${sourceItem.title}”创建新的 Word 副本。`,
+      detail: `新文件名：${title}.docx\n原始文件不会被修改。`,
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Word 副本' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.docx`)
+  try {
+    const buffer = await shengchengDocxBuffer({ title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.docx`,
+        title: `${title}.docx`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存修订副本' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.docx$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'Word 修订副本生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 生成独立 Excel 工作簿，再通过资料库受管导入保存，避免覆盖任何原始资料。
+async function piShengchengXlsxGongzuobu(payload) {
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  if (!content) return { chenggong: false, xiaoxi: '工作簿内容不能为空' }
+
+  const sourceItemId = String(payload?.sourceItemId ?? '').trim()
+  const sourceItem = sourceItemId ? library.getItemDetail(sourceItemId) : null
+  if (sourceItemId && !sourceItem) return { chenggong: false, xiaoxi: '未找到原始资料库文档' }
+  if (sourceItem && !(await library.getValidatedItemLocalPath(sourceItem))) return { chenggong: false, xiaoxi: '原始文档不可用或已移动' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const sourceExtension = sourceItem ? path.extname(sourceItem.title || sourceItem.sourcePath || '') : ''
+  const sourceTitle = sourceItem ? path.basename(sourceItem.title || '资料', sourceExtension) : ''
+  const title = (rawTitle || `${sourceTitle || '数据'} 表`).replace(/\.xlsx?$/i, '').trim().slice(0, 100) || 'Excel 工作簿'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Excel 工作簿？',
+      message: `将创建新的 Excel 工作簿“${title}.xlsx”。`,
+      detail: '生成的工作簿会加入资料库，原始资料不会被修改。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Excel 工作簿' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.xlsx`)
+  try {
+    const buffer = await shengchengXlsxBuffer({ title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.xlsx`,
+        title: `${title}.xlsx`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存 Excel 工作簿' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.xlsx$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'Excel 工作簿生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 生成独立 Markdown 文件并导入资料库，保留模型输出的原始 Markdown 结构。
+async function piShengchengMarkdownWenjian(payload) {
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  if (!content) return { chenggong: false, xiaoxi: 'Markdown 正文不能为空' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const title = (rawTitle || 'Markdown 文档').replace(/\.md$/i, '').trim().slice(0, 100) || 'Markdown 文档'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 Markdown 文件？',
+      message: `将创建新的 Markdown 文件“${title}.md”。`,
+      detail: '生成的文件会加入资料库，不会修改任何原始资料。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 Markdown 文件' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.md`)
+  try {
+    const buffer = shengchengMarkdownBuffer({ title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.md`,
+        title: `${title}.md`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存 Markdown 文件' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.md$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'Markdown 文件生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 生成排版后的 PDF 文件并导入资料库，始终创建新文件而不覆盖原始资料。
+async function piShengchengPdfWenjian(payload) {
+  const content = String(payload?.content ?? '').trim().slice(0, 80000)
+  if (!content) return { chenggong: false, xiaoxi: 'PDF 正文不能为空' }
+
+  const rawTitle = String(payload?.title ?? '').replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ').replace(/\s+/g, ' ').trim()
+  const title = (rawTitle || 'PDF 文档').replace(/\.pdf$/i, '').trim().slice(0, 100) || 'PDF 文档'
+  const config = library.getConfig()
+  if (!config.rootdir || !config.libraryId) return { chenggong: false, xiaoxi: '请先设置资料库目录' }
+
+  if (payload?.yixianShouquan !== true) {
+    const approval = await piQingqiuZiliaokuShouquan({
+      title: '允许生成 PDF 文件？',
+      message: `将创建新的 PDF 文件“${title}.pdf”。`,
+      detail: '生成的文件会加入资料库，不会修改任何原始资料。',
+      tone: 'default',
+    })
+    if (!approval.approved) return { chenggong: false, daima: 'user_declined', xiaoxi: '用户已拒绝生成 PDF 文件' }
+  }
+
+  const temporaryDir = path.join(app.getPath('userData'), 'generated-documents')
+  const temporaryPath = path.join(temporaryDir, `${randomUUID()}.pdf`)
+  try {
+    const buffer = await shengchengPdfBuffer(BrowserWindow, { title, content })
+    await fsp.mkdir(temporaryDir, { recursive: true })
+    await fsp.writeFile(temporaryPath, buffer, { flag: 'wx' })
+    const importResult = await library.importContent({
+      file: [{
+        path: temporaryPath,
+        name: `${title}.pdf`,
+        title: `${title}.pdf`,
+        contentHash: createHash('sha256').update(buffer).digest('hex'),
+      }],
+      url: [],
+    })
+    const item = importResult.added[0] ?? library.getItemDetail(importResult.duplicates[0])
+    if (!item) return { chenggong: false, xiaoxi: '资料库未能保存 PDF 文件' }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcTongdao.libraryChanged)
+    return { chenggong: true, title: item.title.replace(/\.pdf$/i, ''), itemId: item.id }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? 'PDF 文件生成失败' }
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
+  }
+}
+
+// Pi 助手读取资料库条目内容：仅接受已索引条目，并经校验后的本地路径读取文本。
+async function piDukuLibraryWenjian(rawId) {
+  const id = String(rawId ?? '').trim()
+  if (!id) return { chenggong: false, xiaoxi: '请提供资料库条目 id' }
+  try {
+    const item = library.getItemDetail(id)
+    if (!item) return { chenggong: false, xiaoxi: '未找到该资料库条目' }
+    if (item.type === 'url' || item.storageMode === 'bookmark') {
+      return { chenggong: true, type: 'url', title: item.title, content: item.sourceUrl || '' }
+    }
+    if (item.type === 'image') {
+      return { chenggong: true, type: 'image', title: item.title, content: '' }
+    }
+    const localPath = await library.getValidatedItemLocalPath(item)
+    if (!localPath) return { chenggong: false, xiaoxi: '该条目对应的文件不存在或已移动' }
+    const stat = await fsp.stat(localPath)
+    if (!stat.isFile()) return { chenggong: false, xiaoxi: '该条目不是普通文件' }
+    const extension = path.extname(localPath).toLowerCase()
+
+    // PDF 与 Word 提取文本，其余类型仅给提示，避免越权或误读二进制内容。
+    if (extension === '.pdf') {
+      if (stat.size > 20 * 1024 * 1024) return { chenggong: false, xiaoxi: 'PDF 文件过大，暂不支持读取' }
+      const { extractText } = require('unpdf')
+      const { text } = await extractText(new Uint8Array(await fsp.readFile(localPath)))
+      const content = (Array.isArray(text) ? text.join('\n') : String(text ?? '')).trim()
+      return { chenggong: true, type: 'text', title: item.title, content: content.slice(0, 30000) }
+    }
+    if (extension === '.docx') {
+      if (stat.size > 10 * 1024 * 1024) return { chenggong: false, xiaoxi: 'Word 文件过大，暂不支持读取' }
+      const mammoth = require('mammoth')
+      const result = await mammoth.extractRawText({ buffer: await fsp.readFile(localPath) })
+      return { chenggong: true, type: 'text', title: item.title, content: String(result?.value ?? '').slice(0, 30000) }
+    }
+    if (!textPreviewExts.has(extension)) {
+      return { chenggong: true, type: 'binary', title: item.title, hint: `该类型（${extension || '未知'}）暂不支持文本读取` }
+    }
+    if (stat.size > 64 * 1024) return { chenggong: false, xiaoxi: '文件过大，暂不支持直接读取' }
+    const content = await fsp.readFile(localPath, 'utf8')
+    return { chenggong: true, type: 'text', title: item.title, content: content.slice(0, 30000) }
+  } catch (error) {
+    return { chenggong: false, xiaoxi: error?.message ?? '读取失败' }
+  }
+}
+
+// 解码网页 HTML 实体与常见命名实体。
+function jiemiWangzhiShiti(text) {
+  return String(text ?? '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&ensp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&middot;/gi, '·')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&ndash;/gi, '–')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => { try { return String.fromCodePoint(parseInt(hex, 16)) } catch { return '' } })
+    .replace(/&#(\d+);/g, (_, num) => { try { return String.fromCodePoint(Number(num)) } catch { return '' } })
+}
+
+// 按内容类型声明的字符集解码网页字节，避免 GBK 页面乱码。
+function jiemiWangzhiBuffer(buffer, contentType) {
+  const charset = /charset\s*=\s*["']?([\w-]+)/i.exec(String(contentType ?? ''))?.[1]?.toLowerCase()
+  if (charset && charset !== 'utf-8' && charset !== 'utf8') {
+    try {
+      return new TextDecoder(charset).decode(buffer)
+    } catch {
+      return buffer.toString('utf8')
+    }
+  }
+  return buffer.toString('utf8')
+}
+
+function tiquWangzhiBiaoti(html) {
+  return jiemiWangzhiShiti(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html ?? ''))?.[1]).trim().slice(0, 120)
+}
+
+// 将网页 HTML 压缩为可读文本：去除脚本样式，块级标签换行，折叠空白。
+function tiquWangzhiWenben(html) {
+  const cleaned = String(html ?? '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|noscript|iframe|svg|head)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|tr|section|article|title)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+  return jiemiWangzhiShiti(cleaned)
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function panduanKetiQuWenbenMimeType(mimeType) {
+  const type = String(mimeType ?? '').toLowerCase()
+  if (!type) return true
+  if (type.startsWith('text/')) return true
+  return ['application/json', 'application/xhtml+xml', 'application/xml', 'application/javascript', 'application/x-javascript'].includes(type)
+}
+
+// Pi 助手抓取网页正文：只允许公网 http(s)，屏蔽内网/私有地址，限制体积。
+async function piZhuawangUrl(rawUrl) {
+  const targetUrl = String(rawUrl ?? '').trim()
+  if (!/^https?:\/\//i.test(targetUrl)) return { chenggong: false, xiaoxi: '请提供 http(s) 链接' }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  let response = null
+  try {
+    const result = await qingqiuRemoteResource(targetUrl, controller.signal, { useSessionNetwork: true })
+    response = result.response
+    if (!response.ok) return { chenggong: false, xiaoxi: `网页返回 ${response.status}` }
+    const contentType = response.header('content-type') || ''
+    if (!panduanKetiQuWenbenMimeType(contentType.split(';')[0].trim())) {
+      return { chenggong: false, xiaoxi: '该链接返回的是图片/文件等二进制内容，无法提取文本' }
+    }
+    const maxBytes = 2 * 1024 * 1024
+    const chunks = []
+    let total = 0
+    for await (const chunk of response.body ?? []) {
+      const buffer = Buffer.from(chunk)
+      total += buffer.length
+      if (total > maxBytes) {
+        chunks.push(buffer.subarray(0, Math.max(0, maxBytes - (total - buffer.length))))
+        break
+      }
+      chunks.push(buffer)
+    }
+    const html = jiemiWangzhiBuffer(Buffer.concat(chunks), contentType)
+    const content = tiquWangzhiWenben(html).slice(0, 20000)
+    if (!content) return { chenggong: false, xiaoxi: '未能从网页提取到文本内容' }
+    return { chenggong: true, title: tiquWangzhiBiaoti(html), content }
+  } catch (error) {
+    if (controller.signal.aborted) return { chenggong: false, xiaoxi: '抓取超时' }
+    return { chenggong: false, xiaoxi: error?.message ?? '抓取失败' }
+  } finally {
+    clearTimeout(timeout)
+    response?.destroy()
   }
 }
 
@@ -1619,10 +2093,43 @@ async function changshiDownloadRemoteResource(rawResource, batchSignal) {
   return { added: [], duplicates: [], bookmark: true, sourceUrl: resource.sourceUrl }
 }
 
-function chuangjianShortcutFingerprint(details, shortcutPath) {
+// 快捷方式图标可能带有资源索引，缓存与提取时都需保留这部分信息。
+function jiexiShortcutIconInfo(rawIcon) {
+  const iconValue = String(rawIcon ?? '').trim().replace(/^"|"$/g, '')
+  if (fs.existsSync(iconValue)) return { filePath: iconValue, iconIndex: 0 }
+  const withIndex = /^(.*),\s*-?\d+$/.exec(iconValue)
+  return {
+    filePath: withIndex?.[1]?.trim() || iconValue,
+    iconIndex: withIndex ? Number(withIndex[0].slice(withIndex[1].length + 1).trim()) : 0,
+  }
+}
+
+function jiexiShortcutIconPath(rawIcon) {
+  return jiexiShortcutIconInfo(rawIcon).filePath
+}
+
+async function huoquShortcutFileVersion(filePath) {
+  if (!filePath || !path.isAbsolute(filePath)) return ''
+  try {
+    const stats = await fsp.stat(filePath)
+    return `${stats.size}\0${Math.round(stats.mtimeMs)}`
+  } catch {
+    return ''
+  }
+}
+
+async function chuangjianShortcutFingerprint(details, shortcutPath) {
   const parts = [details.target, details.args, details.cwd, details.appUserModelId, details.icon]
     .map((value) => String(value ?? '').trim().toLowerCase())
-  const content = parts.some(Boolean) ? parts.join('\0') : `unreadable\0${shortcutPath.toLowerCase()}`
+  const iconPath = jiexiShortcutIconPath(details.icon)
+  const fileVersions = await Promise.all([
+    huoquShortcutFileVersion(shortcutPath),
+    huoquShortcutFileVersion(details.target),
+    huoquShortcutFileVersion(iconPath),
+  ])
+  const content = parts.some(Boolean)
+    ? [...parts, ...fileVersions].join('\0')
+    : `unreadable\0${shortcutPath.toLowerCase()}\0${fileVersions[0]}`
   return createHash('sha256').update(content).digest('hex')
 }
 
@@ -1672,7 +2179,7 @@ async function saomiaoDesktopShortcuts() {
           targetPath,
           launchArgs: String(details.args ?? ''),
           workingDirectory: String(details.cwd ?? ''),
-          shortcutFingerprint: chuangjianShortcutFingerprint(details, shortcutPath),
+          shortcutFingerprint: await chuangjianShortcutFingerprint(details, shortcutPath),
           sourceScope: source.scope,
           status: panduanShortcutTargetStatus(targetPath),
         })
@@ -1683,7 +2190,7 @@ async function saomiaoDesktopShortcuts() {
           targetPath: '',
           launchArgs: '',
           workingDirectory: '',
-          shortcutFingerprint: chuangjianShortcutFingerprint({}, shortcutPath),
+          shortcutFingerprint: await chuangjianShortcutFingerprint({}, shortcutPath),
           sourceScope: source.scope,
           status: 'unreadable',
         })
@@ -1693,22 +2200,41 @@ async function saomiaoDesktopShortcuts() {
   return { shortcuts, scannedScopes, unsupported: false }
 }
 
-// 使用 Windows 原生关联图标接口，补足 Electron 对部分 EXE 图标资源的解析缺失。
-async function huoquWindowsShellIconData(filePath) {
-  if (process.platform !== 'win32' || path.extname(filePath).toLowerCase() !== '.exe') return ''
+// Electron 在 Windows 最多返回 32px 图标，使用原生接口按 256px 提取程序资源。
+async function huoquWindowsShellIconData(filePath, iconIndex = 0) {
+  if (process.platform !== 'win32' || !windowsIconResourceExts.has(path.extname(filePath).toLowerCase())) return ''
+  const safeIconIndex = Number.isInteger(iconIndex) && iconIndex >= -10000 && iconIndex <= 10000 ? iconIndex : 0
   const script = [
     'Add-Type -AssemblyName System.Drawing',
-    '$icon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:AETHERDOCK_ICON_PATH)',
-    'if ($null -eq $icon) { exit 2 }',
-    '$bitmap = $icon.ToBitmap()',
+    "Add-Type -TypeDefinition @'",
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class AetherDockShellIcon {',
+    '  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+    '  public static extern uint PrivateExtractIcons(string fileName, int iconIndex, int width, int height, IntPtr[] icons, uint[] iconIds, uint iconCount, uint flags);',
+    '  [DllImport("user32.dll", SetLastError = true)]',
+    '  [return: MarshalAs(UnmanagedType.Bool)]',
+    '  public static extern bool DestroyIcon(IntPtr icon);',
+    '}',
+    "'@",
+    '$iconHandles = [System.IntPtr[]]::new(1)',
+    '$iconIds = [uint32[]]::new(1)',
+    '$count = [AetherDockShellIcon]::PrivateExtractIcons($env:AETHERDOCK_ICON_PATH, [int]$env:AETHERDOCK_ICON_INDEX, 256, 256, $iconHandles, $iconIds, 1, 0)',
+    'if ($count -lt 1 -or $iconHandles[0] -eq [System.IntPtr]::Zero) { exit 2 }',
     '$stream = [System.IO.MemoryStream]::new()',
     'try {',
-    '  $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)',
-    '  [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))',
+    '  $icon = [System.Drawing.Icon]::FromHandle($iconHandles[0])',
+    '  $bitmap = $icon.ToBitmap()',
+    '  try {',
+    '    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)',
+    '    [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))',
+    '  } finally {',
+    '    $bitmap.Dispose(); $icon.Dispose()',
+    '  }',
     '} finally {',
-    '  $stream.Dispose(); $bitmap.Dispose(); $icon.Dispose()',
+    '  $stream.Dispose(); [AetherDockShellIcon]::DestroyIcon($iconHandles[0]) | Out-Null',
     '}',
-  ].join('; ')
+  ].join('\n')
 
   try {
     const { stdout } = await zhixingFileAsync('powershell.exe', [
@@ -1717,18 +2243,17 @@ async function huoquWindowsShellIconData(filePath) {
       windowsHide: true,
       timeout: 5000,
       maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, AETHERDOCK_ICON_PATH: filePath },
+      env: {
+        ...process.env,
+        AETHERDOCK_ICON_PATH: filePath,
+        AETHERDOCK_ICON_INDEX: String(safeIconIndex),
+      },
     })
     const base64 = stdout.trim()
     return base64 ? `data:image/png;base64,${base64}` : ''
   } catch {
     return ''
   }
-}
-
-function panduanMaybeGenericIcon(nativeIcon, iconData) {
-  const size = nativeIcon.getSize()
-  return size.width <= 32 && size.height <= 32 && iconData.length <= 1000
 }
 
 // 图标读取可能触发原生接口或 PowerShell，固定并发数避免占满主进程资源。
@@ -1772,10 +2297,11 @@ function zhixingNextYingyongIconRenwu() {
 }
 
 function huoquYingyongIconCacheKey(item) {
-  const existingKey = item.iconCacheKey || item.shortcutFingerprint
-  if (/^[a-f\d]{64}$/i.test(existingKey || '')) return existingKey.toLowerCase()
+  const sourceKey = /^[a-f\d]{64}$/i.test(item.shortcutFingerprint || '')
+    ? item.shortcutFingerprint.toLowerCase()
+    : [item.targetPath, item.sourcePath, item.id].map((value) => String(value ?? '').toLowerCase()).join('\0')
   return createHash('sha256')
-    .update([item.targetPath, item.sourcePath, item.id].map((value) => String(value ?? '').toLowerCase()).join('\0'))
+    .update(`${yingyongIconCacheVersion}\0${sourceKey}`)
     .digest('hex')
 }
 
@@ -1784,28 +2310,25 @@ async function tiquApplicationNativeIcon(item) {
   if (item.sourcePath && fs.existsSync(item.sourcePath)) {
     try {
       const shortcutDetails = shell.readShortcutLink(item.sourcePath)
-      iconSources.push(shortcutDetails.icon, shortcutDetails.target)
+      iconSources.push(jiexiShortcutIconInfo(shortcutDetails.icon), { filePath: shortcutDetails.target, iconIndex: 0 })
     } catch {}
   }
-  iconSources.push(item.targetPath, item.sourcePath)
+  iconSources.push({ filePath: item.targetPath, iconIndex: 0 }, { filePath: item.sourcePath, iconIndex: 0 })
 
   // 优先读取快捷方式显式图标和目标程序，最后才使用 Windows 的通用 .lnk 图标。
-  const uniqueIconSources = [...new Set(iconSources.filter((source) => source && fs.existsSync(source)))]
-  for (const iconSource of uniqueIconSources) {
+  const uniqueIconSources = [...new Map(iconSources
+    .filter(({ filePath }) => filePath && fs.existsSync(filePath))
+    .map((source) => [`${source.filePath}\0${source.iconIndex}`, source])).values()]
+  for (const { filePath, iconIndex } of uniqueIconSources) {
     try {
-      const nativeIcon = path.extname(iconSource).toLowerCase() === '.ico'
-        ? nativeImage.createFromPath(iconSource)
-        : await app.getFileIcon(iconSource, { size: 'large' })
+      const windowsIconData = await huoquWindowsShellIconData(filePath, iconIndex)
+      const nativeIcon = windowsIconData
+        ? nativeImage.createFromDataURL(windowsIconData)
+        : path.extname(filePath).toLowerCase() === '.ico'
+          ? nativeImage.createFromPath(filePath)
+          : await app.getFileIcon(filePath, { size: 'large' })
       if (nativeIcon.isEmpty()) continue
-      const iconData = nativeIcon.toDataURL()
-      if (!iconData) continue
-
-      // Electron 会把无法解析的 EXE 返回为小尺寸通用图标，此时改由 Windows 原生接口提取。
-      const windowsIconData = panduanMaybeGenericIcon(nativeIcon, iconData)
-        ? await huoquWindowsShellIconData(iconSource)
-        : ''
-      const resolvedIcon = windowsIconData ? nativeImage.createFromDataURL(windowsIconData) : nativeIcon
-      if (!resolvedIcon.isEmpty()) return resolvedIcon
+      return nativeIcon
     } catch {}
   }
   return null
@@ -1854,9 +2377,12 @@ async function biaojiMediaCachePathsValid(filePaths) {
 }
 
 async function huoquReadyIconCacheUrl(cacheKey) {
-  const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-128.png`)
-  const iconStats = await huoquValidPngCacheStats(iconPath)
-  return iconStats ? `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}` : ''
+  for (const size of [256, 128]) {
+    const iconPath = path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)
+    const iconStats = await huoquValidPngCacheStats(iconPath)
+    if (iconStats) return `${chuangjianYingyongIconUrl(cacheKey)}?v=${iconStats.mtimeMs}`
+  }
+  return ''
 }
 
 async function shengchengYingyongIconCache(item, cacheKey) {
@@ -1867,7 +2393,7 @@ async function shengchengYingyongIconCache(item, cacheKey) {
 }
 
 async function baocunNativeIconCache(nativeIcon, cacheKey) {
-  const outputPaths = [64, 128].map((size) => ({
+  const outputPaths = yingyongIconCacheSizes.map((size) => ({
     size,
     finalPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`),
     tempPath: path.join(yingyongIconCacheDir, `${cacheKey}-${size}.${process.pid}.${Date.now()}.tmp`),
@@ -1896,7 +2422,7 @@ async function baocunWebsiteIconCache(iconResource, cacheKey) {
       await fsp.rename(tempPath, finalPath)
       await biaojiMediaCachePathsValid([finalPath])
       const stalePaths = [
-        ...[64, 128].map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
+        ...yingyongIconCacheSizes.map((size) => path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`)),
         ...websiteBrowserIconExtensions
           .filter((extension) => extension !== iconResource.extension)
           .map((extension) => path.join(yingyongIconCacheDir, `${cacheKey}-128.${extension}`)),
@@ -2544,7 +3070,7 @@ async function qingliYingyongIconCache() {
       }
     }
     if (!entry.isFile()) continue
-    const match = /^([a-f\d]{64})-(?:64|128)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
+    const match = /^([a-f\d]{64})-(?:64|128|256)\.(?:png|svg|webp|gif)$/i.exec(entry.name)
     if (!match) continue
     const cacheKey = match[1].toLowerCase()
     const cachePath = path.join(yingyongIconCacheDir, entry.name)
@@ -2757,6 +3283,8 @@ function qingqiuManagedFilesReconcile() {
 // 创建应用主窗口
 function createMainWindow() {
   isMainIslandShapeReady = false
+  mainIslandShapeCacheKey = ''
+  isMainWindowReady = false
   mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
 
   // 主灵动岛预加载在桌面右下角，等待开机动画结束后再显示。
@@ -2767,17 +3295,21 @@ function createMainWindow() {
     mainWindow.setContentSize(mainWindowSize.width, mainWindowSize.height)
     positionMainWindow()
     isMainIslandShapeReady = false
+    mainIslandShapeCacheKey = ''
     shezhiMainIslandWindowShape()
     // 以普通置顶层级常驻，避免覆盖系统级界面。
     mainWindow.setAlwaysOnTop(true, 'floating')
-    // 透明安全区默认鼠标穿透，仅灵动岛本体接收交互
-    mainWindow.setIgnoreMouseEvents(true, { forward: true })
+    mainWindow.setIgnoreMouseEvents(false)
+    isMainWindowReady = true
+    if (isStartupCompleted) xianshiMainLingdongdao()
   })
 
   loadRendererWindow(mainWindow, false)
   mainWindow.on('closed', () => {
     jieshuMainIslandWindowMove()
     isMainIslandShapeReady = false
+    mainIslandShapeCacheKey = ''
+    isMainWindowReady = false
     mainWindow = null
   })
 }
@@ -2806,8 +3338,29 @@ function createXuanfuqiuWindow() {
   })
 }
 
+// 主窗口首帧完成后再切换，避免启动页关闭时灵动岛仍是透明空白窗口。
+function xianshiMainLingdongdao() {
+  if (!isStartupCompleted || !isMainWindowReady || !mainWindow || mainWindow.isDestroyed()) return
+  positionMainWindow()
+  shezhiMainIslandWindowShape()
+  mainWindow.setIgnoreMouseEvents(false)
+  mainWindow.showInactive()
+  if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close()
+}
+
+// 无论渲染层动画是否完成，主进程都保证将窗口交接给主灵动岛。
+function wanchengStartupWindow() {
+  if (startupWindowFallbackTimer) {
+    clearTimeout(startupWindowFallbackTimer)
+    startupWindowFallbackTimer = null
+  }
+  isStartupCompleted = true
+  xianshiMainLingdongdao()
+}
+
 // 创建独立开机窗口，避免重定位主灵动岛造成平移与卡顿
 function createStartupWindow() {
+  isStartupCompleted = false
   startupWindow = new BrowserWindow(createWindowOptions(startupWindowSize))
 
   const workArea = screen.getPrimaryDisplay().workArea
@@ -2818,12 +3371,15 @@ function createStartupWindow() {
   startupWindow.once('ready-to-show', () => {
     startupWindow?.setAlwaysOnTop(true, 'floating')
     startupWindow?.setIgnoreMouseEvents(true, { forward: true })
-    startupWindow?.showInactive()
+    startupWindow?.show()
   })
   loadRendererWindow(startupWindow, true)
   startupWindow.on('closed', () => {
     startupWindow = null
   })
+  // 渲染层异常或开机动画失效时，最多等待 5 秒后强制显示主窗口。
+  startupWindowFallbackTimer = setTimeout(wanchengStartupWindow, 5000)
+  startupWindowFallbackTimer.unref()
 }
 
 // 唤起已有窗口，避免桌面快捷方式重复启动多个灵动岛进程。
@@ -2849,8 +3405,47 @@ async function chushihuaYingyong() {
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
   // 开发与生产使用独立数据库，调试数据不会影响已安装应用的资料库。
   library = createLibrary(path.join(app.getPath('userData'), ziliaokuDbFilename))
+  huihuaStore = createHuihuaStore(path.join(app.getPath('userData'), isKaifaHuanjing ? 'aether-dock-chat.dev.db' : 'aether-dock-chat.db'))
+  const piSessionDir = path.join(app.getPath('userData'), 'pi-sessions')
+  const kongbaiHuihuaList = huihuaStore.qingliKongbaiHuihua()
+  await Promise.all(kongbaiHuihuaList.map(async (conversation) => {
+    const rawSessionFile = String(conversation.piSessionFile ?? '')
+    if (!rawSessionFile) return
+    const sessionFile = path.resolve(rawSessionFile)
+    if (!sessionFile.startsWith(`${piSessionDir}${path.sep}`)) return
+    await fsp.rm(sessionFile, { force: true }).catch(() => {})
+  }))
   library.onManagedFilesDirty(() => {
     qingqiuManagedFilesReconcile()
+  })
+  // Pi 助手按首次使用加载；配置、凭据与可操作文件集中在应用数据目录，避免干扰全局 Pi 配置。
+  const piAgentDir = path.join(app.getPath('userData'), 'pi-agent')
+  const piWorkspaceDir = path.join(app.getPath('userData'), 'pi-workspace')
+  piJicheng.peizhi({
+    agentDir: piAgentDir,
+    workspaceDir: piWorkspaceDir,
+    sessionDir: piSessionDir,
+    sendEvent: piFaSongEvent,
+    // 无关键词的 AI 查询返回全库概览，避免将“最近打开”误当作资料库全量内容。
+    searchLibrary: (keyword) => {
+      const value = String(keyword ?? '').trim()
+      return value ? library.searchLibrary({ keyword: value }) : { overview: library.getLibrarySummary() }
+    },
+    libraryRead: piDukuLibraryWenjian,
+    fetchUrl: piZhuawangUrl,
+    saveNote: piBaocunBiji,
+    createDocxCopy: piShengchengDocxFuben,
+    createXlsxWorkbook: piShengchengXlsxGongzuobu,
+    createMarkdownFile: piShengchengMarkdownWenjian,
+    createPdfDocument: piShengchengPdfWenjian,
+    requestLibraryApproval: piQingqiuZiliaokuShouquan,
+    listInbox: piLiebiaoJiantieban,
+    archiveInbox: piGuidangJiantiebanItems,
+    removeInbox: piYichuJiantiebanItems,
+    renameLibraryItem: piChongmingmingZiliaokuTiaomu,
+    deleteLibraryItem: piShanchuZiliaokuTiaomu,
+    updateLibraryNotes: piGengxinZiliaokuBiji,
+    getLibraryItem: piHuoquZiliaokuTiaomu,
   })
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
@@ -2862,10 +3457,15 @@ async function chushihuaYingyong() {
       if (!/^[a-f\d]{64}$/.test(cacheKey)) return new Response('invalid key', { status: 400 })
       let buffer
       let contentType = 'image/png'
-      try {
-        buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-128.png`))
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
+      for (const size of [256, 128]) {
+        try {
+          buffer = await fsp.readFile(path.join(yingyongIconCacheDir, `${cacheKey}-${size}.png`))
+          break
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error
+        }
+      }
+      if (!buffer) {
         for (const extension of websiteBrowserIconExtensions) {
           try {
             const browserIcon = chuangjianSafeWebsiteBrowserIcon(
@@ -2972,12 +3572,7 @@ async function chushihuaYingyong() {
   })
   // 开机窗口完成后直接显示已预加载的右侧灵动岛
   ipcMain.handle(ipcTongdao.completeStartup, () => {
-    if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close()
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    positionMainWindow()
-    shezhiMainIslandWindowShape()
-    mainWindow.setIgnoreMouseEvents(true, { forward: true })
-    mainWindow.showInactive()
+    wanchengStartupWindow()
   })
   // 选择资料库根目录，并按用户选择迁移或建立独立资料库。
   ipcMain.handle(ipcTongdao.selectLibraryRootdir, async (_, mode = 'migrate') => {
@@ -3241,6 +3836,83 @@ async function chushihuaYingyong() {
       return { chenggong: false, xiaoxi: '文件复制失败，请稍后重试' }
     }
   })
+  ipcMain.handle(ipcTongdao.piPrompt, async (_, message) => {
+    try {
+      return await piJicheng.faSong(message)
+    } catch (error) {
+      return { accepted: false, xiaoxi: error?.message ?? '助手不可用' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.piAbort, () => {
+    piQuxiaoZiliaokuShouquan()
+    return piJicheng.zhongzhi()
+  })
+  ipcMain.handle(ipcTongdao.piResolveLibraryApproval, (_, requestId, approved) => {
+    const resolve = piZiliaokuShouquanMap.get(String(requestId ?? ''))
+    if (!resolve) return { chenggong: false, xiaoxi: '该授权请求已失效' }
+    piZiliaokuShouquanMap.delete(String(requestId ?? ''))
+    const isApproved = approved === true
+    resolve({ approved: isApproved })
+    return { chenggong: true }
+  })
+  ipcMain.handle(ipcTongdao.piGetStatus, async () => {
+    try {
+      return { chenggong: true, status: await piJicheng.getStatus() }
+    } catch (error) {
+      return { chenggong: false, xiaoxi: error?.message ?? '助手尚未就绪' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.piSetProviderKey, (_, provider, key) => piJicheng.setProviderKey(provider, key))
+  ipcMain.handle(ipcTongdao.piClearProviderKey, (_, provider) => piJicheng.qingchuProviderKey(provider))
+  ipcMain.handle(ipcTongdao.piSetModel, async (_, provider, modelId) => {
+    try {
+      return await piJicheng.xuanzeModel(provider, modelId)
+    } catch (error) {
+      return { chenggong: false, xiaoxi: error?.message ?? '切换模型失败' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.piSetThinking, async (_, level) => {
+    try {
+      return await piJicheng.shezhiTuiliQiangdu(level)
+    } catch (error) {
+      return { chenggong: false, xiaoxi: error?.message ?? '设置推理强度失败' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.piAddProvider, (_, payload) => piJicheng.tianjiaGongyingshang(payload))
+  ipcMain.handle(ipcTongdao.piRemoveProvider, (_, provider) => piJicheng.shanchuCustomProvider(provider))
+  ipcMain.handle(ipcTongdao.chatListConversations, () => ({ chenggong: true, items: huihuaStore?.liechuHuihua() ?? [] }))
+  ipcMain.handle(ipcTongdao.chatGetConversation, (_, conversationId) => ({ chenggong: true, conversation: huihuaStore?.duquHuihua(conversationId) ?? null }))
+  ipcMain.handle(ipcTongdao.chatCreateConversation, () => ({ chenggong: true, conversation: huihuaStore?.chuangjianHuihua() ?? null }))
+  ipcMain.handle(ipcTongdao.chatSaveConversation, (_, conversationId, messages) => {
+    try {
+      return { chenggong: true, conversation: huihuaStore?.baocunHuihua(conversationId, messages) ?? null }
+    } catch (error) {
+      return { chenggong: false, xiaoxi: error?.message ?? '保存对话失败' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.chatSwitchConversation, async (_, conversationId) => {
+    const conversation = huihuaStore?.duquHuihua(conversationId)
+    if (!conversation) return { chenggong: false, xiaoxi: '会话不存在' }
+    try {
+      const result = await piJicheng.qiehuanHuihua({ id: conversation.id, sessionFile: conversation.piSessionFile })
+      if (!result.chenggong) return result
+      huihuaStore.shezhiPiSessionFile(conversation.id, result.sessionFile)
+      return { chenggong: true, conversation: huihuaStore.duquHuihua(conversation.id) }
+    } catch (error) {
+      return { chenggong: false, xiaoxi: error?.message ?? '切换对话失败' }
+    }
+  })
+  ipcMain.handle(ipcTongdao.chatDeleteConversation, async (_, conversationId) => {
+    const conversation = huihuaStore?.duquHuihua(conversationId)
+    if (!conversation) return { chenggong: false, xiaoxi: '会话不存在' }
+    huihuaStore.shanchuHuihua(conversation.id)
+    const piSessionRoot = path.resolve(app.getPath('userData'), 'pi-sessions')
+    const sessionFile = conversation.piSessionFile ? path.resolve(conversation.piSessionFile) : ''
+    if (sessionFile && sessionFile.startsWith(`${piSessionRoot}${path.sep}`)) {
+      await fsp.rm(sessionFile, { force: true }).catch(() => {})
+    }
+    return { chenggong: true }
+  })
   managedReconcileTimer = setInterval(() => {
     qingqiuManagedFilesReconcile()
   }, 5 * 60 * 1000)
@@ -3286,4 +3958,8 @@ app.once('will-quit', () => {
   isYingyongIconCleanupPending = false
   library?.close()
   library = null
+  piQuxiaoZiliaokuShouquan()
+  huihuaStore?.close()
+  huihuaStore = null
+  piJicheng.close()
 })

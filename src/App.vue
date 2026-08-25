@@ -1,7 +1,6 @@
 <template>
   <main
     class="root"
-    @mousemove="gengxinMousePassthrough"
     @mouseleave="huifuMousePassthrough"
     @pointerdown.self="chuliRootPointerDown"
   >
@@ -130,10 +129,10 @@
               :is-animation-busy="isExpansionAnimating"
               :is-island-expanded="isExpanded"
               :clipboard-count="jiantiebanItems.length"
-              @capture-clipboard="chuliJiantiebanBuhuo"
+@capture-clipboard="chuliJiantiebanBuhuo"
               @open-clipboard="dakaiJiantiebanShoujixiang"
               @open-settings="qiehuanSettings"
-              @float-window="shouqiDaoYouceCapsule"
+              @open-assistant="dakaiAssistant"
               @select-category="xuanzeZiliaokuCategory"
               @refresh-library="shuaxinLibraryIndex(true)"
               @search="sousuoLibrary"
@@ -176,6 +175,19 @@
             />
           </Transition>
 
+          <!-- AI 页面在收起态保持挂载，确保流式回复与当前会话不会中断。 -->
+          <Transition name="glass-switch" mode="out-in">
+            <AssistantPage
+              v-if="!isDragging && !isDropping && currentPage === 'assistant'"
+              v-show="isExpanded"
+              key="assistant"
+              ref="zhushouPage"
+              @back="fanhuiLibrary"
+              @request-provider-cleanup="qingqiuZhushouGongyingshangQingli"
+              @request-conversation-delete="qingqiuZhushouHuihuaShanchu"
+            />
+          </Transition>
+
           <ConfirmDialog
             :visible="confirmState.visible"
             :title="confirmState.title"
@@ -209,9 +221,10 @@
 
 <script setup>
 import { PhFile, PhImage, PhLinkSimple, PhSpinnerGap } from '@phosphor-icons/vue'
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, shallowRef, useTemplateRef } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, shallowRef, useTemplateRef } from 'vue'
 import { useEventListener, useTimeoutFn } from '@vueuse/core'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import AssistantPage from '@/components/AssistantPage.vue'
 import JiantiebanPage from '@/components/JiantiebanPage.vue'
 import QidongOverlay from '@/components/QidongOverlay.vue'
 import ShezhiPage from '@/components/ShezhiPage.vue'
@@ -226,6 +239,7 @@ const CixiGuajianEffect = defineAsyncComponent(() => import('@/components/CixiGu
 
 const isStartupWindow = new URLSearchParams(window.location.search).get('startup') === '1'
 const islandShell = useTemplateRef('islandShell')
+const zhushouPage = useTemplateRef('zhushouPage')
 const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
@@ -269,9 +283,7 @@ let dropProgressTimer = 0
 let isIslandStateChanging = false
 let shouldIgnoreIslandClick = false
 let islandStateQingqiuVersion = 0
-let mousePassthroughFrame = 0
-let zuixinMouseClientX = 0
-let zuixinMouseClientY = 0
+let isLibraryPreloadStarted = false
 
 const {
   toastState,
@@ -347,15 +359,10 @@ const { start: qidongCompleteTimer } = useTimeoutFn(
   { immediate: false },
 )
 
-onMounted(() => {
-  if (!isStartupWindow) jiazaiLibrary()
-})
-
 onBeforeUnmount(() => {
   window.clearTimeout(collapseShapeTimer)
   window.clearTimeout(tapePastingTimer)
   window.clearTimeout(dropProgressTimer)
-  if (mousePassthroughFrame) window.cancelAnimationFrame(mousePassthroughFrame)
   if (!isStartupWindow) window.aetherDock?.setHeavyTasksPaused(false)
 })
 
@@ -395,7 +402,7 @@ async function qiehuanIslandState(expanded) {
     isIslandStateChanging = false
     isExpanded.value = false
     isLibraryContentVisible.value = false
-    currentPage.value = 'library'
+    // 收起只隐藏窗口，不重置工具栏导航；下次展开继续显示用户最后选择的页面。
     if (shouldFinishCollapse) qingqiuCollapsedWindowShape(wasStateChanging ? 0 : 420)
     huifuMousePassthrough(true)
     return
@@ -421,6 +428,10 @@ async function qiehuanIslandState(expanded) {
     yingyongIslandAnchor(layout)
     isExpanded.value = true
     isLibraryContentVisible.value = true
+    // 面板先完成首帧绘制，再读取资料库，避免首次点击与索引读取争用主线程。
+    window.requestAnimationFrame(() => {
+      if (isExpanded.value) yureZiliaoku()
+    })
   } finally {
     // 窗口重定位会产生一次延迟的 mouseleave，保留到下一帧再结束切换锁。
     window.requestAnimationFrame(() => {
@@ -460,16 +471,17 @@ function qiehuanSettings() {
   currentPage.value = 'settings'
 }
 
+// 打开 AI 助手页面，资料库内容保持挂载但隐藏。
+function dakaiAssistant() {
+  void guanbiMousePassthrough(true)
+  isLibraryContentVisible.value = false
+  currentPage.value = 'assistant'
+}
+
 function fanhuiLibrary() {
   void guanbiMousePassthrough(true)
   currentPage.value = 'library'
   isLibraryContentVisible.value = true
-}
-
-// 展开面板收回右侧胶囊，避免切换至第二个入口窗口造成位置跳变。
-function shouqiDaoYouceCapsule() {
-  if (isDragging.value || isDropImporting.value || confirmState.value.visible) return
-  qiehuanIslandState(false)
 }
 
 function chuliIslandEnter() {
@@ -483,6 +495,13 @@ function chuliIslandClick() {
     return
   }
   if (!isExpanded.value) qiehuanIslandState(true)
+}
+
+// 资料库仅在首次展开后预热，收起态不抢占宠物的首次交互。
+function yureZiliaoku() {
+  if (isLibraryPreloadStarted) return
+  isLibraryPreloadStarted = true
+  void jiazaiLibrary()
 }
 
 function chuliIslandKeyboardOpen() {
@@ -502,31 +521,34 @@ function chuliRootPointerDown() {
   void qiehuanIslandState(false)
 }
 
-// 收起态按下后由主进程直接跟随系统鼠标，渲染层只负责判断拖动意图与视觉反馈。
+// 收起态先记录按下位置，确认移动后才启动原生拖动，普通点击无需等待窗口状态切换。
 function kaishiYidongIsland(event) {
   if (event.button !== 0 || isExpanded.value || isDragging.value || isDropping.value || isDropImporting.value) return
 
   const islandElement = event.currentTarget
-  const context = {
+  islandMoveContext = {
     pointerId: event.pointerId,
     islandElement,
     startScreenX: event.screenX,
     startScreenY: event.screenY,
     isNativeMoveReady: false,
+    isNativeMoveRequested: false,
     hasMoved: false,
   }
-  islandMoveContext = context
   isPastingTape.value = false
   shouldIgnoreIslandClick = false
   window.clearTimeout(tapePastingTimer)
   islandElement.setPointerCapture?.(event.pointerId)
-  guanbiMousePassthrough()
+}
+
+// 原生拖动仅在手势越过阈值后启动，避免点击展开时产生无效 IPC 与窗口重定位。
+function kaishiNativeYidong(context) {
+  if (!context || context.isNativeMoveRequested || islandMoveContext !== context) return
+  context.isNativeMoveRequested = true
+  void guanbiMousePassthrough()
 
   const movePromise = window.aetherDock?.kaishiMainIslandMove()
-  if (!movePromise) {
-    wanchengYidongIsland(event)
-    return
-  }
+  if (!movePromise) return
   void movePromise.then((layout) => {
     if (islandMoveContext !== context) {
       window.aetherDock?.jieshuMainIslandMove()
@@ -535,7 +557,7 @@ function kaishiYidongIsland(event) {
     yingyongIslandAnchor(layout)
     context.isNativeMoveReady = true
     if (context.hasMoved) isMovingIsland.value = true
-  }).catch(() => wanchengYidongIsland(event))
+  }).catch(() => wanchengYidongIsland())
 }
 
 function chuliYidongIsland(event) {
@@ -543,6 +565,7 @@ function chuliYidongIsland(event) {
   if (!context || event.pointerId !== context.pointerId) return
   if (Math.hypot(event.screenX - context.startScreenX, event.screenY - context.startScreenY) >= 4 && !context.hasMoved) {
     context.hasMoved = true
+    kaishiNativeYidong(context)
     if (context.isNativeMoveReady) isMovingIsland.value = true
   }
   if (context.hasMoved) event.preventDefault()
@@ -557,13 +580,14 @@ function wanchengYidongIsland(event) {
     const deltaY = event.screenY - context.startScreenY
     if (Math.hypot(deltaX, deltaY) >= 4) {
       context.hasMoved = true
+      kaishiNativeYidong(context)
     }
   }
 
   if (context.islandElement?.hasPointerCapture?.(context.pointerId)) {
     context.islandElement.releasePointerCapture(context.pointerId)
   }
-  window.aetherDock?.jieshuMainIslandMove()
+  if (context.isNativeMoveRequested) window.aetherDock?.jieshuMainIslandMove()
   islandMoveContext = null
   isMovingIsland.value = false
   shouldIgnoreIslandClick = context.hasMoved
@@ -574,9 +598,6 @@ function wanchengYidongIsland(event) {
       isPastingTape.value = false
       tongbuIslandWindowShape('collapsed')
     }, 460)
-  } else {
-    // 等待随后派发的 click 决定是否展开，避免收起裁剪与展开裁剪相互覆盖。
-    qingqiuCollapsedWindowShape(0)
   }
 }
 
@@ -755,6 +776,35 @@ function qingqiuQingkongJiantieban() {
   }, () => qingkongJiantiebanItems())
 }
 
+// 自定义供应商删除与内置密钥清除共用全局确认弹窗，避免不可逆操作误触。
+function qingqiuZhushouGongyingshangQingli(provider) {
+  const isCustom = Boolean(provider?.custom)
+  const name = String(provider?.name ?? '该供应商')
+  qingqiuConfirm({
+    title: isCustom ? '删除自定义供应商' : '清除供应商密钥',
+    message: isCustom ? `确定删除「${name}」？` : `确定清除「${name}」的密钥？`,
+    detail: isCustom
+      ? '该供应商下的模型与已保存密钥都会移除，此操作不可撤销。'
+      : '供应商会保留在列表中，之后可重新填写密钥使用。',
+    confirmText: isCustom ? '删除' : '清除',
+    tone: isCustom ? 'danger' : 'default',
+  }, () => zhushouPage.value?.zhixingGongyingshangQingli())
+}
+
+// 会话删除复用应用内确认弹窗，保持主窗口焦点与展开状态稳定。
+function qingqiuZhushouHuihuaShanchu(conversation) {
+  const id = String(conversation?.id ?? '')
+  const title = String(conversation?.title ?? '该对话')
+  if (!id) return
+  qingqiuConfirm({
+    title: '删除对话',
+    message: `确定删除「${title}」？`,
+    detail: '删除后无法恢复。',
+    confirmText: '删除',
+    tone: 'danger',
+  }, () => zhushouPage.value?.zhixingHuihuaShanchu(id))
+}
+
 function qingliDragState(force = false) {
   if (isDropping.value && force !== true) return
   isDragging.value = false
@@ -805,46 +855,13 @@ function qingqiuMigrateLibrary() {
   }, () => xuanzeLibraryRootdir('new'), () => xuanzeLibraryRootdir('migrate'))
 }
 
-function gengxinMousePassthrough(event) {
-  if (isMovingIsland.value) return
-  if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
-    if (mousePassthroughFrame) {
-      window.cancelAnimationFrame(mousePassthroughFrame)
-      mousePassthroughFrame = 0
-    }
-    guanbiMousePassthrough()
-    return
-  }
-  zuixinMouseClientX = event.clientX
-  zuixinMouseClientY = event.clientY
-  if (mousePassthroughFrame) return
-  // 命中检测合并到下一帧，避免高频鼠标事件反复触发布局查询。
-  mousePassthroughFrame = window.requestAnimationFrame(() => {
-    mousePassthroughFrame = 0
-    if (isMovingIsland.value) return
-    if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
-      guanbiMousePassthrough()
-      return
-    }
-    shezhiMousePassthrough(!panduanMouseOverIsland(zuixinMouseClientX, zuixinMouseClientY))
-  })
-}
-
-function panduanMouseOverIsland(clientX, clientY) {
-  const hitElement = document.elementFromPoint(clientX, clientY)
-  return Boolean(hitElement && islandShell.value?.contains(hitElement))
-}
-
 function guanbiMousePassthrough(force = false) {
   return shezhiMousePassthrough(false, force)
 }
 
 function huifuMousePassthrough(force = false) {
   if (isMovingIsland.value) return
-  if (isExpanded.value || isIslandStateChanging || confirmState.value.visible) {
-    return guanbiMousePassthrough(force)
-  }
-  return shezhiMousePassthrough(true, force)
+  return guanbiMousePassthrough(force)
 }
 
 // 穿透调用失败后废弃本地缓存，下一次鼠标事件会主动重试。

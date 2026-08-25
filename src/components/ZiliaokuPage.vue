@@ -20,16 +20,15 @@
           <img class="expanded-clipboard-icon" :src="collectionIcon" alt="" aria-hidden="true" draggable="false">
           <b v-if="props.clipboardCount">{{ props.clipboardCount }}</b>
         </button>
+        <button class="expanded-assistant" type="button" aria-label="打开 AI 助手" title="打开 AI 助手" @click.stop="emit('open-assistant')">
+          <PhSparkle class="expanded-assistant-icon" :size="15" weight="bold" />
+        </button>
         <div ref="gengduoCaozuo" class="expanded-more-wrap">
           <button class="expanded-more" type="button" aria-label="更多操作" :aria-expanded="isGengduoVisible" @click.stop="qiehuanGengduo">
             <svg class="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="11" cy="17" r="2" /></svg>
           </button>
           <Transition name="more-menu">
             <div v-if="isGengduoVisible" class="expanded-more-menu" @click.stop>
-              <button type="button" @click="chuliGengduoCaozuo('float-window')">
-                <span class="expanded-more-icon" aria-hidden="true"><span class="expanded-dock-mark"><i></i></span></span>
-                <span title="收起到右侧胶囊">收起</span>
-              </button>
               <button type="button" @click="kaishiPiliangShanchu">
                 <span class="expanded-more-icon expanded-more-icon--select" aria-hidden="true"></span>
                 <span>批量选择</span>
@@ -156,10 +155,7 @@
                   :class="{
                     'box-border rounded-xl border border-white/80 bg-white p-2 shadow-lg': item.type === 'url',
                     'box-border rounded-xl border p-2 shadow-lg': item.type === 'document',
-                    'border-red-200/80 bg-red-50': item.type === 'document' && cardInfo.type === 'PDF',
-                    'border-blue-200/80 bg-blue-50': item.type === 'document' && cardInfo.type === 'DOC',
-                    'border-green-200/80 bg-green-50': item.type === 'document' && cardInfo.type === 'XLS',
-                    'border-slate-200/80 bg-slate-50': item.type === 'document' && cardInfo.type === 'FILE',
+                    'border-white/80 bg-white': item.type === 'document',
                   }"
                   :src="cardInfo.icon"
                   alt=""
@@ -204,7 +200,11 @@
             <button class="library-compact-main" type="button" @click.stop="isPiliangMoshi ? qiehuanKapianXuanze(item) : emit('open-item', item)">
               <img v-if="cardInfo.preview" class="library-compact-icon library-compact-icon--preview" :src="cardInfo.preview" alt="" draggable="false" @error="biaojiPreviewFailed(item)">
               <img v-else-if="cardInfo.icon" class="library-compact-icon" :src="cardInfo.icon" alt="" draggable="false">
-              <span v-else class="library-compact-icon library-compact-icon--empty"></span>
+              <span
+                v-else
+                class="library-compact-icon library-compact-icon--empty"
+                :class="{ 'library-compact-icon--pending': cardInfo.iconPending }"
+              ></span>
               <span class="library-compact-copy">
                 <strong>{{ huoquCardName(item) }}</strong>
                 <small>{{ huoquKapianFushuzifu(item) }}</small>
@@ -286,6 +286,7 @@
     <Transition name="library-detail">
       <aside
         v-if="isDetailVisible"
+        ref="kuaishuYulanMianban"
         class="library-detail-panel"
         :class="{ 'library-detail-panel--brief': detailData?.preview.type === 'none' }"
         aria-label="资料详情"
@@ -321,6 +322,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue'
 import { onClickOutside, onKeyStroke } from '@vueuse/core'
+import { PhSparkle } from '@phosphor-icons/vue'
 import searchLensIcon from '@/assets/icons/sousuo-lens.svg'
 import clipboardIcon from '@/assets/icons/jiantieban.svg'
 import collectionIcon from '@/assets/icons/shoujixiang.svg'
@@ -347,10 +349,11 @@ const props = defineProps({
   clipboardCount: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['open-settings', 'float-window', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
+const emit = defineEmits(['open-settings', 'open-assistant', 'capture-clipboard', 'open-clipboard', 'select-category', 'refresh-library', 'search', 'load-more', 'open-item', 'locate-item', 'share-item', 'rename-item', 'delete-item', 'delete-items', 'sync-applications', 'show-toast'])
 const gengduoCaozuo = useTemplateRef('gengduoCaozuo')
 const paixuCaozuo = useTemplateRef('paixuCaozuo')
 const cardCaozuoCaidan = useTemplateRef('cardCaozuoCaidan')
+const kuaishuYulanMianban = useTemplateRef('kuaishuYulanMianban')
 const ziliaokuYemian = useTemplateRef('ziliaokuYemian')
 const searchKeyword = shallowRef('')
 const isGengduoVisible = shallowRef(false)
@@ -392,7 +395,6 @@ const tupianThumbnailPendingItems = new Map()
 const tupianThumbnailRetryCountMap = new Map()
 const tupianThumbnailRetryRequestMap = new Map()
 const tupianThumbnailRetryTimers = new Map()
-const tupianThumbnailRetryCooldownMs = 30 * 1000
 let tupianThumbnailRenwu = 0
 let tupianThumbnailIdleTaskId = 0
 let isTupianThumbnailRequesting = false
@@ -489,6 +491,15 @@ function huoquJianyaoCardInfo(item) {
     wangzhiIcon: wangzhiIconMap.value[item.id] || '',
     thumbnailKey: tupianThumbnailMap.value[item.id] || '',
   }, yulanFailedKeys)
+}
+
+function panduanYingyongIconUrl(url) {
+  try {
+    const iconUrl = new URL(url)
+    return iconUrl.protocol === 'aetherdock-icon:' && /^[a-f\d]{64}$/i.test(iconUrl.hostname)
+  } catch {
+    return false
+  }
 }
 
 function geshiZiyuanSize(byteSize) {
@@ -626,9 +637,10 @@ const carouselCards = computed(() => {
     const offset = index - carouselIndex.value
     const iconRequestKey = item.iconCacheKey || item.id
     const mappedIcon = yingyongIconMap.value[item.id]
+    // 主进程会按最新快捷方式指纹重建缓存，返回地址可能比当前列表的旧键更新。
     const validMappedIcon = mappedIcon
       && yingyongIconRequestKeyMap.value[item.id] === iconRequestKey
-      && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))
+      && panduanYingyongIconUrl(mappedIcon)
       ? mappedIcon
       : ''
     const mappedWebsiteIcon = wangzhiIconMap.value[item.id]
@@ -712,6 +724,10 @@ onClickOutside(gengduoCaozuo, () => {
 })
 onClickOutside(paixuCaozuo, () => {
   isPaixuVisible.value = false
+})
+// 详情面板点击外部即关闭，和其他悬浮菜单保持一致的退出方式。
+onClickOutside(kuaishuYulanMianban, () => {
+  if (isDetailVisible.value) guanbiKuaishuYulan()
 })
 
 function qiehuanGengduo() {
@@ -1092,7 +1108,9 @@ watch([carouselCards, () => props.isAnimationBusy], ([cards, isAnimationBusy]) =
       if (item.type !== 'application') return false
       const mappedIcon = yingyongIconMap.value[item.id]
       // 数据库状态无法证明缓存文件仍存在，始终通过主进程确认并按需重建。
-      if (mappedIcon && (!item.iconCacheKey || mappedIcon.includes(item.iconCacheKey))) return false
+      if (mappedIcon
+        && yingyongIconRequestKeyMap.value[item.id] === (item.iconCacheKey || item.id)
+        && panduanYingyongIconUrl(mappedIcon)) return false
       return true
     })
     .map(({ item, offset }) => ({
@@ -1180,13 +1198,11 @@ function anpaiTupianThumbnailRetry(requestKeys, renwuId) {
     tupianThumbnailRetryRequestMap.set(requestKey, itemId)
   }
   if (retryCount > 3) {
-    // 连续失败后进入长冷却，避免紧密循环，同时不让瞬时故障永久占位。
-    const cooldownTimerId = window.setTimeout(() => {
-      tupianThumbnailRetryTimers.delete(cooldownTimerId)
-      yiChuTupianThumbnailRetryRequest(requestKeys)
-      qingliTupianThumbnailRequestKeys(requestKeys)
-    }, tupianThumbnailRetryCooldownMs)
-    tupianThumbnailRetryTimers.set(cooldownTimerId, requestKeys)
+    // 连续失败后停止本轮后台请求，避免不支持的格式持续占用解码队列。
+    for (const [itemId, requestKey] of Object.entries(requestKeys)) {
+      yulanFailedKeys.set(itemId, requestKey)
+    }
+    yiChuTupianThumbnailRetryRequest(requestKeys)
     return
   }
   for (const requestKey of Object.values(requestKeys)) {
@@ -1229,10 +1245,22 @@ function anpaiTupianThumbnailIdleTask() {
         qingliTupianThumbnailRequestKeys(requestKeys)
         return
       }
-      if (thumbnailMap) {
-        tupianThumbnailMap.value = hebingCurrentItemRecord(tupianThumbnailMap.value, thumbnailMap)
-        yiChuTupianThumbnailRetryRequest(requestKeys)
+      const validThumbnailMap = Object.fromEntries(
+        Object.entries(thumbnailMap ?? {}).filter(([itemId, thumbnailKey]) => requestKeys[itemId]
+          && typeof thumbnailKey === 'string' && thumbnailKey),
+      )
+      if (Object.keys(validThumbnailMap).length) {
+        tupianThumbnailMap.value = hebingCurrentItemRecord(tupianThumbnailMap.value, validThumbnailMap)
+        const successfulRequestKeys = Object.fromEntries(
+          Object.keys(validThumbnailMap).map((itemId) => [itemId, requestKeys[itemId]]),
+        )
+        yiChuTupianThumbnailRetryRequest(successfulRequestKeys)
       }
+      const failedRequestKeys = Object.fromEntries(
+        Object.entries(requestKeys).filter(([itemId]) => !validThumbnailMap[itemId]),
+      )
+      // 主进程会以空键反馈解码或缓存瞬时失败；不能把它当作成功，否则卡片会永久停在回退态。
+      if (Object.keys(failedRequestKeys).length) anpaiTupianThumbnailRetry(failedRequestKeys, renwuId)
     } catch {
       if (isUnmounted || renwuId !== tupianThumbnailRenwu || !['image', 'recent'].includes(currentCategory.value) || props.isAnimationBusy) {
         yiChuTupianThumbnailRetryRequest(requestKeys)
@@ -1517,11 +1545,6 @@ onKeyStroke('Escape', () => {
   -webkit-app-region: no-drag;
 }
 
-.expanded-dock-mark { position: relative; display: block; width: 16px; height: 16px; color: #376b35; }
-.expanded-dock-mark::before { position: absolute; right: 1px; bottom: 1px; left: 1px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, #63fe13, #3f9a38); box-shadow: 0 1px 3px rgba(70, 156, 57, .22); content: ""; }
-.expanded-dock-mark::after { position: absolute; top: 1px; right: 1px; width: 9px; height: 9px; border: 1.4px solid currentColor; border-radius: 3px; background: rgba(255, 255, 255, .72); box-shadow: inset 0 1px rgba(255, 255, 255, .84); content: ""; }
-.expanded-dock-mark i { position: absolute; z-index: 1; right: 4px; bottom: 4px; width: 4px; height: 4px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
-
 /* 捕获与收集箱采用成组操作，引导用户先暂存再决定是否归档。 */
 .expanded-capture { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; padding: 0; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); color: var(--ink-soft); cursor: pointer; font: 600 11px var(--font-body); letter-spacing: .04em; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }
 .expanded-capture-icon { width: 14px; height: 14px; object-fit: contain; }
@@ -1532,11 +1555,16 @@ onKeyStroke('Escape', () => {
 .expanded-clipboard b { position: absolute; top: -5px; right: -5px; display: grid; min-width: 15px; height: 15px; padding: 0 3px; place-items: center; border: 1px solid rgba(255, 255, 255, .82); border-radius: 8px; background: var(--ink); color: white; font: 700 9px var(--font-display); }
 .expanded-clipboard:hover { border-color: rgba(80, 145, 63, .34); background: rgba(238, 255, 232, .88); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); color: var(--ink); transform: translateY(-1px); }
 .expanded-clipboard:active { transform: translateY(0) scale(.98); }
+.expanded-assistant { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; padding: 0; border: 1px solid rgba(38, 38, 38, .13); border-radius: 10px; background: rgba(255, 255, 255, .5); color: var(--ink-soft); cursor: pointer; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms var(--motion-easing); }
+.expanded-assistant-icon { width: 15px; height: 15px; }
+.expanded-assistant:hover { border-color: rgba(80, 145, 63, .34); background: rgba(238, 255, 232, .88); box-shadow: 0 4px 10px rgba(38, 38, 38, .08); color: var(--ink); transform: translateY(-1px); }
+.expanded-assistant:active { transform: translateY(0) scale(.98); }
 
 /* 窄窗口将操作收为图标，并让搜索框为它们预留固定空间。 */
 @media (max-width: 780px) {
   .expanded-capture,
-  .expanded-clipboard { width: 32px; }
+  .expanded-clipboard,
+  .expanded-assistant { width: 32px; }
   .expanded-search { left: 0; width: min(260px, calc(100% - 118px)); min-width: 0; transform: none; }
   .expanded-search input { min-width: 0; }
 }
@@ -1719,6 +1747,8 @@ onKeyStroke('Escape', () => {
 .library-compact-icon { width: 33px; height: 33px; flex: 0 0 33px; object-fit: contain; }
 .library-compact-icon--preview { border-radius: 8px; background: rgba(239, 249, 236, .68); object-fit: cover; }
 .library-compact-icon--empty { border-radius: 9px; background: linear-gradient(120deg, rgba(99, 254, 19, .12), rgba(91, 156, 255, .18)); }
+/* 图片缩略图等待时复用骨架节奏，避免静态占位看起来像加载已完成。 */
+.library-compact-icon--pending { background-size: 220% 100%; animation: application-icon-pending 1.4s ease-in-out infinite; }
 .library-compact-copy { display: grid; min-width: 0; gap: 3px; }
 .library-compact-copy strong, .library-compact-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-compact-copy strong { font: 600 12px var(--font-body); }
@@ -1933,7 +1963,8 @@ onKeyStroke('Escape', () => {
 @media (prefers-reduced-motion: reduce) {
   .kongzhuangtai-zifu,
   .library-shelf-icon,
-  .library-shelf-icon-skeleton { animation: none; }
+  .library-shelf-icon-skeleton,
+  .library-compact-icon--pending { animation: none; }
 }
 .data-switch-enter-active,
 .data-switch-leave-active {

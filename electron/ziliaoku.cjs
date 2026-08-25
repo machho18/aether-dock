@@ -1856,6 +1856,48 @@ function createLibrary(dbPath) {
     }
   }
 
+  // AI 检索跨越全部资料分类，并以标题命中、最近使用和更新时间综合排序。
+  function sousuoQuanbuZiliaoku(keyword, rawLimit) {
+    const limit = Math.max(1, Math.min(Number(rawLimit) || 30, 50))
+    const escapedKeyword = keyword.replace(/[\\%_]/g, '\\$&')
+    const pattern = `%${escapedKeyword}%`
+    const titlePrefix = `${escapedKeyword}%`
+    const searchCondition = "(title LIKE ? ESCAPE '\\' OR sourcePath LIKE ? ESCAPE '\\' OR sourceUrl LIKE ? ESCAPE '\\')"
+    const rows = db.prepare(`
+      SELECT * FROM (
+        SELECT ${itemSummaryColumns} FROM items
+        WHERE storageMode != 'managed' AND ${searchCondition}
+        UNION ALL
+        SELECT ${itemSummaryColumns} FROM items
+        WHERE storageMode = 'managed' AND libraryId = ? AND status != 'missing' AND ${searchCondition}
+      )
+      ORDER BY
+        CASE
+          WHEN title = ? THEN 0
+          WHEN title LIKE ? ESCAPE '\\' THEN 1
+          WHEN sourcePath LIKE ? ESCAPE '\\' OR sourceUrl LIKE ? ESCAPE '\\' THEN 2
+          ELSE 3
+        END,
+        CASE WHEN lastOpenedAt IS NULL THEN 1 ELSE 0 END,
+        lastOpenedAt DESC,
+        updatedAt DESC,
+        id ASC
+      LIMIT ?
+    `).all(
+      pattern, pattern, pattern,
+      getConfig().libraryId, pattern, pattern, pattern,
+      keyword, titlePrefix, pattern, pattern,
+      limit,
+    )
+    return {
+      items: rows,
+      previousCursor: null,
+      nextCursor: null,
+      hasPrevious: false,
+      hasNext: false,
+    }
+  }
+
   function getLibrarySummary() {
     const libraryId = getConfig().libraryId
     const totalChanges = Number(readTotalChangesStmt.get()?.changes ?? 0)
@@ -1886,7 +1928,10 @@ function createLibrary(dbPath) {
   function searchLibrary(options = {}) {
     const keyword = typeof options.keyword === 'string' ? options.keyword.trim().slice(0, 200) : ''
     if (!keyword) return queryItemPage(options)
-    return queryItemPage(options, keyword)
+    // 页面搜索传入明确分类；AI 仅传关键词时走全库检索。
+    return categoryIdSet.has(options.type)
+      ? queryItemPage(options, keyword)
+      : sousuoQuanbuZiliaoku(keyword, options.limit)
   }
 
   function getApplicationCacheItems() {
