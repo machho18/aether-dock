@@ -47,7 +47,7 @@
             <div class="assistant-model-list" aria-label="可用模型">
               <div class="assistant-model-list-heading">
                 <span class="assistant-section-label">可用模型</span>
-                <span>{{ moxingMatchCount }} / {{ status.models.length }} 个</span>
+                <span>{{ moxingMatchCount }} / {{ status?.models?.length ?? 0 }} 个</span>
               </div>
 
               <label class="assistant-field assistant-model-filter">
@@ -2777,13 +2777,25 @@ onUnmounted(() => {
 .assistant-answer :deep(ul),
 .assistant-answer :deep(ol) { margin: 9px 0 14px; padding-left: 22px; }
 .assistant-answer :deep(li + li) { margin-top: 5px; }
+.assistant-answer :deep(.task-list) { display: grid; gap: 6px; padding-left: 0; list-style: none; }
+.assistant-answer :deep(.task-list-item) { display: flex; align-items: flex-start; gap: 7px; }
+.assistant-answer :deep(.task-list-item + .task-list-item) { margin-top: 0; }
+.assistant-answer :deep(.task-list-item input) { width: 13px; height: 13px; flex: 0 0 13px; margin: 5px 0 0; accent-color: #4d884d; opacity: 1; }
+.assistant-answer :deep(em) { color: #526356; }
+.assistant-answer :deep(del) { color: #778279; text-decoration-color: rgb(72 91 74 / 48%); }
 .assistant-answer :deep(blockquote) { margin: 13px 0; padding: 8px 12px; border-left-color: #6c9a70; border-radius: 0 7px 7px 0; background: rgb(110 151 109 / 8%); color: #536156; }
-.assistant-answer :deep(a) { color: #3e7744; font-weight: 650; text-decoration-color: rgb(62 119 68 / 42%); text-underline-offset: 2px; }
+.assistant-answer :deep(a) { color: #3e7744; font-weight: 650; text-decoration-color: rgb(62 119 68 / 42%); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.assistant-answer :deep(a:hover) { color: #285f31; text-decoration-color: currentColor; }
+.assistant-answer :deep(a:focus-visible) { border-radius: 3px; outline: 2px solid rgb(99 254 19 / 68%); outline-offset: 2px; }
 .assistant-answer :deep(hr) { height: 1px; margin: 18px 0; border: 0; background: rgb(72 91 74 / 14%); }
-.assistant-answer :deep(table) { display: block; max-width: 100%; margin: 14px 0; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
+.assistant-answer :deep(table) { display: block; max-width: 100%; margin: 15px 0; overflow-x: auto; border: 1px solid rgb(72 91 74 / 14%); border-radius: 9px; border-collapse: separate; border-spacing: 0; background: rgb(255 255 255 / 48%); font-size: 12px; line-height: 1.55; }
 .assistant-answer :deep(th),
-.assistant-answer :deep(td) { padding: 7px 9px; border: 1px solid rgb(72 91 74 / 14%); text-align: left; vertical-align: top; }
+.assistant-answer :deep(td) { min-width: 104px; padding: 8px 10px; border-right: 1px solid rgb(72 91 74 / 12%); border-bottom: 1px solid rgb(72 91 74 / 12%); text-align: left; vertical-align: top; }
 .assistant-answer :deep(th) { background: rgb(110 151 109 / 9%); color: #334635; font-weight: 750; }
+.assistant-answer :deep(th:last-child),
+.assistant-answer :deep(td:last-child) { border-right: 0; }
+.assistant-answer :deep(tbody tr:last-child td) { border-bottom: 0; }
+.assistant-answer :deep(tbody tr:nth-child(even) td) { background: rgb(110 151 109 / 3%); }
 /* 执行过程使用紧凑任务清单，避免呈现为调试日志。 */
 .assistant-activity {
   min-width: 0;

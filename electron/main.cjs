@@ -64,6 +64,7 @@ let jiantiebanWindowsClipboardHelper = null
 let piPrewarmTimer = null
 let zhengzaiGithubGengxinJianchaPromise = null
 let gengxinJianchaStateReadyPromise = null
+let qidongJieduan = '等待应用就绪'
 let appGengxinInfo = {
   hasUpdate: false,
   latestVersion: '',
@@ -101,6 +102,7 @@ const githubReleaseApiUrl = 'https://api.github.com/repos/machho18/aether-dock/r
 const githubReleasePageUrl = 'https://github.com/machho18/aether-dock/releases/latest'
 const gengxinZidongJianchaJiangeMs = 6 * 60 * 60 * 1000
 const gengxinXianliuBaodiDengdaiMs = 60 * 1000
+const qidongRizhiFilename = 'startup.log'
 const gengxinJianchaState = { lastSuccessAt: 0, retryAt: 0 }
 const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
@@ -152,6 +154,26 @@ const remoteMimeExtensions = new Map([
 // 开发版使用独立数据目录，避免卸载生产版时误删调试数据库与缓存。
 if (isKaifaHuanjing) {
   app.setPath('userData', kaifaUserDataDir)
+}
+
+// 启动与渲染异常落盘，便于区分进程崩溃、渲染异常和初始化卡顿。
+function jiluQidongWenti(leixing, error) {
+  const detail = error instanceof Error ? error.stack || error.message : String(error ?? '')
+  const content = `[${new Date().toISOString()}] ${leixing}\n${detail}\n\n`
+  console.error(`[AetherDock] ${leixing}`, detail)
+  void fsp.appendFile(path.join(app.getPath('userData'), qidongRizhiFilename), content, 'utf8').catch(() => {})
+}
+
+// 所有应用窗口统一记录加载失败与渲染进程退出，避免问题只表现为窗口消失或未响应。
+function jiantingWindowYichang(win, mingcheng) {
+  win.on('unresponsive', () => jiluQidongWenti(`${mingcheng}无响应`, '渲染进程未在预期时间内响应'))
+  win.webContents.on('render-process-gone', (_, details) => {
+    jiluQidongWenti(`${mingcheng}渲染进程已退出`, `原因：${details.reason}，退出码：${details.exitCode}`)
+  })
+  win.webContents.on('did-fail-load', (_, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (!isMainFrame) return
+    jiluQidongWenti(`${mingcheng}加载失败`, `错误码：${errorCode}，原因：${errorDescription}，地址：${validatedUrl}`)
+  })
 }
 
 // 通过 Windows 原生剪贴板写入文件拖放列表，让聊天软件和资源管理器接收真实文件。
@@ -3304,6 +3326,7 @@ function createMainWindow() {
   mainIslandShapeCacheKey = ''
   isMainWindowReady = false
   mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
+  jiantingWindowYichang(mainWindow, '主窗口')
 
   // 主灵动岛预加载在桌面右下角，等待开机动画结束后再显示。
   positionMainWindow()
@@ -3335,6 +3358,7 @@ function createMainWindow() {
 // 预加载独立收起坞窗口，切换时无需移动主灵动岛窗口。
 function createXuanfuqiuWindow() {
   xuanfuqiuWindow = new BrowserWindow(createWindowOptions(shouqikouWindowSize))
+  jiantingWindowYichang(xuanfuqiuWindow, '收起坞窗口')
   isXuanfuqiuWindowReady = false
   if (process.platform === 'win32' || process.platform === 'linux') {
     xuanfuqiuWindow.setShape(huoquShouqikouWindowShape())
@@ -3392,6 +3416,7 @@ function anpaiPiYure() {
 function createStartupWindow() {
   isStartupCompleted = false
   startupWindow = new BrowserWindow(createWindowOptions(startupWindowSize))
+  jiantingWindowYichang(startupWindow, '启动窗口')
 
   const workArea = screen.getPrimaryDisplay().workArea
   startupWindow.setPosition(
@@ -3437,6 +3462,10 @@ function geshiAnySearchApiKeyMask(apiKey) {
 }
 
 async function chushihuaYingyong() {
+  // 先显示启动页，再执行同步数据库初始化，避免首帧被磁盘 I/O 长时间阻塞。
+  qidongJieduan = '显示启动窗口'
+  createStartupWindow()
+  qidongJieduan = '初始化本地数据'
   // 后台预热 Windows STA 剪贴板读取，图片捕获时无需等待 PowerShell 冷启动。
   chushihuaWindowsJiantiebanHelper()
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
@@ -3485,10 +3514,12 @@ async function chushihuaYingyong() {
     updateLibraryNotes: piGengxinZiliaokuBiji,
     getLibraryItem: piHuoquZiliaokuTiaomu,
   })
+  qidongJieduan = '准备运行目录'
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
   await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
+  qidongJieduan = '注册本地协议'
   protocol.handle('aetherdock-icon', async (request) => {
     try {
       const cacheKey = new URL(request.url).hostname.toLowerCase()
@@ -3575,6 +3606,7 @@ async function chushihuaYingyong() {
       return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
     }
   })
+  qidongJieduan = '注册应用服务'
   ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
   ipcMain.handle(ipcTongdao.getAppInfo, () => huoquAppInfo())
   ipcMain.handle(ipcTongdao.checkAppUpdate, jianchaAppGengxin)
@@ -3982,10 +4014,10 @@ async function chushihuaYingyong() {
     qingqiuManagedFilesReconcile()
   }, 5 * 60 * 1000)
   managedReconcileTimer.unref()
+  qidongJieduan = '创建应用窗口'
   createTuopan()
   createMainWindow()
   createXuanfuqiuWindow()
-  createStartupWindow()
   chushihuaAutoUpdater()
   yingyongIconCleanupTimer = setTimeout(qingqiuYingyongIconCacheCleanup, 2500)
   yingyongIconCleanupTimer.unref()
@@ -3998,6 +4030,14 @@ async function chushihuaYingyong() {
       createStartupWindow()
     }
   })
+  qidongJieduan = '启动完成'
+}
+
+// 初始化失败时显示明确提示并保存阶段信息，避免表现为无提示退出。
+function chuliYingyongQidongShibai(error) {
+  const xiaoxi = error instanceof Error ? error.message : String(error ?? '未知错误')
+  jiluQidongWenti(`启动失败（${qidongJieduan}）`, error)
+  dialog.showErrorBox('AetherDock 启动失败', `程序未能完成${qidongJieduan}。诊断信息已保存到应用数据目录的 ${qidongRizhiFilename}。\n\n${xiaoxi}`)
 }
 
 // 同一用户仅保留一个进程，后续启动请求交由已有进程处理。
@@ -4006,7 +4046,7 @@ if (!hasDanliYingyongLock) {
   app.quit()
 } else {
   app.on('second-instance', jihuoYiyouLingdongdaoWindow)
-  app.whenReady().then(chushihuaYingyong)
+  app.whenReady().then(chushihuaYingyong).catch(chuliYingyongQidongShibai)
 }
 
 app.on('window-all-closed', () => {
