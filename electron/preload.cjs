@@ -6,6 +6,7 @@ const ipcTongdao = Object.freeze({
   getAppInfo: 'app:read-info',
   checkAppUpdate: 'app:check-update',
   openAppRelease: 'app:open-release',
+  openExternalUrl: 'app:open-external-url',
   appUpdateInfoChanged: 'app:update-info-changed',
   setAutoLaunch: 'app:set-auto-launch',
   setIslandPassthrough: 'island:set-passthrough',
@@ -21,6 +22,9 @@ const ipcTongdao = Object.freeze({
   getLibraryConfig: 'library:read-config',
   getCollapsedAnimation: 'settings:read-collapsed-animation',
   setCollapsedAnimation: 'settings:set-collapsed-animation',
+  getSearchConfig: 'search:read-config',
+  setSearchProvider: 'search:set-provider',
+  setAnySearchApiKey: 'search:set-anysearch-key',
   importLibraryContent: 'library:import',
   captureClipboardContent: 'library:capture-clipboard',
   getClipboardItems: 'clipboard:read-items',
@@ -88,6 +92,7 @@ contextBridge.exposeInMainWorld('aetherDock', {
   getAppInfo: () => ipcRenderer.invoke(ipcTongdao.getAppInfo),
   checkAppUpdate: () => ipcRenderer.invoke(ipcTongdao.checkAppUpdate),
   openAppRelease: (url) => ipcRenderer.invoke(ipcTongdao.openAppRelease, url),
+  openExternalUrl: (url) => ipcRenderer.invoke(ipcTongdao.openExternalUrl, url),
   onAppUpdateInfoChanged: (callback) => {
     if (typeof callback !== 'function') return () => {}
     const listener = (_, info) => callback(info)
@@ -113,6 +118,9 @@ contextBridge.exposeInMainWorld('aetherDock', {
   getLibraryConfig: () => ipcRenderer.invoke(ipcTongdao.getLibraryConfig),
   getCollapsedAnimation: () => ipcRenderer.invoke(ipcTongdao.getCollapsedAnimation),
   setCollapsedAnimation: (animation) => ipcRenderer.invoke(ipcTongdao.setCollapsedAnimation, animation),
+  getSearchConfig: () => ipcRenderer.invoke(ipcTongdao.getSearchConfig),
+  setSearchProvider: (provider) => ipcRenderer.invoke(ipcTongdao.setSearchProvider, provider),
+  setAnySearchApiKey: (apiKey) => ipcRenderer.invoke(ipcTongdao.setAnySearchApiKey, apiKey),
   importDragContent: ({ url }) => {
     const file = lastDragFiles
     lastDragFiles = []
@@ -165,7 +173,7 @@ contextBridge.exposeInMainWorld('aetherDock', {
   shareLibraryItem: (itemId) => ipcRenderer.invoke(ipcTongdao.shareLibraryItem, itemId),
   piPrompt: (message) => ipcRenderer.invoke(ipcTongdao.piPrompt, message),
   piAbort: () => ipcRenderer.invoke(ipcTongdao.piAbort),
-  piResolveLibraryApproval: (requestId, approved) => ipcRenderer.invoke(ipcTongdao.piResolveLibraryApproval, requestId, approved),
+  piResolveLibraryApproval: (requestId, mode) => ipcRenderer.invoke(ipcTongdao.piResolveLibraryApproval, requestId, mode),
   piGetStatus: () => ipcRenderer.invoke(ipcTongdao.piGetStatus),
   piSetProviderKey: (provider, key) => ipcRenderer.invoke(ipcTongdao.piSetProviderKey, provider, key),
   piClearProviderKey: (provider) => ipcRenderer.invoke(ipcTongdao.piClearProviderKey, provider),

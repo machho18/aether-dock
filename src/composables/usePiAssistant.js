@@ -13,6 +13,10 @@ export function usePiAssistant() {
   const conversations = ref([])
   const currentConversationId = ref('')
   const isConversationLoading = ref(false)
+  const searchProvider = ref('bing')
+  const isAnySearchKeyConfigured = ref(false)
+  const anysearchKeyMask = ref('')
+  const isSavingSearchKey = ref(false)
   let quxiaoPiEvent = () => {}
   let baocunTimer = 0
   let baocunHuihuaPromise = Promise.resolve()
@@ -20,6 +24,22 @@ export function usePiAssistant() {
   let isShanchuHuihuaZhong = false
   let isYixiezai = false
   const huihuaYinwen = new Map()
+  const wenjianShengchengGongjuNames = new Set(['create_docx_copy', 'create_xlsx_workbook', 'create_markdown_file', 'create_pdf_document'])
+  const wenjianShengchengPeizhi = [
+    { label: 'PDF', suffix: 'PDF|\\.pdf' },
+    { label: 'Markdown', suffix: 'Markdown|MD|\\.md' },
+    { label: 'Excel', suffix: 'Excel|XLSX|\\.xlsx' },
+    { label: 'Word', suffix: 'Word|DOCX|\\.docx' },
+  ]
+  const shengchengXingweiPattern = '(?:生成|导出|创建|制作|输出|保存为|转(?:换)?为|整理成|写成)'
+
+  // 明确的文件生成请求在界面创建时即显示状态，避免主进程事件延迟造成空白。
+  function tiquWenjianShengchengWenAn(rawText) {
+    const text = String(rawText ?? '').trim()
+    if (!text || new RegExp(`^(?:如何|怎么|怎样|能否|是否|可否|请问).{0,24}${shengchengXingweiPattern}`, 'u').test(text)) return ''
+    const item = wenjianShengchengPeizhi.find((current) => new RegExp(`${shengchengXingweiPattern}[\\s\\S]{0,24}(?:${current.suffix})`, 'iu').test(text))
+    return item ? `正在生成 ${item.label} 文件` : ''
+  }
 
   function chuangjianXiaoxi(role, content = '') {
     const now = Date.now()
@@ -202,7 +222,6 @@ export function usePiAssistant() {
         break
       case 'text':
         shuaXinLiuShiHuodong(last)
-        if (last?.toolLabel === '正在整理标题和内容') last.toolLabel = ''
         tianjiaShixuWenben(last, event.delta)
         break
       case 'tool':
@@ -226,6 +245,11 @@ export function usePiAssistant() {
             })
           }
           tianjiaShixuGongju(last, callId)
+          // 文件工具接手后改由工具行展示“生成中”，避免重复状态。
+          if (wenjianShengchengGongjuNames.has(event.name)) {
+            last.wenjianShengchengZhong = false
+            last.wenjianShengchengWenAn = ''
+          }
           last.toolLabel = event.label ?? '处理中'
         }
         break
@@ -254,7 +278,8 @@ export function usePiAssistant() {
       case 'document-preparing':
         if (last) {
           last.pending = true
-          last.toolLabel = event.label || '正在整理标题和内容'
+          last.wenjianShengchengZhong = true
+          last.wenjianShengchengWenAn = event.label || '正在生成文件'
           shuaXinLiuShiHuodong(last)
         }
         break
@@ -263,6 +288,8 @@ export function usePiAssistant() {
           const completedAt = Date.now()
           last.pending = false
           last.toolLabel = ''
+          last.wenjianShengchengZhong = false
+          last.wenjianShengchengWenAn = ''
           last.completedAt = completedAt
           wanchengJinxingTool(last, 'completed', completedAt)
           // 只有正常结束却没有可展示文本时才给出中性提示；模型错误由 message_end 单独处理。
@@ -278,6 +305,8 @@ export function usePiAssistant() {
           const completedAt = Date.now()
           last.pending = false
           last.toolLabel = ''
+          last.wenjianShengchengZhong = false
+          last.wenjianShengchengWenAn = ''
           last.completedAt = completedAt
           wanchengJinxingTool(last, 'failed', completedAt)
           const xiaoxi = guifanMoxingCuowu(event.message)
@@ -420,11 +449,14 @@ export function usePiAssistant() {
     if (!currentConversationId.value && !(await chuangjianCunchuHuihua())) return
     const userMessage = chuangjianXiaoxi('user', text)
     const startedAt = Date.now()
+    const wenjianShengchengWenAn = tiquWenjianShengchengWenAn(text)
     const assistantMessage = {
       ...chuangjianXiaoxi('assistant'),
       content: '',
       pending: true,
       toolLabel: '',
+      wenjianShengchengZhong: Boolean(wenjianShengchengWenAn),
+      wenjianShengchengWenAn,
       toolCalls: [],
       timeline: [],
       failed: false,
@@ -449,6 +481,8 @@ export function usePiAssistant() {
         if (last) {
           const completedAt = Date.now()
           last.pending = false
+          last.wenjianShengchengZhong = false
+          last.wenjianShengchengWenAn = ''
           last.completedAt = completedAt
           wanchengJinxingTool(last, 'failed', completedAt)
         }
@@ -465,6 +499,8 @@ export function usePiAssistant() {
       if (last) {
         const completedAt = Date.now()
         last.pending = false
+        last.wenjianShengchengZhong = false
+        last.wenjianShengchengWenAn = ''
         last.completedAt = completedAt
         wanchengJinxingTool(last, 'failed', completedAt)
         last.content = guifanMoxingCuowu(error?.message, '发送失败')
@@ -482,12 +518,12 @@ export function usePiAssistant() {
   }
 
   // 仅将当前确认请求回传主进程，避免过期弹窗误授权后续操作。
-  async function huiyingZiliaokuShouquan(approved) {
+  async function huiyingZiliaokuShouquan(mode) {
     const request = ziliaokuShouquanQingqiu.value
     if (!request?.requestId) return false
     ziliaokuShouquanQingqiu.value = null
     try {
-      const result = await window.aetherDock?.piResolveLibraryApproval(request.requestId, approved === true)
+      const result = await window.aetherDock?.piResolveLibraryApproval(request.requestId, mode)
       if (result?.chenggong) return true
       ziliaokuShouquanQingqiu.value = request
       statusError.value = result?.xiaoxi || '提交授权结果失败'
@@ -589,6 +625,59 @@ export function usePiAssistant() {
     }
   }
 
+  // 读取联网搜索来源与 AnySearch 密钥配置，供助手配置面板展示。
+  async function jiazaiSearchConfig() {
+    try {
+      const result = await window.aetherDock?.getSearchConfig()
+      if (result?.chenggong) {
+        searchProvider.value = result.provider === 'anysearch' ? 'anysearch' : 'bing'
+        isAnySearchKeyConfigured.value = Boolean(result.apiKeyConfigured)
+        anysearchKeyMask.value = String(result.apiKeyMask ?? '')
+        statusError.value = ''
+      }
+    } catch {}
+  }
+
+  // 切换搜索来源并持久化，失败时回落并提示。
+  async function shezhiSearchProvider(provider) {
+    const value = provider === 'anysearch' ? 'anysearch' : 'bing'
+    if (value === searchProvider.value) return true
+    try {
+      const result = await window.aetherDock?.setSearchProvider(value)
+      if (result?.chenggong) {
+        searchProvider.value = result.provider
+        return true
+      }
+      statusError.value = result?.xiaoxi || '切换失败'
+      return false
+    } catch (error) {
+      statusError.value = error?.message || '切换失败'
+      return false
+    }
+  }
+
+  // 保存或清除 AnySearch 密钥，成功后同步配置状态。
+  async function baocunAnySearchApiKey(key) {
+    if (isSavingSearchKey.value) return false
+    isSavingSearchKey.value = true
+    try {
+      const result = await window.aetherDock?.setAnySearchApiKey(String(key ?? '').trim())
+      if (result?.chenggong) {
+        isAnySearchKeyConfigured.value = Boolean(result.apiKeyConfigured)
+        anysearchKeyMask.value = String(result.apiKeyMask ?? '')
+        statusError.value = ''
+        return true
+      }
+      statusError.value = result?.xiaoxi || '保存失败'
+      return false
+    } catch (error) {
+      statusError.value = error?.message || '保存失败'
+      return false
+    } finally {
+      isSavingSearchKey.value = false
+    }
+  }
+
   function kaishiJianting() {
     quxiaoPiEvent = window.aetherDock?.onPiEvent(chuliEvent) ?? (() => {})
   }
@@ -618,6 +707,10 @@ export function usePiAssistant() {
     conversations,
     currentConversationId,
     isConversationLoading,
+  searchProvider,
+  isAnySearchKeyConfigured,
+  anysearchKeyMask,
+  isSavingSearchKey,
     jiazaiStatus,
     jiazaiHuihua,
     xinJianHuihua,
@@ -631,6 +724,9 @@ export function usePiAssistant() {
     shezhiTuiliQiangdu,
     addProvider,
     qingliProvider,
+    jiazaiSearchConfig,
+    shezhiSearchProvider,
+    baocunAnySearchApiKey,
     kaishiJianting,
   }
 }

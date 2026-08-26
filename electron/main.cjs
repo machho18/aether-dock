@@ -33,6 +33,8 @@ let lastCpuStat = null
 let library = null
 let huihuaStore = null
 const piZiliaokuShouquanMap = new Map()
+// 仅在本次应用启动期间保留同类写操作授权，不写入任何持久化配置。
+const piChixuZiliaokuShouquanSet = new Set()
 let yingyongSyncPromise = null
 let managedReconcilePromise = null
 let managedReconcileKey = ''
@@ -59,8 +61,10 @@ let isXuanfuqiuMoshi = false
 let isGengxinDialogShowing = false
 let isAutoUpdaterInitialized = false
 let jiantiebanWindowsClipboardHelper = null
+let piPrewarmTimer = null
 let zhengzaiGithubGengxinJianchaPromise = null
 let gengxinJianchaStateReadyPromise = null
+let qidongJieduan = '等待应用就绪'
 let appGengxinInfo = {
   hasUpdate: false,
   latestVersion: '',
@@ -74,13 +78,14 @@ let appGengxinInfo = {
 const zhixingFileAsync = promisify(execFile)
 const mainWindowSize = { width: 860, height: 560 }
 // 主窗口透明画布内的可见区域尺寸，需与 App.vue 的灵动岛布局保持一致。
-const mainIslandSize = { width: 680, height: 380 }
+const mainIslandSize = { width: 760, height: 460 }
 const mainIslandCharmSize = { width: 104, height: 116 }
 const mainIslandDropSize = { width: 160, height: 214 }
 const mainIslandCharmEdgeOffset = 28
 const mainIslandChushiScreenMargin = 88
 // 裁剪边距覆盖主体阴影与拖动回弹的完整视觉范围，防止靠边时被窗口形状截断。
 const mainIslandCharmShapeMargin = { horizontal: 14, top: 16, bottom: 18 }
+// 收起态指标与拖动磁场共用完整外沿，避免透明窗口在标签旁产生硬裁剪边界。
 const mainIslandCixiShapeMargin = { horizontal: 28, top: 30, bottom: 28 }
 // 拖动边界只约束宠物本体，允许外围磁场自然延伸至屏幕之外。
 const mainIslandCharmBoundaryMargin = { horizontal: 6, top: 4, bottom: 6 }
@@ -97,6 +102,7 @@ const githubReleaseApiUrl = 'https://api.github.com/repos/machho18/aether-dock/r
 const githubReleasePageUrl = 'https://github.com/machho18/aether-dock/releases/latest'
 const gengxinZidongJianchaJiangeMs = 6 * 60 * 60 * 1000
 const gengxinXianliuBaodiDengdaiMs = 60 * 1000
+const qidongRizhiFilename = 'startup.log'
 const gengxinJianchaState = { lastSuccessAt: 0, retryAt: 0 }
 const isKaifaHuanjing = !app.isPackaged
 const kaifaUserDataDir = path.join(app.getPath('appData'), 'aether-dock-dev')
@@ -148,6 +154,26 @@ const remoteMimeExtensions = new Map([
 // 开发版使用独立数据目录，避免卸载生产版时误删调试数据库与缓存。
 if (isKaifaHuanjing) {
   app.setPath('userData', kaifaUserDataDir)
+}
+
+// 启动与渲染异常落盘，便于区分进程崩溃、渲染异常和初始化卡顿。
+function jiluQidongWenti(leixing, error) {
+  const detail = error instanceof Error ? error.stack || error.message : String(error ?? '')
+  const content = `[${new Date().toISOString()}] ${leixing}\n${detail}\n\n`
+  console.error(`[AetherDock] ${leixing}`, detail)
+  void fsp.appendFile(path.join(app.getPath('userData'), qidongRizhiFilename), content, 'utf8').catch(() => {})
+}
+
+// 所有应用窗口统一记录加载失败与渲染进程退出，避免问题只表现为窗口消失或未响应。
+function jiantingWindowYichang(win, mingcheng) {
+  win.on('unresponsive', () => jiluQidongWenti(`${mingcheng}无响应`, '渲染进程未在预期时间内响应'))
+  win.webContents.on('render-process-gone', (_, details) => {
+    jiluQidongWenti(`${mingcheng}渲染进程已退出`, `原因：${details.reason}，退出码：${details.exitCode}`)
+  })
+  win.webContents.on('did-fail-load', (_, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (!isMainFrame) return
+    jiluQidongWenti(`${mingcheng}加载失败`, `错误码：${errorCode}，原因：${errorDescription}，地址：${validatedUrl}`)
+  })
 }
 
 // 通过 Windows 原生剪贴板写入文件拖放列表，让聊天软件和资源管理器接收真实文件。
@@ -253,10 +279,10 @@ function huoquMainIslandStateRect(state, anchor = mainIslandAnchor) {
   const { islandOriginX, islandOriginY, charmOriginX, charmOriginY, dropOriginX, dropOriginY } = huoquMainIslandLayout(anchor)
   const stateRects = {
     collapsed: [{
-      x: charmOriginX - mainIslandCharmShapeMargin.horizontal,
-      y: charmOriginY - mainIslandCharmShapeMargin.top,
-      width: mainIslandCharmSize.width + mainIslandCharmShapeMargin.horizontal * 2,
-      height: mainIslandCharmSize.height + mainIslandCharmShapeMargin.top + mainIslandCharmShapeMargin.bottom,
+      x: charmOriginX - mainIslandCixiShapeMargin.horizontal,
+      y: charmOriginY - mainIslandCixiShapeMargin.top,
+      width: mainIslandCharmSize.width + mainIslandCixiShapeMargin.horizontal * 2,
+      height: mainIslandCharmSize.height + mainIslandCixiShapeMargin.top + mainIslandCixiShapeMargin.bottom,
     }],
     moving: [{
       x: charmOriginX - mainIslandCixiShapeMargin.horizontal,
@@ -977,16 +1003,20 @@ function piFaSongEvent(event) {
 
 // 资料库写操作必须经由渲染层确认，模型本身不能绕过此关卡。
 function piQingqiuZiliaokuShouquan(payload) {
+  const permissionScope = String(payload?.permissionScope ?? payload?.title ?? '').trim()
+  if (permissionScope && piChixuZiliaokuShouquanSet.has(permissionScope)) {
+    return Promise.resolve({ approved: true, mode: 'always' })
+  }
   const requestId = randomUUID()
   return new Promise((resolve) => {
-    piZiliaokuShouquanMap.set(requestId, resolve)
+    piZiliaokuShouquanMap.set(requestId, { resolve, permissionScope })
     piFaSongEvent({ type: 'library-approval', requestId, ...payload })
   })
 }
 
 // 中止会话或离开页面时拒绝所有待确认操作，避免后台遗留写入请求。
 function piQuxiaoZiliaokuShouquan() {
-  for (const resolve of piZiliaokuShouquanMap.values()) resolve({ approved: false })
+  for (const request of piZiliaokuShouquanMap.values()) request.resolve({ approved: false })
   piZiliaokuShouquanMap.clear()
 }
 
@@ -1634,6 +1664,16 @@ function huoquSafeReleaseUrl(rawUrl) {
       : githubReleasePageUrl
   } catch {
     return githubReleasePageUrl
+  }
+}
+
+// 仅允许通过 https 打开外部链接，避免渲染层触发任意协议或本地路径。
+function huoquSafeExternalUrl(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl ?? '').trim())
+    return url.protocol === 'https:' ? url.toString() : ''
+  } catch {
+    return ''
   }
 }
 
@@ -3286,6 +3326,7 @@ function createMainWindow() {
   mainIslandShapeCacheKey = ''
   isMainWindowReady = false
   mainWindow = new BrowserWindow(createWindowOptions(mainWindowSize))
+  jiantingWindowYichang(mainWindow, '主窗口')
 
   // 主灵动岛预加载在桌面右下角，等待开机动画结束后再显示。
   positionMainWindow()
@@ -3317,6 +3358,7 @@ function createMainWindow() {
 // 预加载独立收起坞窗口，切换时无需移动主灵动岛窗口。
 function createXuanfuqiuWindow() {
   xuanfuqiuWindow = new BrowserWindow(createWindowOptions(shouqikouWindowSize))
+  jiantingWindowYichang(xuanfuqiuWindow, '收起坞窗口')
   isXuanfuqiuWindowReady = false
   if (process.platform === 'win32' || process.platform === 'linux') {
     xuanfuqiuWindow.setShape(huoquShouqikouWindowShape())
@@ -3356,12 +3398,25 @@ function wanchengStartupWindow() {
   }
   isStartupCompleted = true
   xianshiMainLingdongdao()
+  anpaiPiYure()
+}
+
+// 在开机动画结束后的空闲期预热 Pi 助手运行时，把 PI SDK 加载与首会话建立挪到后台，
+// 避免用户首次进入助手页时主进程被 SDK 加载阻塞而表现为界面卡顿。
+function anpaiPiYure() {
+  if (piPrewarmTimer || !library) return
+  piPrewarmTimer = setTimeout(() => {
+    piPrewarmTimer = null
+    void piJicheng.init().catch(() => {})
+  }, 2500)
+  piPrewarmTimer.unref?.()
 }
 
 // 创建独立开机窗口，避免重定位主灵动岛造成平移与卡顿
 function createStartupWindow() {
   isStartupCompleted = false
   startupWindow = new BrowserWindow(createWindowOptions(startupWindowSize))
+  jiantingWindowYichang(startupWindow, '启动窗口')
 
   const workArea = screen.getPrimaryDisplay().workArea
   startupWindow.setPosition(
@@ -3399,7 +3454,18 @@ function jihuoYiyouLingdongdaoWindow() {
   mainWindow.focus()
 }
 
+// 仅向渲染层暴露前后各四位，完整 AnySearch 密钥始终留在主进程。
+function geshiAnySearchApiKeyMask(apiKey) {
+  const value = String(apiKey ?? '').trim()
+  if (value.length <= 8) return value ? '*******' : ''
+  return `${value.slice(0, 4)}*******${value.slice(-4)}`
+}
+
 async function chushihuaYingyong() {
+  // 先显示启动页，再执行同步数据库初始化，避免首帧被磁盘 I/O 长时间阻塞。
+  qidongJieduan = '显示启动窗口'
+  createStartupWindow()
+  qidongJieduan = '初始化本地数据'
   // 后台预热 Windows STA 剪贴板读取，图片捕获时无需等待 PowerShell 冷启动。
   chushihuaWindowsJiantiebanHelper()
   // 初始化资料库索引，数据库与用户可管理的资料目录保持分离
@@ -3426,6 +3492,7 @@ async function chushihuaYingyong() {
     workspaceDir: piWorkspaceDir,
     sessionDir: piSessionDir,
     sendEvent: piFaSongEvent,
+    getSearchConfig: () => ({ provider: library.getSearchProvider(), apiKey: library.getAnySearchApiKey() }),
     // 无关键词的 AI 查询返回全库概览，避免将“最近打开”误当作资料库全量内容。
     searchLibrary: (keyword) => {
       const value = String(keyword ?? '').trim()
@@ -3447,10 +3514,12 @@ async function chushihuaYingyong() {
     updateLibraryNotes: piGengxinZiliaokuBiji,
     getLibraryItem: piHuoquZiliaokuTiaomu,
   })
+  qidongJieduan = '准备运行目录'
   yingyongIconCacheDir = path.join(app.getPath('userData'), 'application-icons')
   tupianThumbnailCacheDir = path.join(app.getPath('userData'), 'image-thumbnails')
   await fsp.mkdir(yingyongIconCacheDir, { recursive: true })
   await fsp.mkdir(tupianThumbnailCacheDir, { recursive: true })
+  qidongJieduan = '注册本地协议'
   protocol.handle('aetherdock-icon', async (request) => {
     try {
       const cacheKey = new URL(request.url).hostname.toLowerCase()
@@ -3537,10 +3606,16 @@ async function chushihuaYingyong() {
       return new Response('not found', { status: error?.code === 'ENOENT' ? 404 : 500 })
     }
   })
+  qidongJieduan = '注册应用服务'
   ipcMain.handle(ipcTongdao.getSystemStatus, () => getSystemStatus())
   ipcMain.handle(ipcTongdao.getAppInfo, () => huoquAppInfo())
   ipcMain.handle(ipcTongdao.checkAppUpdate, jianchaAppGengxin)
   ipcMain.handle(ipcTongdao.openAppRelease, (_, url) => shell.openExternal(huoquSafeReleaseUrl(url)))
+  ipcMain.handle(ipcTongdao.openExternalUrl, (_, url) => {
+    const safeUrl = huoquSafeExternalUrl(url)
+    if (!safeUrl) return { chenggong: false }
+    return shell.openExternal(safeUrl).then(() => ({ chenggong: true })).catch(() => ({ chenggong: false }))
+  })
   ipcMain.handle(ipcTongdao.setAutoLaunch, (_, enabled) => {
     if (typeof enabled !== 'boolean') return { chenggong: false, ...huoquAppInfo() }
     return shezhiAutoLaunch(enabled)
@@ -3624,6 +3699,24 @@ async function chushihuaYingyong() {
   ipcMain.handle(ipcTongdao.getLibraryConfig, () => library.getConfig())
   ipcMain.handle(ipcTongdao.getCollapsedAnimation, () => library.getCollapsedAnimation())
   ipcMain.handle(ipcTongdao.setCollapsedAnimation, (_, animation) => library.setCollapsedAnimation(animation))
+  ipcMain.handle(ipcTongdao.getSearchConfig, () => {
+    const apiKey = library.getAnySearchApiKey()
+    return {
+      chenggong: true,
+      provider: library.getSearchProvider(),
+      apiKeyConfigured: Boolean(apiKey),
+      apiKeyMask: geshiAnySearchApiKeyMask(apiKey),
+    }
+  })
+  ipcMain.handle(ipcTongdao.setSearchProvider, (_, provider) => ({ chenggong: true, provider: library.setSearchProvider(provider) }))
+  ipcMain.handle(ipcTongdao.setAnySearchApiKey, (_, apiKey) => {
+    const savedApiKey = library.setAnySearchApiKey(apiKey)
+    return {
+      chenggong: true,
+      apiKeyConfigured: Boolean(savedApiKey),
+      apiKeyMask: geshiAnySearchApiKeyMask(savedApiKey),
+    }
+  })
   ipcMain.handle(ipcTongdao.importLibraryContent, async (_, payload) => {
     const localResult = await library.importContent({ file: payload?.file ?? [], url: [] })
     const remoteAdded = []
@@ -3847,12 +3940,16 @@ async function chushihuaYingyong() {
     piQuxiaoZiliaokuShouquan()
     return piJicheng.zhongzhi()
   })
-  ipcMain.handle(ipcTongdao.piResolveLibraryApproval, (_, requestId, approved) => {
-    const resolve = piZiliaokuShouquanMap.get(String(requestId ?? ''))
-    if (!resolve) return { chenggong: false, xiaoxi: '该授权请求已失效' }
+  ipcMain.handle(ipcTongdao.piResolveLibraryApproval, (_, requestId, mode) => {
+    const request = piZiliaokuShouquanMap.get(String(requestId ?? ''))
+    if (!request) return { chenggong: false, xiaoxi: '该授权请求已失效' }
     piZiliaokuShouquanMap.delete(String(requestId ?? ''))
-    const isApproved = approved === true
-    resolve({ approved: isApproved })
+    const approvalMode = mode === 'always' ? 'always' : mode === true || mode === 'once' ? 'once' : 'reject'
+    const isApproved = approvalMode !== 'reject'
+    if (approvalMode === 'always' && request.permissionScope) {
+      piChixuZiliaokuShouquanSet.add(request.permissionScope)
+    }
+    request.resolve({ approved: isApproved, mode: approvalMode })
     return { chenggong: true }
   })
   ipcMain.handle(ipcTongdao.piGetStatus, async () => {
@@ -3917,10 +4014,10 @@ async function chushihuaYingyong() {
     qingqiuManagedFilesReconcile()
   }, 5 * 60 * 1000)
   managedReconcileTimer.unref()
+  qidongJieduan = '创建应用窗口'
   createTuopan()
   createMainWindow()
   createXuanfuqiuWindow()
-  createStartupWindow()
   chushihuaAutoUpdater()
   yingyongIconCleanupTimer = setTimeout(qingqiuYingyongIconCacheCleanup, 2500)
   yingyongIconCleanupTimer.unref()
@@ -3933,6 +4030,14 @@ async function chushihuaYingyong() {
       createStartupWindow()
     }
   })
+  qidongJieduan = '启动完成'
+}
+
+// 初始化失败时显示明确提示并保存阶段信息，避免表现为无提示退出。
+function chuliYingyongQidongShibai(error) {
+  const xiaoxi = error instanceof Error ? error.message : String(error ?? '未知错误')
+  jiluQidongWenti(`启动失败（${qidongJieduan}）`, error)
+  dialog.showErrorBox('AetherDock 启动失败', `程序未能完成${qidongJieduan}。诊断信息已保存到应用数据目录的 ${qidongRizhiFilename}。\n\n${xiaoxi}`)
 }
 
 // 同一用户仅保留一个进程，后续启动请求交由已有进程处理。
@@ -3941,7 +4046,7 @@ if (!hasDanliYingyongLock) {
   app.quit()
 } else {
   app.on('second-instance', jihuoYiyouLingdongdaoWindow)
-  app.whenReady().then(chushihuaYingyong)
+  app.whenReady().then(chushihuaYingyong).catch(chuliYingyongQidongShibai)
 }
 
 app.on('window-all-closed', () => {
@@ -3950,6 +4055,8 @@ app.on('window-all-closed', () => {
 
 app.once('will-quit', () => {
   tingzhiWindowsJiantiebanHelper()
+  if (piPrewarmTimer) clearTimeout(piPrewarmTimer)
+  piPrewarmTimer = null
   if (managedReconcileTimer) clearInterval(managedReconcileTimer)
   managedReconcileTimer = null
   isManagedReconcilePending = false
