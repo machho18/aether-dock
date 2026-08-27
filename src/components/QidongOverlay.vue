@@ -8,36 +8,23 @@
 
 <script setup>
 import { onMounted, onUnmounted, useTemplateRef } from 'vue'
-import { useTimeoutFn } from '@vueuse/core'
 import lottie from 'lottie-web/build/player/lottie_light'
 import startupAnimation from '@/assets/loading.json'
 
-const emit = defineEmits(['complete'])
 const lottieHolder = useTemplateRef('lottieHolder')
 let lottiePlayer = null
-let isCompleted = false
-
-// 动画资源异常时由兜底计时器保证开机流程仍能结束。
-const { stop: tingzhiFallback } = useTimeoutFn(wanchengStartup, 2400)
-
-function wanchengStartup() {
-  if (isCompleted) return
-  isCompleted = true
-  tingzhiFallback()
-  emit('complete')
-}
 
 onMounted(() => {
   lottiePlayer = lottie.loadAnimation({
     container: lottieHolder.value,
     renderer: 'svg',
-    loop: false,
+    // 宠物首帧就绪前持续播放，避免启动期间出现空白窗口。
+    loop: true,
     autoplay: true,
     animationData: startupAnimation,
     rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
   })
   lottiePlayer.setSpeed(1)
-  lottiePlayer.addEventListener('complete', wanchengStartup)
 })
 
 onUnmounted(() => lottiePlayer?.destroy())

@@ -416,14 +416,6 @@
             </button>
           </div>
         </div>
-        <button v-if="!isStatusLoading && !currentModel" class="assistant-config-hint" type="button" @click="dakaiGongyingshangConfig">
-          <span class="assistant-config-hint-icon" aria-hidden="true"><PhKey :size="15" weight="bold" /></span>
-          <span class="assistant-config-hint-copy">
-            <strong>尚未配置可用模型</strong>
-            <small>点击添加供应商并保存 API 密钥</small>
-          </span>
-          <span class="assistant-config-hint-action">去配置</span>
-        </button>
       </div>
 
       <template v-for="(message, index) in messages" :key="message.id">
@@ -552,7 +544,7 @@
       </section>
     </div>
 
-    <footer class="assistant-composer">
+    <footer class="assistant-composer" :class="{ 'assistant-composer--unavailable': !isStatusLoading && !currentModel }">
       <button
         v-if="isXianshiZuihouXiaoxi"
         class="assistant-latest-button"
@@ -570,14 +562,19 @@
           v-model="draft"
           rows="1"
           :disabled="isStatusLoading || !currentModel"
-          :placeholder="isStatusLoading ? '正在准备助手…' : currentModel ? '输入消息…' : '请先配置模型后开始对话'"
+          :placeholder="isStatusLoading ? '正在准备助手…' : currentModel ? '输入消息…' : '配置模型后开始对话'"
           aria-label="输入消息"
           @keydown.enter.exact.prevent="tijiaoXiaoxi"
           @input="zhengliShuruKuangGaodu"
         ></textarea>
       </div>
       <div class="assistant-composer-toolbar">
-        <span v-if="currentModel" class="assistant-search-indicator" :title="`联网搜索来源：${sousuoLaiYuanMingcheng}`" aria-label="当前联网搜索来源">
+        <span v-if="isStatusLoading" class="assistant-composer-status">正在准备助手</span>
+        <button v-else-if="!currentModel" class="assistant-composer-setup" type="button" @click="dakaiGongyingshangConfig">
+          <PhKey :size="14" weight="bold" aria-hidden="true" />
+          <span>配置模型</span>
+        </button>
+        <span v-else-if="currentModel" class="assistant-search-indicator" :title="`联网搜索来源：${sousuoLaiYuanMingcheng}`" aria-label="当前联网搜索来源">
           <img :src="lianwangSousuoIcon" alt="" aria-hidden="true" draggable="false">
           <span>{{ sousuoLaiYuanMingcheng }}</span>
         </span>
@@ -1680,36 +1677,6 @@ onUnmounted(() => {
 .assistant-empty-intro { display: flex; align-items: flex-start; gap: 13px; }
 .assistant-empty-copy { display: grid; gap: 4px; padding-top: 2px; }
 .assistant-empty strong { color: #202420; font: 800 16px/1.3 var(--font-display); letter-spacing: .01em; }
-.assistant-config-hint {
-  display: flex;
-  width: min(100%, 382px);
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border: 1px solid rgba(146, 105, 24, .25);
-  border-radius: 11px;
-  background: rgba(255, 248, 221, .7);
-  color: #765515;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 150ms ease, background 150ms ease, transform 150ms var(--motion-easing);
-}
-.assistant-config-hint:hover { border-color: rgba(146, 105, 24, .48); background: #fff8df; transform: translateY(-1px); }
-.assistant-config-hint:focus-visible { outline: 2px solid rgba(175, 133, 43, .5); outline-offset: 2px; }
-.assistant-config-hint-icon {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: rgba(146, 105, 24, .1);
-}
-.assistant-config-hint-copy { display: grid; min-width: 0; flex: 1; gap: 1px; }
-.assistant-config-hint-copy strong { color: #67501b; font: 700 10px/1.3 var(--font-body); letter-spacing: .02em; }
-.assistant-config-hint-copy small { overflow: hidden; color: #92783f; font: 500 9px/1.35 var(--font-body); text-overflow: ellipsis; white-space: nowrap; }
-.assistant-config-hint-action { flex: 0 0 auto; color: #7d5a12; font: 700 10px var(--font-body); }
 .assistant-bubble { display: flex; max-width: min(100%, 620px); align-items: flex-start; gap: 8px; }
 .assistant-bubble--user { justify-content: flex-end; }
 .assistant-bubble--assistant { justify-content: flex-start; }
@@ -2668,26 +2635,6 @@ onUnmounted(() => {
   font: 800 20px/1.25 var(--font-display);
   letter-spacing: .06em;
 }
-.assistant-config-hint {
-  justify-self: center;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--border-ink);
-  border-radius: 12px;
-  background: rgb(255 255 255 / 58%);
-  box-shadow: 0 4px 12px rgb(15 17 16 / 6%);
-  color: var(--assistant-graphite);
-}
-.assistant-config-hint:hover { border-color: rgba(99, 254, 19, .6); background: var(--assistant-accent-soft); transform: translateY(-1px); }
-.assistant-config-hint:focus-visible { outline-color: var(--assistant-accent); }
-.assistant-config-hint-icon {
-  border: 1px solid var(--assistant-graphite);
-  border-radius: 4px;
-  background: var(--assistant-accent-soft);
-}
-.assistant-config-hint-copy strong,
-.assistant-config-hint-action { color: var(--assistant-graphite); }
-.assistant-config-hint-copy small { color: var(--assistant-pencil); }
 .assistant-bubble { gap: 9px; }
 .assistant-bubble--assistant { width: min(100%, 620px); }
 .assistant-bubble--assistant .assistant-bubble-inner { min-width: 0; flex: 1; }
@@ -2880,16 +2827,16 @@ onUnmounted(() => {
   .assistant-status-shimmer { animation: none; color: #627064; background: none; }
 }
 
-/* 输入区改为双层卡片，先保证编辑空间，再放置上下文与发送操作。 */
+/* 输入区使用单一承载面，避免禁用状态出现割裂的灰色内框。 */
 .assistant-composer {
   position: relative;
   display: grid;
-  gap: 5px;
+  gap: 6px;
   align-items: stretch;
   margin: 0 12px 12px;
-  padding: 9px 11px 8px;
+  padding: 8px 10px 8px 12px;
   border: 1px solid rgb(41 48 45 / 14%);
-  border-radius: 15px;
+  border-radius: 14px;
   background: rgb(255 255 255 / 94%);
   box-shadow: 0 4px 14px rgb(15 17 16 / 7%);
   transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -2898,9 +2845,29 @@ onUnmounted(() => {
   border-color: rgb(41 48 45 / 30%);
   box-shadow: 0 4px 14px rgb(15 17 16 / 7%), 0 0 0 3px rgb(99 254 19 / 12%);
 }
+.assistant-composer--unavailable { border-color: rgb(41 48 45 / 11%); background: #fbfcfa; }
 .assistant-composer-toolbar { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 10px; }
 .assistant-composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
 .assistant-composer-meta { position: relative; display: flex; width: auto; height: 30px; flex: 0 0 auto; align-items: center; }
+.assistant-composer-status { color: var(--assistant-faint); font: 700 11px/1 var(--assistant-font-sans); }
+/* 未配置模型时保留明确的下一步操作，避免底栏只剩孤立的禁用按钮。 */
+.assistant-composer-setup {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--assistant-pencil);
+  cursor: pointer;
+  font: 700 11px/1 var(--assistant-font-sans);
+  transition: background 150ms ease, color 150ms ease, transform 150ms var(--motion-easing);
+}
+.assistant-composer-setup:hover { background: var(--assistant-accent-soft); color: var(--assistant-graphite); }
+.assistant-composer-setup:active { transform: scale(.98); }
+.assistant-composer-setup:focus-visible { outline: 2px solid rgb(99 254 19 / 46%); outline-offset: -1px; }
 /* 操作组使用紧凑尺寸，让注意力始终停留在输入内容。 */
 .assistant-thinking-trigger { display: flex; width: auto; min-width: 30px; height: 30px; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; border: 0; border-radius: 7px; background: transparent; box-shadow: none; color: var(--assistant-pencil); cursor: pointer; font: 700 10px var(--assistant-font-sans); transition: color 150ms ease, transform 150ms var(--motion-easing); }
 .assistant-thinking-trigger:hover:not(:disabled),
@@ -2919,7 +2886,7 @@ onUnmounted(() => {
   box-sizing: border-box;
   display: block;
   width: 100%;
-  min-height: 46px;
+  min-height: 40px;
   max-height: 128px;
   padding: 6px 2px 4px;
   border: 0;
@@ -2935,7 +2902,7 @@ onUnmounted(() => {
 .assistant-composer textarea:focus {
   outline: 0;
 }
-.assistant-composer textarea:disabled { background: var(--assistant-paper-deep); color: var(--assistant-faint); }
+.assistant-composer textarea:disabled { background: transparent; color: var(--assistant-faint); cursor: not-allowed; }
 .assistant-send {
   display: grid;
   width: 30px;
@@ -2951,7 +2918,7 @@ onUnmounted(() => {
 }
 .assistant-send:hover:not(:disabled) { background: #3f4b40; color: #fff; transform: translateY(-1px); }
 .assistant-send:active:not(:disabled) { transform: translateY(0) scale(.98); }
-.assistant-send:disabled { background: rgb(41 48 45 / 20%); color: rgb(255 255 255 / 68%); }
+.assistant-send:disabled { background: #e0e4dd; color: #9aa39a; opacity: 1; }
 /* 终止控制保留清晰边界，避免只显示孤立的红色方块。 */
 .assistant-send--stop {
   border: 1px solid rgb(181 74 64 / 38%);
@@ -2995,7 +2962,6 @@ onUnmounted(() => {
   .assistant-back,
   .assistant-action,
   .assistant-conversation-toggle,
-  .assistant-config-hint,
   .assistant-send,
   .assistant-latest-button { transition: none; }
   .assistant-document-enter-active,

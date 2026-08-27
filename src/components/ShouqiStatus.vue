@@ -31,6 +31,7 @@ const props = defineProps({
   moving: { type: Boolean, default: false },
   pasting: { type: Boolean, default: false },
 })
+const emit = defineEmits(['ready'])
 
 const lottieHolder = useTemplateRef('lottieHolder')
 const currentTime = shallowRef('')
@@ -39,6 +40,7 @@ const shouldPollInfo = computed(() => !props.charm && !props.hidden && !props.mo
 let lottiePlayer = null
 let currentLottieRequest = 0
 let isSystemStatusLoading = false
+let isChongwuReady = false
 
 function gengxinCurrentTime() {
   if (!shouldPollInfo.value) return
@@ -78,6 +80,11 @@ async function chongjianLottie() {
     autoplay: true,
     animationData: structuredClone(animationData),
     rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
+  })
+  lottiePlayer.addEventListener('DOMLoaded', () => {
+    if (requestId !== currentLottieRequest || isChongwuReady) return
+    isChongwuReady = true
+    emit('ready')
   })
   tongbuLottiePlayback()
 }
