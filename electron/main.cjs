@@ -24,7 +24,6 @@ const piJicheng = require('./pi.cjs')
 let mainWindow = null
 let isMainWindowReady = false
 let startupWindow = null
-let startupWindowFallbackTimer = null
 let isStartupCompleted = false
 let xuanfuqiuWindow = null
 let isXuanfuqiuWindowReady = false
@@ -3390,12 +3389,8 @@ function xianshiMainLingdongdao() {
   if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close()
 }
 
-// 无论渲染层动画是否完成，主进程都保证将窗口交接给主灵动岛。
+// 宠物动画首帧就绪后，才将启动窗口交接给主灵动岛。
 function wanchengStartupWindow() {
-  if (startupWindowFallbackTimer) {
-    clearTimeout(startupWindowFallbackTimer)
-    startupWindowFallbackTimer = null
-  }
   isStartupCompleted = true
   xianshiMainLingdongdao()
   anpaiPiYure()
@@ -3432,9 +3427,6 @@ function createStartupWindow() {
   startupWindow.on('closed', () => {
     startupWindow = null
   })
-  // 渲染层异常或开机动画失效时，最多等待 5 秒后强制显示主窗口。
-  startupWindowFallbackTimer = setTimeout(wanchengStartupWindow, 5000)
-  startupWindowFallbackTimer.unref()
 }
 
 // 唤起已有窗口，避免桌面快捷方式重复启动多个灵动岛进程。

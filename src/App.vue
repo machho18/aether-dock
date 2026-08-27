@@ -4,7 +4,7 @@
     @mouseleave="huifuMousePassthrough"
     @pointerdown.self="chuliRootPointerDown"
   >
-    <QidongOverlay v-if="isStartupWindow && isStartingUp" @complete="wanchengStartup" />
+    <QidongOverlay v-if="isStartupWindow" />
 
     <section
       v-if="!isStartupWindow"
@@ -61,6 +61,7 @@
               :moving="isMovingIsland"
               :pasting="isPastingTape"
               charm
+              @ready="chongwuZiyuanReady"
             />
           </div>
 
@@ -240,7 +241,6 @@ const CixiGuajianEffect = defineAsyncComponent(() => import('@/components/CixiGu
 const isStartupWindow = new URLSearchParams(window.location.search).get('startup') === '1'
 const islandShell = useTemplateRef('islandShell')
 const zhushouPage = useTemplateRef('zhushouPage')
-const isStartingUp = shallowRef(isStartupWindow)
 const isExpanded = shallowRef(false)
 const isDragging = shallowRef(false)
 const isDropping = shallowRef(false)
@@ -284,6 +284,7 @@ let isIslandStateChanging = false
 let shouldIgnoreIslandClick = false
 let islandStateQingqiuVersion = 0
 let isLibraryPreloadStarted = false
+let isChongwuReady = false
 
 const {
   toastState,
@@ -370,9 +371,10 @@ useEventListener(window, 'blur', chuliWindowBlur)
 useEventListener(window, 'pointerup', wanchengYidongIsland)
 useEventListener(window, 'pointercancel', wanchengYidongIsland)
 
-function wanchengStartup() {
-  if (!isStartingUp.value) return
-  isStartingUp.value = false
+// 仅在宠物动画首帧已渲染后交接窗口，避免露出未加载完成的宠物。
+function chongwuZiyuanReady() {
+  if (isStartupWindow || isChongwuReady) return
+  isChongwuReady = true
   qidongCompleteTimer()
 }
 
